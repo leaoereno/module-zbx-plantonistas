@@ -59,6 +59,8 @@ class Module extends CModule {
                     ->setAliases([
                         'plantonistas.report.notes.save',
                         'plantonistas.report.notes.get',
+                        'plantonistas.report.mentions.search',
+                        'plantonistas.report.mentions.read',
                         'plantonistas.report.pdf',
                     ])
                 );
@@ -251,6 +253,13 @@ class Module extends CModule {
             if ((int)($cols[$t]['shift_name'] ?? 0) > 0 && (int)$cols[$t]['shift_name'] < 50) {
                 \DBexecute("ALTER TABLE $t MODIFY COLUMN shift_name VARCHAR(50) NOT NULL");
             }
+            // v4.2 — editor rico + menções: distingue nota antiga (texto puro,
+            // precisa de nl2br+htmlspecialchars na exibição) de nota nova
+            // (HTML já sanitizado no save, exibida direto).
+            if (!isset($cols[$t]['notes_format'])) {
+                \DBexecute("ALTER TABLE $t ADD COLUMN notes_format VARCHAR(10) NOT NULL DEFAULT 'text'" .
+                    " COMMENT 'text = legado (escapado na exibição) | html = editor rico (ja sanitizado)' AFTER notes");
+            }
         }
 
         // ── module_plantonistas_user_sessions ──
@@ -339,6 +348,7 @@ class Module extends CModule {
                 '  analyst_userid BIGINT UNSIGNED NOT NULL,' .
                 '  analyst_name   VARCHAR(128)    NOT NULL,' .
                 '  notes          TEXT            NOT NULL,' .
+                "  notes_format   VARCHAR(10)     NOT NULL DEFAULT 'text'," .
                 '  noc_context    VARCHAR(50)     DEFAULT NULL,' .
                 '  created_at     DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,' .
                 '  PRIMARY KEY (id),' .
@@ -346,6 +356,20 @@ class Module extends CModule {
                 '  INDEX idx_csn_shift_id (shift_id),' .
                 '  INDEX idx_csn_analyst  (analyst_userid),' .
                 '  INDEX idx_csn_noc      (noc_context)' .
+                ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4',
+
+            'module_plantonistas_mentions' =>
+                'CREATE TABLE IF NOT EXISTS module_plantonistas_mentions (' .
+                '  id               BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,' .
+                '  note_id          BIGINT UNSIGNED NOT NULL,' .
+                '  mentioned_userid BIGINT UNSIGNED NOT NULL,' .
+                '  created_by       BIGINT UNSIGNED NOT NULL,' .
+                '  is_read          TINYINT(1)      NOT NULL DEFAULT 0,' .
+                '  created_at       DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,' .
+                '  read_at          DATETIME        NULL,' .
+                '  PRIMARY KEY (id),' .
+                '  INDEX idx_mention_user_unread (mentioned_userid, is_read),' .
+                '  INDEX idx_mention_note        (note_id)' .
                 ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4',
 
             'module_plantonistas_shift_reports' =>

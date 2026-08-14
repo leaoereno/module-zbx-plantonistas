@@ -85,6 +85,7 @@ CREATE TABLE IF NOT EXISTS module_plantonistas_shift_notes (
     analyst_userid  BIGINT UNSIGNED NOT NULL COMMENT 'FK → users.userid',
     analyst_name    VARCHAR(128)    NOT NULL,
     notes           TEXT            NOT NULL,
+    notes_format    VARCHAR(10)     NOT NULL DEFAULT 'text' COMMENT 'text = legado (escapado na exibição) | html = editor rico (já sanitizado)',
     noc_context     VARCHAR(50)     DEFAULT NULL COMMENT 'Legado — visibilidade controlada por users_groups',
     created_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (id),
@@ -94,6 +95,20 @@ CREATE TABLE IF NOT EXISTS module_plantonistas_shift_notes (
     INDEX idx_csn_noc      (noc_context)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
   COMMENT='Diário de Bordo por turno';
+
+CREATE TABLE IF NOT EXISTS module_plantonistas_mentions (
+    id               BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    note_id          BIGINT UNSIGNED NOT NULL COMMENT 'FK → module_plantonistas_shift_notes.id',
+    mentioned_userid BIGINT UNSIGNED NOT NULL COMMENT 'FK → users.userid — quem foi @mencionado',
+    created_by       BIGINT UNSIGNED NOT NULL COMMENT 'FK → users.userid — autor da nota',
+    is_read          TINYINT(1)      NOT NULL DEFAULT 0,
+    created_at       DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    read_at          DATETIME        NULL,
+    PRIMARY KEY (id),
+    INDEX idx_mention_user_unread (mentioned_userid, is_read),
+    INDEX idx_mention_note        (note_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  COMMENT='Notificação de menção [user] no Diário de Bordo';
 
 CREATE TABLE IF NOT EXISTS module_plantonistas_shift_reports (
     id              BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
