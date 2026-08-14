@@ -143,13 +143,25 @@ class PlantaoList extends CController {
                 ];
             }
 
+            // Usuários com todos os grupos desabilitados (usrgrp.users_status=1
+            // em 100% dos grupos do usuário) não aparecem como opção de técnico —
+            // mesmo critério que o Zabbix usa para marcar alguém como "Disabled"
+            // em Administração > Usuários. Pertencer a pelo menos 1 grupo ativo
+            // já é suficiente para continuar aparecendo.
+            $active_filter =
+                ' AND EXISTS (' .
+                '   SELECT 1 FROM users_groups ugx' .
+                '   JOIN usrgrp gx ON gx.usrgrpid = ugx.usrgrpid' .
+                '   WHERE ugx.userid = u.userid AND gx.users_status = 0' .
+                ' )';
+
             if ($is_super_admin) {
                 $res_users = DBselect(
                     'SELECT DISTINCT u.userid, u.name, u.surname, u.username,' .
                     '  COALESCE(pm.phone, \'\') AS phone' .
                     ' FROM users u' .
                     ' LEFT JOIN module_plantonistas_phones pm ON pm.userid = u.userid' .
-                    " WHERE u.username != 'guest'" .
+                    " WHERE u.username != 'guest'" . $active_filter .
                     ' ORDER BY u.name, u.surname'
                 );
             } else {
@@ -159,7 +171,7 @@ class PlantaoList extends CController {
                     ' FROM users u' .
                     ' JOIN users_groups ug ON ug.userid = u.userid' .
                     ' LEFT JOIN module_plantonistas_phones pm ON pm.userid = u.userid' .
-                    ' WHERE ug.usrgrpid = ' . $usrgrpid .
+                    ' WHERE ug.usrgrpid = ' . $usrgrpid . $active_filter .
                     ' ORDER BY u.name, u.surname'
                 );
             }

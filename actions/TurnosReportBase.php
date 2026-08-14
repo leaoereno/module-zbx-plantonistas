@@ -644,11 +644,18 @@ trait TurnosReportBase {
         $shiftIdInt      = $filterByShiftId ? (int)$shift : 0;
         $shiftCol        = $filterByShiftId ? 'shift_id' : 'shift_name';
 
+        // created_at sai formatado em padrão brasileiro (dd/mm/aaaa hh:mm) —
+        // views e PDF exibem o valor direto, sem reformatar. Ordenação usa uma
+        // coluna à parte com o valor original (created_sort): ordenar pela
+        // string já formatada "dd/mm/aaaa" daria resultado errado (comparação
+        // léxica não é o mesmo que ordem cronológica).
         if ($isSuperadmin) {
-            $sql  = "SELECT id, analyst_userid, analyst_name, notes, created_at
+            $sql  = "SELECT id, analyst_userid, analyst_name, notes,
+                        DATE_FORMAT(created_at, '%d/%m/%Y %H:%i') AS created_at,
+                        created_at AS created_sort
                      FROM module_plantonistas_shift_notes
                      WHERE shift_date = ? AND $shiftCol = ?
-                     ORDER BY created_at DESC";
+                     ORDER BY created_sort DESC";
             $stmt = $db->prepare($sql);
             $filterByShiftId
                 ? $stmt->bind_param('si', $date, $shiftIdInt)
@@ -656,11 +663,13 @@ trait TurnosReportBase {
         } else {
             $sameGroup = $this->sameGroupExists($userid, 'csn.analyst_userid');
             $sql = "SELECT DISTINCT csn.id, csn.analyst_userid, csn.analyst_name,
-                        csn.notes, csn.created_at
+                        csn.notes,
+                        DATE_FORMAT(csn.created_at, '%d/%m/%Y %H:%i') AS created_at,
+                        csn.created_at AS created_sort
                     FROM module_plantonistas_shift_notes csn
                     WHERE csn.shift_date = ? AND csn.$shiftCol = ?
                       AND $sameGroup
-                    ORDER BY csn.created_at DESC";
+                    ORDER BY created_sort DESC";
             $stmt = $db->prepare($sql);
             $filterByShiftId
                 ? $stmt->bind_param('si', $date, $shiftIdInt)
@@ -682,26 +691,28 @@ trait TurnosReportBase {
 
         if ($isSuperadmin) {
             $sql = "SELECT cus.userid, cus.username, cus.name AS fullname,
-                        MIN(cus.session_start) AS first_seen,
-                        MAX(cus.lastaccess)    AS last_seen,
+                        DATE_FORMAT(MIN(cus.session_start), '%d/%m/%Y %H:%i') AS first_seen,
+                        DATE_FORMAT(MAX(cus.lastaccess), '%d/%m/%Y %H:%i')    AS last_seen,
+                        MIN(cus.session_start) AS first_seen_sort,
                         TIMESTAMPDIFF(MINUTE, MIN(cus.session_start), MAX(cus.lastaccess)) AS online_minutes
                     FROM module_plantonistas_user_sessions cus
                     WHERE cus.lastaccess BETWEEN ? AND ?
                     GROUP BY cus.userid, cus.username, cus.name
-                    ORDER BY first_seen ASC";
+                    ORDER BY first_seen_sort ASC";
             $stmt = $db->prepare($sql);
             $stmt->bind_param('ss', $ds, $de);
         } else {
             $sameGroup = $this->sameGroupExists($userid, 'cus.userid');
             $sql = "SELECT cus.userid, cus.username, cus.name AS fullname,
-                        MIN(cus.session_start) AS first_seen,
-                        MAX(cus.lastaccess)    AS last_seen,
+                        DATE_FORMAT(MIN(cus.session_start), '%d/%m/%Y %H:%i') AS first_seen,
+                        DATE_FORMAT(MAX(cus.lastaccess), '%d/%m/%Y %H:%i')    AS last_seen,
+                        MIN(cus.session_start) AS first_seen_sort,
                         TIMESTAMPDIFF(MINUTE, MIN(cus.session_start), MAX(cus.lastaccess)) AS online_minutes
                     FROM module_plantonistas_user_sessions cus
                     WHERE cus.lastaccess BETWEEN ? AND ?
                       AND $sameGroup
                     GROUP BY cus.userid, cus.username, cus.name
-                    ORDER BY first_seen ASC";
+                    ORDER BY first_seen_sort ASC";
             $stmt = $db->prepare($sql);
             $stmt->bind_param('ss', $ds, $de);
         }
@@ -802,6 +813,9 @@ trait TurnosReportBase {
      */
     private function listUsersByGroup(\mysqli $db, int $usrgrpid): array {
         try {
+            // Mesmo critério de "usuário ativo" usado em Telefones/Escala: pelo
+            // menos 1 grupo do usuário com usrgrp.users_status=0. Um analista
+            // com todos os grupos desabilitados some da lista de vínculo a turno.
             $stmt = $db->prepare(
                 "SELECT u.userid, u.username,
                         CONCAT(COALESCE(u.name,''), ' ', COALESCE(u.surname,'')) AS fullname,
@@ -810,6 +824,11 @@ trait TurnosReportBase {
                  INNER JOIN users_groups ugm ON ugm.userid = u.userid
                  LEFT JOIN module_plantonistas_user_shift cush ON cush.userid = u.userid
                  WHERE ugm.usrgrpid = ?
+                   AND EXISTS (
+                       SELECT 1 FROM users_groups ugx
+                       INNER JOIN usrgrp gx ON gx.usrgrpid = ugx.usrgrpid
+                       WHERE ugx.userid = u.userid AND gx.users_status = 0
+                   )
                  ORDER BY fullname ASC"
             );
             if ($stmt === false) {

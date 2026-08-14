@@ -30,8 +30,17 @@ class PhonesExport extends CController {
             ' JOIN users_groups ug ON ug.userid  = u.userid' .
             ' LEFT JOIN module_plantonistas_phones p ON p.userid = u.userid';
 
+        // Mesmo critério de "usuário ativo" das telas Telefones/Escala/Gerenciar
+        // Turnos — pelo menos 1 grupo com usrgrp.users_status=0.
+        $active_filter =
+            'EXISTS (' .
+            '   SELECT 1 FROM users_groups ugx' .
+            '   JOIN usrgrp gx ON gx.usrgrpid = ugx.usrgrpid' .
+            '   WHERE ugx.userid = u.userid AND gx.users_status = 0' .
+            ' )';
+
         if ($is_super) {
-            $sql = $select . " WHERE u.username != 'guest' ORDER BY u.name, u.surname";
+            $sql = $select . " WHERE u.username != 'guest' AND " . $active_filter . " ORDER BY u.name, u.surname";
         } else {
             $group_ids = [];
             $res = DBselect('SELECT usrgrpid FROM users_groups WHERE userid=' . $current_userid);
@@ -51,6 +60,7 @@ class PhonesExport extends CController {
             $sql = $select .
                 ' WHERE ug.usrgrpid IN (' . implode(',', $group_ids) . ')' .
                 '   AND u.roleid = ' . $roleid .
+                '   AND ' . $active_filter .
                 ' ORDER BY u.name, u.surname';
         }
 

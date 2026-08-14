@@ -40,9 +40,19 @@ class PhonesList extends CController {
             ' JOIN usrgrp       g  ON g.usrgrpid  = ug.usrgrpid' .
             ' LEFT JOIN module_plantonistas_phones p ON p.userid = u.userid';
 
+        // Usuários com todos os grupos desabilitados (usrgrp.users_status=1 em
+        // 100% dos grupos) não aparecem — mesmo critério do Zabbix para marcar
+        // alguém como "Disabled" em Administração > Usuários.
+        $active_filter =
+            ' EXISTS (' .
+            '   SELECT 1 FROM users_groups ugx' .
+            '   JOIN usrgrp gx ON gx.usrgrpid = ugx.usrgrpid' .
+            '   WHERE ugx.userid = u.userid AND gx.users_status = 0' .
+            ' )';
+
         if ($is_super_admin) {
-            // Super admin: vê TODOS os usuários do sistema
-            $sql = $select . ' ORDER BY u.name, u.surname, g.name';
+            // Super admin: vê TODOS os usuários ativos do sistema
+            $sql = $select . ' WHERE ' . $active_filter . ' ORDER BY u.name, u.surname, g.name';
         } else {
             // Admin / Usuário: vê apenas quem compartilha grupo E mesmo papel (role)
             $group_ids = $this->getUserGroupIds($current_userid);
@@ -60,6 +70,7 @@ class PhonesList extends CController {
             $sql = $select .
                 ' WHERE ug.usrgrpid IN (' . $ids_str . ')' .
                 '   AND u.roleid = ' . $current_roleid .
+                '   AND ' . $active_filter .
                 ' ORDER BY u.name, u.surname, g.name';
         }
 
