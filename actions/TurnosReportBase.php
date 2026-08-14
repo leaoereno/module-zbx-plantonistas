@@ -51,7 +51,7 @@ trait TurnosReportBase {
             // Gerenciar Turnos aparecia normal, mas todo grupo vinha vazio,
             // sem nenhum rastro de que a conexão paralela (getDb(), fora do
             // DB::connect() nativo do Zabbix) nem chegou a abrir.
-            error_log('[turnos-noc-report] getDb() falhou: ' . $e->getMessage());
+            error_log('[plantonistas] getDb() falhou: ' . $e->getMessage());
             return null;
         }
     }
@@ -303,7 +303,7 @@ trait TurnosReportBase {
                 $stmt->get_result()->fetch_all(MYSQLI_ASSOC)
             );
         } catch (\Throwable $e) {
-            error_log('[turnos-noc-report] resolveUserContext() group_ids falhou (userid=' . $userid . '): ' . $e->getMessage());
+            error_log('[plantonistas] resolveUserContext() group_ids falhou (userid=' . $userid . '): ' . $e->getMessage());
         }
 
         if ($roleType === 3) {
@@ -768,7 +768,7 @@ trait TurnosReportBase {
             $res = $db->query($sql);
             return $res ? $res->fetch_all(MYSQLI_ASSOC) : [];
         } catch (\Throwable $e) {
-            error_log('[turnos-noc-report] listManageableGroups() falhou: ' . $e->getMessage());
+            error_log('[plantonistas] listManageableGroups() falhou: ' . $e->getMessage());
             return [];
         }
     }
@@ -785,7 +785,7 @@ trait TurnosReportBase {
             $stmt->execute();
             return $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
         } catch (\Throwable $e) {
-            error_log('[turnos-noc-report] listShiftsByGroup() falhou (usrgrpid=' . $usrgrpid . '): ' . $e->getMessage());
+            error_log('[plantonistas] listShiftsByGroup() falhou (usrgrpid=' . $usrgrpid . '): ' . $e->getMessage());
             return [];
         }
     }
@@ -819,7 +819,7 @@ trait TurnosReportBase {
             $stmt->execute();
             return ['error' => null, 'rows' => $stmt->get_result()->fetch_all(MYSQLI_ASSOC)];
         } catch (\Throwable $e) {
-            error_log('[turnos-noc-report] listUsersByGroup() falhou (usrgrpid=' . $usrgrpid . '): ' . $e->getMessage());
+            error_log('[plantonistas] listUsersByGroup() falhou (usrgrpid=' . $usrgrpid . '): ' . $e->getMessage());
             return ['error' => $e->getMessage(), 'rows' => []];
         }
     }

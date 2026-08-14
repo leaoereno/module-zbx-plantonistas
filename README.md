@@ -60,15 +60,19 @@ sem cópia de dados; dados 100% preservados):
 
 Faça na janela de menor movimento. Passo a passo:
 
-**0. Backup** (no servidor de banco):
+**0. Backup** — dumpa só as tabelas que existirem (nem todas existem em todo
+ambiente: se o schema v2.5 do repasse nunca rodou, `custom_shifts` e
+`custom_user_shift` não estão lá — o módulo novo cria as que faltarem).
+Ajuste `-h` para o host do banco; pede a senha duas vezes:
 
 ```bash
-mysqldump -uzabbix -p zabbix \
-  module_plantao_phones module_plantao_schedule module_plantao_history \
-  custom_shifts custom_user_shift custom_shift_notes \
-  custom_user_sessions custom_shift_reports \
+TABS=$(mysql -hHOST_DB -uzabbix -p -N zabbix -e "SELECT GROUP_CONCAT(TABLE_NAME SEPARATOR ' ') FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA='zabbix' AND TABLE_NAME IN ('module_plantao_phones','module_plantao_schedule','module_plantao_history','custom_shifts','custom_user_shift','custom_shift_notes','custom_user_sessions','custom_shift_reports')") && \
+mysqldump -hHOST_DB -uzabbix -p --single-transaction --no-tablespaces --set-gtid-purged=OFF zabbix $TABS \
   > backup-pre-plantonistas-$(date +%Y%m%d-%H%M).sql
 ```
+
+`--no-tablespaces` evita o erro de privilégio PROCESS; `--single-transaction`
+garante dump consistente sem travar as tabelas.
 
 **1. Deploy do módulo novo — NOS DOIS frontends:**
 

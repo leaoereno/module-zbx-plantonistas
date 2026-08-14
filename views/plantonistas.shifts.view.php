@@ -130,7 +130,7 @@ $legacyShifts = $data['legacy_shifts'] ?? [];
             <div class="rp-alert rp-alert-danger">
                 <i class="fas fa-exclamation-triangle"></i>
                 Não consegui carregar os analistas desta equipe (erro de consulta, não é que o grupo esteja vazio).
-                Verifique o log do PHP-FPM (<code>[turnos-noc-report] listUsersByGroup()</code>).
+                Verifique o log do PHP-FPM (<code>[plantonistas] listUsersByGroup()</code>).
             </div>
         <?php elseif (empty($g['users'])): ?>
             <div class="rp-empty">Nenhum usuário Zabbix neste grupo.</div>
