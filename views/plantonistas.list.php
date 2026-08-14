@@ -178,6 +178,12 @@ output .btn-overlay-close { position:absolute;top:6px;right:6px; }
 .plt-shift-field label { font-weight:600;font-size:13px;color:#9ab;white-space:nowrap; }
 .plt-shift-time    { font-weight:400;color:#666;font-size:11px;margin-left:3px; }
 .plt-shift-empty-hint { font-size:12px;color:#8faabc;margin-bottom:10px; }
+/* .plt-select-row usa "flex:0 1 300px" pensado pra dentro de um flex ROW
+   (.plt-form-row, modo legado) — ali o 300px vira largura. Dentro de
+   .plt-shift-field, que é flex COLUMN, o mesmo valor vira ALTURA e o campo
+   fica gigante (300px de altura). Reseta o eixo aqui: largura fixa via
+   width, sem flex-basis herdado. */
+.plt-shift-field .plt-select-row { flex:0 0 auto;width:300px; }
 
 /* Mensagens sucesso e erro — texto sempre preto, fundo contrastante */
 output.msg-good {
