@@ -226,6 +226,62 @@ escuro) para `var(--rp-blue)` sólido (mesma cor de `.rp-btn-primary`), com
 borda sutil e sombra. Já respeita dark theme (`--rp-blue` já tem override).
 Botão de reload (ícone só) não foi mexido — tinha estilo inline próprio.
 
+### Editor rico + menções no Diário de Bordo (2026-08-14)
+
+Decisões tomadas com o Rafael (via perguntas de escopo) antes de implementar:
+editor leve sem dependência nova (contenteditable + JS inline, sem vendorizar
+biblioteca); notificação de menção `[user]` como banner simples com link pra
+nota (sem central de notificações); item escolhido vira link/chip limpo na
+nota (sem manter `[host]texto` literal); os 3 tipos de menção
+(`[hostgroup]`/`[host]`/`[user]`) entregues juntos, não em etapas.
+
+**Schema novo**: `module_plantonistas_shift_notes.notes_format` (`text` |
+`html`, default `text` — distingue nota antiga de nota nova na exibição) e
+tabela `module_plantonistas_mentions` (note_id, mentioned_userid, created_by,
+is_read, created_at, read_at). Ambos migrados idempotente em
+`Module::migrateColumns()`/`tableDdl()`, replicados em `sql/schema.sql`.
+
+**Fluxo**: digitar `[hostgroup]`/`[host]`/`[user]` no editor abre um dropdown
+(nova action `plantonistas.report.mentions.search`, GET com `type`+`q`) que
+busca com a MESMA regra de permissão já usada no resto do módulo — não
+inventei um modelo novo: hostgroup/host respeitam `rights` do Zabbix (igual
+a `host_filter` de `resolveUserContext()`); user respeita grupo compartilhado
+(igual a Notas/Presença) e exclui usuário com todos os grupos desabilitados
+(igual ao filtro de usuário ativo). Selecionar um item substitui o texto
+`[tipo]busca` por um `<a>` (hostgroup/host, linkando pra Monitoramento >
+Problemas filtrado) ou `<span data-mention-userid>` (user, sem link).
+
+**Sanitização**: `TurnosReportBase::sanitizeNoteHtml()`/`sanitizeNode()` —
+allowlist de tags (`b,strong,i,em,u,ul,ol,li,br,p,div,a,span`) e atributos
+por tag via `DOMDocument`, nunca regex. O servidor NUNCA confia no HTML do
+cliente, mesmo vindo do próprio editor — dá pra postar direto no endpoint
+sem passar pela UI. Testado com bypass aninhado (`<iframe><span onclick>`),
+`javascript:`/`data:` em `href`, `<script>`: todos neutralizados (suite em
+`test_sanitizer.php`, não versionada — rodar de novo se mexer nessa função).
+Ponto de atenção arquitetural: a sanitização roda em **profundidade primeiro**
+(sanitiza o filho antes de decidir promover/descartar a tag pai) — inverter
+essa ordem reabre o bypass aninhado.
+
+Menção extraída do HTML sanitizado (`<span data-mention-userid>`) grava 1
+linha em `module_plantonistas_mentions` por userid válido (ativo + visível
+ao autor — mesma regra de grupo compartilhado; menção a si mesmo é ignorada).
+Menção inválida é descartada em silêncio, não derruba o save da nota.
+
+`plantonistas.report.view.php` mostra o banner de menções pendentes (contador
+no header + lista expansível), com "Ver nota" (marca como lida via
+`sendBeacon`, não bloqueia a navegação) e "X" pra dispensar sem abrir.
+
+**Notas antigas continuam funcionando** — `notes_format='text'` (default)
+renderiza pelo caminho antigo (`nl2br(htmlspecialchars(...))`); só nota nova
+(sempre `'html'`) usa o HTML sanitizado direto. `TurnosNotesGet.php`
+(action morta, sem caller) não foi tocado.
+
+Edge case conhecido e aceito: colar/digitar um `<` literal que NÃO veio de um
+`contenteditable` real (ex.: POST manual direto no endpoint) pode truncar o
+texto depois do `<` — o parser HTML do DOMDocument é mais permissivo que um
+navegador nisso. Não afeta o uso normal (o navegador sempre serializa `<`
+digitado como `&lt;` no `innerHTML`), só input adversarial/manual.
+
 ### Backlog conhecido
 
 - Salvar vínculo analista→turno em massa (hoje é um clique por analista).
@@ -244,6 +300,9 @@ Botão de reload (ícone só) não foi mexido — tinha estilo inline próprio.
   `INSERT ... ON DUPLICATE KEY UPDATE` (pequena janela de corrida).
 - Telefones: Admin/User só se veem dentro do mesmo `roleid` — confirmar se é
   intencional (ver "Modelo de permissões" em Contexto).
+- Editor rico do Diário de Bordo: sem suporte a colar imagem/anexo (só texto
+  formatado + menções). Sem histórico de menções lidas (só as pendentes
+  aparecem — decisão consciente, ver seção acima).
 
 ---
 
