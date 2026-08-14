@@ -107,6 +107,35 @@ marcada em amarelo (`rp-row-dirty`); salvar/criar/remover turno atualiza DOM
 inline (sem `location.reload()`); equipes em abas (`rp-tabs`); turnos legados
 (24h/Manhã/Tarde/Noite) exibidos como chips informativos.
 
+### Turnos dinâmicos na tela Escala / Escalar Técnico (2026-08-14)
+
+`module_plantonistas_schedule` ganhou a coluna `shift_id` (default 0 =
+grupo sem turnos, comportamento idêntico ao de antes) e a unique key virou
+`(usrgrpid, schedule_date, shift_id)`: 1 titular por grupo/dia sem turno,
+1 titular por grupo/dia/turno em grupos com turnos cadastrados em
+"Gerenciar Turnos". Migração idempotente em `Module::migrateColumns()`
+(ADD COLUMN + troca de unique key, ADD antes do DROP pra nunca ficar sem
+constraint), replicada em `sql/schema.sql` pra instalação nova.
+
+- **Escala**: se o grupo tem turnos ativos, "Escalar Técnico" renderiza 1
+  seletor por turno (rótulo = nome do turno) no lugar do par Técnico/Reserva
+  único. Turno deixado em branco no formulário não altera o que já está
+  salvo (dá pra editar 1 turno por vez sem reescalar os outros). Decisão do
+  Rafael: **sem reserva por turno** — grupos com turnos só têm titular.
+- Calendário (Escala) e cards (Visão Geral) empilham 1 entrada por turno
+  preenchido, com o nome do turno como rótulo; Visão Geral distingue "Com
+  cobertura" / "Cobertura parcial" (só parte dos turnos preenchida) / "Sem
+  cobertura".
+- `module_plantonistas_history` ganhou `shift_id`/`shift_name` (snapshot do
+  nome no momento da alteração — sobrevive a rename/remoção do turno depois);
+  tela Histórico ganhou coluna Turno. `PlantaoDelete` também loga o turno.
+- **CSV import/export propositalmente NÃO mexidos** (decisão do Rafael) —
+  continuam gravando/lendo só em modo legado (shift_id=0), mesmo em grupos
+  com turnos. Consequência aceita: importar CSV num grupo com turnos cria
+  uma entrada "sem turno" ao lado das entradas por turno (aparece no
+  calendário sem rótulo, não é perdida); exportar um grupo com turnos só
+  reflete a última entrada do dia lida do banco, não soma os turnos.
+
 ### Estado do deploy em produção (2026-08-14)
 
 Feito: repo GitHub criado; clone no **front02**; tabelas de produção verificadas.
@@ -126,6 +155,9 @@ histórico está no zip `module-zbx-repasse-plantao-commit-1dadacd.zip` se preci
 - Chart.js estático vs F5 (embutir inline se os gráficos falharem em produção).
 - Limpeza opcional de `role_rule` órfãs dos módulos antigos (SQL no README).
 - Unificação visual das duas famílias (escala dark × repasse claro) — só com demanda.
+- CSV import/export da Escala não sabe de turnos (grava/lê sempre shift_id=0,
+  modo legado) — decisão consciente do Rafael, ver seção "Turnos dinâmicos".
+  Se precisar, adicionar coluna Turno nos dois sentidos depois.
 
 ---
 

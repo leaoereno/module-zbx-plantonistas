@@ -4,18 +4,33 @@ namespace Modules\Plantonistas\Actions;
 
 use CController, CControllerResponseRedirect, CUrl, CWebUser;
 
+/**
+ * PlantaoSave — grava a escala de um ou mais dias.
+ *
+ * Dois modos, decididos pela presença de turnos cadastrados (module_plantonistas_shifts)
+ * para o grupo em "Gerenciar Turnos":
+ *
+ *   - Legado (grupo sem turnos): campos userid/userid_reserva — 1 titular
+ *     (+reserva opcional) por grupo/dia, shift_id=0. Comportamento idêntico
+ *     ao de antes da v4.1.
+ *   - Turnos (grupo com turnos ativos): campo shift_assignments, um JSON
+ *     {shift_id: userid} montado no navegador a partir dos seletores da
+ *     view — 1 titular por grupo/dia/turno, sem reserva. Turno deixado em
+ *     branco no formulário não é alterado (permite editar só 1 turno por vez).
+ */
 class PlantaoSave extends CController {
 
     public function init(): void { $this->disableCsrfValidation(); }
 
     protected function checkInput(): bool {
         return $this->validateInput([
-            'schedule_dates' => 'required|string',
-            'userid'         => 'required|string',
-            'userid_reserva' => 'string',
-            'usrgrpid'       => 'required|int32',
-            'month'          => 'int32',
-            'year'           => 'int32',
+            'schedule_dates'    => 'required|string',
+            'userid'            => 'string',
+            'userid_reserva'    => 'string',
+            'shift_assignments' => 'string',
+            'usrgrpid'          => 'required|int32',
+            'month'             => 'int32',
+            'year'              => 'int32',
         ]);
     }
 
@@ -27,11 +42,9 @@ class PlantaoSave extends CController {
         $current_userid = (int) CWebUser::$data['userid'];
         $is_super       = ($this->getUserType() >= USER_TYPE_SUPER_ADMIN);
 
-        $userid         = (int) $this->getInput('userid');
-        $userid_reserva = (int) $this->getInput('userid_reserva', '0');
-        $usrgrpid       = (int) $this->getInput('usrgrpid');
-        $month          = (int) $this->getInput('month', date('n'));
-        $year           = (int) $this->getInput('year',  date('Y'));
+        $usrgrpid = (int) $this->getInput('usrgrpid');
+        $month    = (int) $this->getInput('month', date('n'));
+        $year     = (int) $this->getInput('year',  date('Y'));
 
         $redirect = (new CUrl('zabbix.php'))
             ->setArgument('action',   'plantonistas.list')
@@ -43,25 +56,6 @@ class PlantaoSave extends CController {
         // Demais usuários precisam pertencer ao grupo.
         if (!$is_super && !$this->inGroup($current_userid, $usrgrpid)) {
             $this->err($redirect, 'Permissão negada: você não pertence a este grupo.');
-            return;
-        }
-
-        // Técnico principal deve pertencer ao grupo (exceto Super Admin)
-        if (!$is_super && !$this->inGroup($userid, $usrgrpid)) {
-            $this->err($redirect, 'O técnico selecionado não pertence a este grupo.');
-            return;
-        }
-
-        // Reserva deve pertencer ao grupo (se informado).
-        // Super Admin pode escalar reserva de qualquer grupo.
-        if ($userid_reserva > 0 && !$is_super && !$this->inGroup($userid_reserva, $usrgrpid)) {
-            $this->err($redirect, 'O técnico reserva não pertence a este grupo.');
-            return;
-        }
-
-        // Técnico principal não pode ser o mesmo que o reserva
-        if ($userid_reserva > 0 && $userid === $userid_reserva) {
-            $this->err($redirect, 'O técnico principal e o reserva não podem ser a mesma pessoa.');
             return;
         }
 
@@ -87,49 +81,75 @@ class PlantaoSave extends CController {
             return;
         }
 
-        // Gravar cada dia
-        $r_sql = $userid_reserva > 0 ? $userid_reserva : 'NULL';
-        $r_set = $userid_reserva > 0
-            ? ', userid_reserva=' . $userid_reserva
-            : ', userid_reserva=NULL';
+        // ── Monta as atribuições a salvar: [shift_id => dados] ──────────────
+        $assignments = [];
 
+        $raw_assignments = trim($this->getInput('shift_assignments', ''));
+        if ($raw_assignments !== '') {
+            // Modo turnos: um técnico por turno cadastrado, sem reserva.
+            $decoded = json_decode($raw_assignments, true);
+            if (!is_array($decoded)) {
+                $this->err($redirect, 'Dados de turno inválidos.');
+                return;
+            }
+            foreach ($decoded as $shift_id_raw => $uid_raw) {
+                $shift_id = (int) $shift_id_raw;
+                $uid      = (int) $uid_raw;
+                if ($shift_id <= 0 || $uid <= 0) {
+                    continue; // turno deixado em branco — não altera o que já existe
+                }
+                $shift = $this->getShiftForGroup($shift_id, $usrgrpid);
+                if ($shift === null) {
+                    $this->err($redirect, 'Turno inválido para este grupo.');
+                    return;
+                }
+                if (!$is_super && !$this->inGroup($uid, $usrgrpid)) {
+                    $this->err($redirect, 'Um dos técnicos selecionados não pertence a este grupo.');
+                    return;
+                }
+                $assignments[$shift_id] = [
+                    'userid'         => $uid,
+                    'userid_reserva' => null,
+                    'shift_name'     => $shift['name'],
+                ];
+            }
+        } else {
+            // Modo legado: técnico + reserva únicos, shift_id=0.
+            $userid = (int) $this->getInput('userid', '0');
+            if ($userid > 0) {
+                $userid_reserva = (int) $this->getInput('userid_reserva', '0');
+
+                if (!$is_super && !$this->inGroup($userid, $usrgrpid)) {
+                    $this->err($redirect, 'O técnico selecionado não pertence a este grupo.');
+                    return;
+                }
+                if ($userid_reserva > 0 && !$is_super && !$this->inGroup($userid_reserva, $usrgrpid)) {
+                    $this->err($redirect, 'O técnico reserva não pertence a este grupo.');
+                    return;
+                }
+                if ($userid_reserva > 0 && $userid === $userid_reserva) {
+                    $this->err($redirect, 'O técnico principal e o reserva não podem ser a mesma pessoa.');
+                    return;
+                }
+
+                $assignments[0] = [
+                    'userid'         => $userid,
+                    'userid_reserva' => $userid_reserva > 0 ? $userid_reserva : null,
+                    'shift_name'     => '',
+                ];
+            }
+        }
+
+        if (empty($assignments)) {
+            $this->err($redirect, 'Selecione ao menos um técnico.');
+            return;
+        }
+
+        // ── Gravar cada dia × cada turno preenchido ─────────────────────────
         try {
             foreach ($valid_dates as $date) {
-                $existing = DBfetch(DBselect(
-                    'SELECT scheduleid, userid, userid_reserva FROM module_plantonistas_schedule' .
-                    ' WHERE usrgrpid=' . $usrgrpid . ' AND schedule_date=' . zbx_dbstr($date)
-                ));
-
-                if ($existing) {
-                    DBexecute(
-                        'UPDATE module_plantonistas_schedule SET userid=' . $userid . $r_set .
-                        ', created_by=' . $current_userid . ', created_at=' . time() .
-                        ' WHERE scheduleid=' . (int)$existing['scheduleid']
-                    );
-                    $this->logHistory(
-                        (int)$existing['scheduleid'], $usrgrpid, $date, 'update',
-                        (int)$existing['userid'], $userid,
-                        $existing['userid_reserva'] ? (int)$existing['userid_reserva'] : null,
-                        $userid_reserva > 0 ? $userid_reserva : null,
-                        $current_userid
-                    );
-                } else {
-                    DBexecute(
-                        'INSERT INTO module_plantonistas_schedule' .
-                        ' (usrgrpid,userid,userid_reserva,schedule_date,created_by,created_at)' .
-                        ' VALUES (' . $usrgrpid . ',' . $userid . ',' . $r_sql . ',' .
-                        zbx_dbstr($date) . ',' . $current_userid . ',' . time() . ')'
-                    );
-                    $new_id = DBfetch(DBselect(
-                        'SELECT scheduleid FROM module_plantonistas_schedule' .
-                        ' WHERE usrgrpid=' . $usrgrpid . ' AND schedule_date=' . zbx_dbstr($date)
-                    ));
-                    $this->logHistory(
-                        $new_id ? (int)$new_id['scheduleid'] : 0, $usrgrpid, $date, 'create',
-                        null, $userid, null,
-                        $userid_reserva > 0 ? $userid_reserva : null,
-                        $current_userid
-                    );
+                foreach ($assignments as $shift_id => $a) {
+                    $this->saveOne($usrgrpid, (int) $shift_id, $date, $a, $current_userid);
                 }
             }
         } catch (\Exception $e) {
@@ -150,18 +170,83 @@ class PlantaoSave extends CController {
         ));
     }
 
+    /**
+     * Cria ou atualiza a entrada de escala de um grupo/dia/turno (upsert por
+     * usrgrpid+schedule_date+shift_id) e loga a alteração no histórico.
+     */
+    private function saveOne(int $usrgrpid, int $shift_id, string $date, array $a, int $current_userid): void {
+        $userid         = $a['userid'];
+        $userid_reserva = $a['userid_reserva'];
+        $shift_name     = $a['shift_name'];
+
+        $r_sql = $userid_reserva ? $userid_reserva : 'NULL';
+        $r_set = $userid_reserva ? (', userid_reserva=' . $userid_reserva) : ', userid_reserva=NULL';
+
+        $existing = DBfetch(DBselect(
+            'SELECT scheduleid, userid, userid_reserva FROM module_plantonistas_schedule' .
+            ' WHERE usrgrpid=' . $usrgrpid . ' AND schedule_date=' . zbx_dbstr($date) .
+            ' AND shift_id=' . $shift_id
+        ));
+
+        if ($existing) {
+            DBexecute(
+                'UPDATE module_plantonistas_schedule SET userid=' . $userid . $r_set .
+                ', created_by=' . $current_userid . ', created_at=' . time() .
+                ' WHERE scheduleid=' . (int)$existing['scheduleid']
+            );
+            $this->logHistory(
+                (int)$existing['scheduleid'], $usrgrpid, $shift_id, $shift_name, $date, 'update',
+                (int)$existing['userid'], $userid,
+                $existing['userid_reserva'] ? (int)$existing['userid_reserva'] : null,
+                $userid_reserva,
+                $current_userid
+            );
+        } else {
+            DBexecute(
+                'INSERT INTO module_plantonistas_schedule' .
+                ' (usrgrpid,shift_id,userid,userid_reserva,schedule_date,created_by,created_at)' .
+                ' VALUES (' . $usrgrpid . ',' . $shift_id . ',' . $userid . ',' . $r_sql . ',' .
+                zbx_dbstr($date) . ',' . $current_userid . ',' . time() . ')'
+            );
+            $new_id = DBfetch(DBselect(
+                'SELECT scheduleid FROM module_plantonistas_schedule' .
+                ' WHERE usrgrpid=' . $usrgrpid . ' AND schedule_date=' . zbx_dbstr($date) .
+                ' AND shift_id=' . $shift_id
+            ));
+            $this->logHistory(
+                $new_id ? (int)$new_id['scheduleid'] : 0, $usrgrpid, $shift_id, $shift_name, $date, 'create',
+                null, $userid, null, $userid_reserva,
+                $current_userid
+            );
+        }
+    }
+
+    /**
+     * Confirma que o turno existe, está ativo e pertence ao grupo informado
+     * — evita que um shift_id de outro grupo seja gravado via manipulação
+     * do POST. Retorna a linha (com o nome, usado como snapshot no histórico).
+     */
+    private function getShiftForGroup(int $shiftId, int $usrgrpid): ?array {
+        $row = DBfetch(DBselect(
+            'SELECT id, name FROM module_plantonistas_shifts' .
+            ' WHERE id=' . $shiftId . ' AND usrgrpid=' . $usrgrpid . ' AND active=1'
+        ));
+        return $row ?: null;
+    }
+
     private function logHistory(
-        int $scheduleid, int $usrgrpid, string $date, string $action,
+        int $scheduleid, int $usrgrpid, int $shift_id, string $shift_name, string $date, string $action,
         ?int $userid_old, ?int $userid_new,
         ?int $reserva_old, ?int $reserva_new,
         int $changed_by
     ): void {
         DBexecute(
             'INSERT INTO module_plantonistas_history' .
-            ' (scheduleid,usrgrpid,schedule_date,action,userid_old,userid_new,' .
+            ' (scheduleid,usrgrpid,shift_id,shift_name,schedule_date,action,userid_old,userid_new,' .
             '  reserva_old,reserva_new,changed_by,changed_at)' .
             ' VALUES (' .
-                $scheduleid . ',' . $usrgrpid . ',' . zbx_dbstr($date) . ',' .
+                $scheduleid . ',' . $usrgrpid . ',' . $shift_id . ',' . zbx_dbstr($shift_name) . ',' .
+                zbx_dbstr($date) . ',' .
                 zbx_dbstr($action) . ',' .
                 ($userid_old  !== null ? $userid_old  : 'NULL') . ',' .
                 ($userid_new  !== null ? $userid_new  : 'NULL') . ',' .

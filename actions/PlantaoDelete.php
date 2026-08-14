@@ -37,9 +37,12 @@ class PlantaoDelete extends CController {
             ->setArgument('usrgrpid', $usrgrpid);
 
         $sched = DBfetch(DBselect(
-            'SELECT scheduleid, usrgrpid, userid, userid_reserva,' .
-            ' DATE_FORMAT(schedule_date,\'%Y-%m-%d\') AS schedule_date' .
-            ' FROM module_plantonistas_schedule WHERE scheduleid=' . $scheduleid
+            'SELECT s.scheduleid, s.usrgrpid, s.userid, s.userid_reserva, s.shift_id,' .
+            '  COALESCE(cs.name, \'\') AS shift_name,' .
+            '  DATE_FORMAT(s.schedule_date,\'%Y-%m-%d\') AS schedule_date' .
+            ' FROM module_plantonistas_schedule s' .
+            ' LEFT JOIN module_plantonistas_shifts cs ON cs.id = s.shift_id' .
+            ' WHERE s.scheduleid=' . $scheduleid
         ));
 
         if (!$sched) {
@@ -77,10 +80,11 @@ class PlantaoDelete extends CController {
         // ── Log histórico antes de deletar ────────────────────────────────
         DBexecute(
             'INSERT INTO module_plantonistas_history' .
-            ' (scheduleid,usrgrpid,schedule_date,action,userid_old,userid_new,' .
+            ' (scheduleid,usrgrpid,shift_id,shift_name,schedule_date,action,userid_old,userid_new,' .
             '  reserva_old,reserva_new,changed_by,changed_at)' .
             ' VALUES (' .
-                $scheduleid . ',' . (int)$sched['usrgrpid'] . ',' .
+                $scheduleid . ',' . (int)$sched['usrgrpid'] . ',' . (int)$sched['shift_id'] . ',' .
+                zbx_dbstr($sched['shift_name']) . ',' .
                 zbx_dbstr($sched['schedule_date']) . ',' . zbx_dbstr('delete') . ',' .
                 (int)$sched['userid'] . ',NULL,' .
                 ($sched['userid_reserva'] ? (int)$sched['userid_reserva'] : 'NULL') . ',NULL,' .

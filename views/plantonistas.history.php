@@ -91,6 +91,7 @@ ob_start(); ?>
         <tr>
             <th>Data do Plantão</th>
             <th>Grupo</th>
+            <th>Turno</th>
             <th>Ação</th>
             <th>Técnico</th>
             <th>Reserva</th>
@@ -112,6 +113,7 @@ ob_start(); ?>
     <tr>
         <td><?= $date_fmt ?></td>
         <td><?= htmlspecialchars($r['group_name'] ?? '') ?></td>
+        <td><?= !empty($r['shift_name']) ? htmlspecialchars($r['shift_name']) : '<span style="color:#555">—</span>' ?></td>
         <td><span class="hist-badge <?= $al['cls'] ?>"><?= $al['label'] ?></span></td>
         <td class="hist-diff">
             <?php if ($r['action'] === 'update' && $tech_old !== $tech_new): ?>

@@ -149,6 +149,7 @@ class Module extends CModule {
     private function migrateColumns(): void {
         $tables = [
             'module_plantonistas_schedule',
+            'module_plantonistas_history',
             'module_plantonistas_shift_notes',
             'module_plantonistas_user_sessions',
             'module_plantonistas_shift_reports',
@@ -186,7 +187,12 @@ class Module extends CModule {
             if (!isset($cols[$t]['userid_reserva'])) {
                 \DBexecute("ALTER TABLE $t ADD COLUMN userid_reserva BIGINT NULL AFTER userid");
             }
-            if (!isset($idx[$t]['uniq_group_day'])) {
+            if (!isset($cols[$t]['shift_id'])) {
+                \DBexecute("ALTER TABLE $t ADD COLUMN shift_id BIGINT UNSIGNED NOT NULL DEFAULT 0" .
+                    " COMMENT 'FK -> module_plantonistas_shifts.id; 0 = grupo sem turnos configurados (legado)'" .
+                    " AFTER usrgrpid");
+            }
+            if (!isset($idx[$t]['uniq_group_day']) && !isset($idx[$t]['uniq_group_day_shift'])) {
                 if (isset($idx[$t]['schedule_date'])) {
                     \DBexecute("ALTER TABLE $t DROP INDEX `schedule_date`");
                 }
@@ -197,6 +203,36 @@ class Module extends CModule {
             }
             if (isset($idx[$t]['uk_schedule_date'])) {
                 \DBexecute("ALTER TABLE $t DROP INDEX `uk_schedule_date`");
+            }
+
+            // v4.1 — turnos dinâmicos na Escala: shift_id passa a fazer parte
+            // da unicidade (0 = grupo sem turnos, mantém "1 titular por
+            // grupo/dia"; >0 = 1 titular por grupo/dia/turno). ADD antes do
+            // DROP para nunca deixar a tabela um instante sem constraint.
+            if (!isset($idx[$t]['uniq_group_day_shift'])) {
+                \DBexecute("ALTER TABLE $t ADD UNIQUE KEY uniq_group_day_shift (usrgrpid, schedule_date, shift_id)");
+            }
+            if (isset($idx[$t]['uniq_group_day'])) {
+                \DBexecute("ALTER TABLE $t DROP INDEX `uniq_group_day`");
+            }
+            if (!isset($idx[$t]['idx_sched_shift'])) {
+                \DBexecute("ALTER TABLE $t ADD INDEX idx_sched_shift (shift_id)");
+            }
+        }
+
+        // ── module_plantonistas_history — snapshot do turno por alteração ──
+        // (v4.1). shift_id/shift_name gravam o turno no momento da alteração
+        // (nome "congelado" — sobrevive a rename/remoção do turno depois).
+        $t = 'module_plantonistas_history';
+        if (isset($cols[$t])) {
+            if (!isset($cols[$t]['shift_id'])) {
+                \DBexecute("ALTER TABLE $t ADD COLUMN shift_id BIGINT UNSIGNED NOT NULL DEFAULT 0 AFTER usrgrpid");
+            }
+            if (!isset($cols[$t]['shift_name'])) {
+                \DBexecute("ALTER TABLE $t ADD COLUMN shift_name VARCHAR(50) NOT NULL DEFAULT '' AFTER shift_id");
+            }
+            if (!isset($idx[$t]['idx_hist_shift'])) {
+                \DBexecute("ALTER TABLE $t ADD INDEX idx_hist_shift (shift_id)");
             }
         }
 
@@ -245,13 +281,15 @@ class Module extends CModule {
                 'CREATE TABLE IF NOT EXISTS module_plantonistas_schedule (' .
                 '  scheduleid     BIGINT  NOT NULL AUTO_INCREMENT,' .
                 '  usrgrpid       BIGINT  NOT NULL DEFAULT 0,' .
+                '  shift_id       BIGINT UNSIGNED NOT NULL DEFAULT 0,' .
                 '  userid         BIGINT  NOT NULL,' .
                 '  userid_reserva BIGINT  NULL,' .
                 '  schedule_date  DATE    NOT NULL,' .
                 '  created_by     BIGINT  NOT NULL DEFAULT 0,' .
                 '  created_at     INT     NOT NULL DEFAULT 0,' .
                 '  PRIMARY KEY (scheduleid),' .
-                '  UNIQUE KEY uniq_group_day (usrgrpid, schedule_date)' .
+                '  UNIQUE KEY uniq_group_day_shift (usrgrpid, schedule_date, shift_id),' .
+                '  KEY idx_sched_shift (shift_id)' .
                 ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4',
 
             'module_plantonistas_history' =>
@@ -259,6 +297,8 @@ class Module extends CModule {
                 '  historyid     BIGINT      NOT NULL AUTO_INCREMENT,' .
                 '  scheduleid    BIGINT      NOT NULL DEFAULT 0,' .
                 '  usrgrpid      BIGINT      NOT NULL DEFAULT 0,' .
+                '  shift_id      BIGINT UNSIGNED NOT NULL DEFAULT 0,' .
+                '  shift_name    VARCHAR(50) NOT NULL DEFAULT \'\',' .
                 '  schedule_date DATE        NOT NULL,' .
                 '  action        VARCHAR(16) NOT NULL DEFAULT \'save\',' .
                 '  userid_old    BIGINT      NULL,' .
@@ -269,7 +309,8 @@ class Module extends CModule {
                 '  changed_at    INT         NOT NULL DEFAULT 0,' .
                 '  PRIMARY KEY (historyid),' .
                 '  KEY idx_schedule_date (schedule_date),' .
-                '  KEY idx_usrgrpid (usrgrpid)' .
+                '  KEY idx_usrgrpid (usrgrpid),' .
+                '  KEY idx_hist_shift (shift_id)' .
                 ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4',
 
             'module_plantonistas_user_sessions' =>

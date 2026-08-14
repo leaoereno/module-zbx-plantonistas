@@ -5,12 +5,24 @@
 
 $month         = $data['month'];
 $year          = $data['year'];
-$day_map       = $data['day_map'];
+$day_map       = $data['day_map'];   // [data => [shift_id => entrada]]
 $users         = $data['users'];
+$shifts        = $data['shifts'];    // [shift_id => ['id','name','start_time','end_time']]
 $days_in_month = $data['days_in_month'];
 $groups        = $data['groups'];
 $usrgrpid      = $data['usrgrpid'];
 $today_str     = date('Y-m-d');
+$has_shifts    = !empty($shifts);
+
+// Pré-computa os JSONs usados no <script> — mais seguro/legível que montar
+// expressões PHP aninhadas dentro do bloco JS.
+$shift_ids_json   = json_encode(array_map('strval', array_keys($shifts)));
+$shift_labels_map = [];
+foreach ($shifts as $sid => $s) {
+    $shift_labels_map[(string)$sid] =
+        $s['name'] . ' (' . substr($s['start_time'],0,5) . '–' . substr($s['end_time'],0,5) . ')';
+}
+$shift_labels_json = json_encode((object)$shift_labels_map);
 
 $month_names = [
     1=>'Janeiro',2=>'Fevereiro',3=>'Março',4=>'Abril',5=>'Maio',6=>'Junho',
@@ -30,11 +42,12 @@ $eurl  = 'zabbix.php?action=plantonistas.export&month='.$month.'&year='.$year.'&
 
 $fw    = (int)(new DateTime(sprintf('%04d-%02d-01',$year,$month)))->format('N') - 1;
 
-// Conta dias sem cobertura no mês inteiro (passados, hoje e futuros)
+// Conta dias sem cobertura no mês inteiro (passados, hoje e futuros).
+// "Sem cobertura" = nenhuma entrada naquele dia (nem legado, nem turno algum).
 $days_uncovered = 0;
 for ($d=1;$d<=$days_in_month;$d++) {
     $ds = sprintf('%04d-%02d-%02d',$year,$month,$d);
-    if (!isset($day_map[$ds])) $days_uncovered++;
+    if (empty($day_map[$ds])) $days_uncovered++;
 }
 
 ob_start(); ?>
@@ -93,7 +106,12 @@ ob_start(); ?>
 .plt-day-num   { font-size:13px;font-weight:700;color:#c8d8e4;padding-right:18px; }
 .plt-today-badge { background:#e99003;color:#1a1000;border-radius:3px;
     padding:0 5px;font-size:10px;margin-left:5px;font-weight:700;vertical-align:middle; }
-.plt-tech      { font-size:11px;color:#59db8f;font-weight:600;margin-top:4px; }
+.plt-entry     { margin-top:6px;padding-top:6px; }
+.plt-entry:first-child { margin-top:4px;padding-top:0;border-top:none; }
+.plt-entry + .plt-entry { border-top:1px dashed #3f3f3f; }
+.plt-shift-label { font-size:9px;color:#7a9ab4;font-weight:700;
+    text-transform:uppercase;letter-spacing:.4px;margin-bottom:1px; }
+.plt-tech      { font-size:11px;color:#59db8f;font-weight:600;margin-top:2px; }
 .plt-phone     { font-size:10px;color:#8faabc;margin-top:2px; }
 .plt-no-phone  { font-size:10px;color:#555;font-style:italic;margin-top:2px; }
 .plt-res-label { font-size:9px;color:#666;margin-top:5px;
@@ -153,6 +171,13 @@ ob_start(); ?>
 .plt-ac-item mark { background:none;color:#e99003;font-weight:700; }
 output .btn-overlay-close { position:absolute;top:6px;right:6px; }
 #plt-modal { z-index:1001 !important; }
+
+/* Campos de turno (um por turno cadastrado no grupo) */
+.plt-shift-fields { display:flex;flex-wrap:wrap;gap:14px 18px;align-items:flex-end;margin-bottom:4px; }
+.plt-shift-field  { display:flex;flex-direction:column;gap:5px; }
+.plt-shift-field label { font-weight:600;font-size:13px;color:#9ab;white-space:nowrap; }
+.plt-shift-time    { font-weight:400;color:#666;font-size:11px;margin-left:3px; }
+.plt-shift-empty-hint { font-size:12px;color:#8faabc;margin-bottom:10px; }
 
 /* Mensagens sucesso e erro — texto sempre preto, fundo contrastante */
 output.msg-good {
@@ -258,6 +283,10 @@ output.msg-bad * { color: #000000 !important; }
         </p>
         <p style="font-size:12px;color:#888;margin:0 0 16px;">
             💡 Use o botão ↓ CSV para baixar o modelo do mês atual, edite e reimporte.
+            <?php if ($has_shifts): ?>
+                A importação grava sem vínculo de turno (modo legado) mesmo para
+                este grupo — cadastre os turnos manualmente pela tela abaixo.
+            <?php endif; ?>
         </p>
         <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
             <label style="flex:1;min-width:220px;background:#fff;border:1px solid #aaa;border-radius:3px;
@@ -344,60 +373,67 @@ for ($i=0;$i<$fw;$i++) { echo '<td class="empty"></td>'; $cell++; }
 $day=1;
 
 while ($day<=$days_in_month) {
-    $ds    = sprintf('%04d-%02d-%02d',$year,$month,$day);
-    $is_t  = ($ds===$today_str);
-    $is_p  = ($ds<$today_str);
-    $e     = $day_map[$ds] ?? null;
-    // Sem cobertura = sem técnico escalado nesse dia, passado, hoje ou futuro.
-    $no_cov= !$e;
+    $ds      = sprintf('%04d-%02d-%02d',$year,$month,$day);
+    $is_t    = ($ds===$today_str);
+    $is_p    = ($ds<$today_str);
+    $entries = $day_map[$ds] ?? [];   // [shift_id => entrada]
+    $no_cov  = empty($entries);
 
-    $tech_label = '';
-    $res_label  = '';
-    $uid_js=$name_js=$uid_res_js=$name_res_js='null';
-    $tt_data = 'null';
-
-    if ($e) {
+    // Payload por célula: tooltip (todas as entradas do dia) + dados pra
+    // pré-preencher o formulário quando o dia é selecionado no calendário.
+    $tt_items      = [];
+    $entry_payload = [];
+    foreach ($entries as $sid => $e) {
         $tech_label = trim($e['name'].' '.$e['surname']) ?: $e['username'];
-        $res_label  = ($e['userid_reserva']) ? (trim($e['reserva_name'].' '.$e['reserva_surname']) ?: '') : '';
+        $res_label  = $e['userid_reserva'] ? (trim($e['reserva_name'].' '.$e['reserva_surname']) ?: '') : '';
 
-        $uid_js     = (int)$e['userid'];
-        $name_js    = json_encode($tech_label.($e['phone']?' ('.$e['phone'].')':''));
-        $uid_res_js = $e['userid_reserva'] ? (int)$e['userid_reserva'] : 'null';
-        $name_res_js= $e['userid_reserva']
-            ? json_encode($res_label.($e['reserva_phone']?' ('.$e['reserva_phone'].')':''))
-            : 'null';
-
-        // Dados do tooltip
-        $tt_data = json_encode([
-            'tech'       => $tech_label,
-            'phone'      => $e['phone'],
-            'res'        => $e['userid_reserva'] ? $res_label : null,
-            'res_phone'  => $e['reserva_phone'],
-            'date'       => date('d/m/Y', strtotime($ds)),
-        ]);
+        $tt_items[] = [
+            'shift'     => $sid > 0 ? $e['shift_name'] : null,
+            'tech'      => $tech_label,
+            'phone'     => $e['phone'],
+            'res'       => $e['userid_reserva'] ? $res_label : null,
+            'res_phone' => $e['reserva_phone'],
+        ];
+        $entry_payload[$sid] = [
+            'uid'   => (int)$e['userid'],
+            'name'  => $tech_label.($e['phone']?' ('.$e['phone'].')':''),
+            'uidR'  => $e['userid_reserva'] ? (int)$e['userid_reserva'] : null,
+            'nameR' => $e['userid_reserva']
+                ? ($res_label.($e['reserva_phone']?' ('.$e['reserva_phone'].')':''))
+                : null,
+        ];
     }
+    $tt_data = $entries
+        ? json_encode(['date'=>date('d/m/Y', strtotime($ds)), 'items'=>$tt_items])
+        : null;
 
     $cls = ['plt-day'];
-    if ($is_t)   $cls[]='today';
-    if ($is_p)   $cls[]='past';
-    if ($e)      $cls[]='has-tech';
-    if ($no_cov) $cls[]='no-cover';
+    if ($is_t)    $cls[]='today';
+    if ($is_p)    $cls[]='past';
+    if (!$no_cov) $cls[]='has-tech';
+    if ($no_cov)  $cls[]='no-cover';
     $cls_str = ' class="'.implode(' ',$cls).'"';
 
     echo '<td'.$cls_str
         .' data-date="'.$ds.'"'
-        .' data-tt='.$tt_data
+        .' data-tt="'.($tt_data !== null ? htmlspecialchars($tt_data, ENT_QUOTES) : '').'"'
+        .' data-entries="'.htmlspecialchars(json_encode($entry_payload), ENT_QUOTES).'"'
         .' onmouseenter="pltShowTip(event,this)"'
         .' onmouseleave="pltHideTip()"'
-        .' onclick="pltToggleDay(\''.$ds.'\','.$uid_js.','.$name_js.','.$uid_res_js.','.$name_res_js.')">';
+        .' onclick="pltToggleDay(this)">';
     echo '<div class="plt-cell-inner">';
     echo '<span class="plt-sel-check">✓</span>';
-    if ($no_cov && !$e) echo '<span class="plt-no-cov-icon" title="Sem cobertura">⚠</span>';
+    if ($no_cov) echo '<span class="plt-no-cov-icon" title="Sem cobertura">⚠</span>';
     echo '<div class="plt-day-num">'.$day;
     if ($is_t) echo '<span class="plt-today-badge">Hoje</span>';
     echo '</div>';
 
-    if ($e) {
+    foreach ($entries as $sid => $e) {
+        $tech_label = trim($e['name'].' '.$e['surname']) ?: $e['username'];
+        echo '<div class="plt-entry">';
+        if ($sid > 0) {
+            echo '<div class="plt-shift-label">'.htmlspecialchars($e['shift_name'] ?: 'Turno removido').'</div>';
+        }
         echo '<div class="plt-tech">'.htmlspecialchars($tech_label).'</div>';
         if ($e['phone']) {
             echo '<div class="plt-phone">'.htmlspecialchars($e['phone']).'</div>';
@@ -405,6 +441,7 @@ while ($day<=$days_in_month) {
             echo '<div class="plt-no-phone">sem telefone</div>';
         }
         if ($e['userid_reserva']) {
+            $res_label = trim($e['reserva_name'].' '.$e['reserva_surname']) ?: '';
             echo '<div class="plt-res-label">Reserva</div>';
             echo '<div class="plt-res-name">'.htmlspecialchars($res_label).'</div>';
             if ($e['reserva_phone'])
@@ -422,6 +459,7 @@ while ($day<=$days_in_month) {
                .addslashes(htmlspecialchars($tech_label)).' deste dia?\')"'
                .'>remover</a>';
         }
+        echo '</div>'; // /plt-entry
     }
     echo '</div></td>';
     $cell++; $day++;
@@ -450,9 +488,13 @@ echo '</tr>';
         <input type="hidden" name="month"        value="<?=$month?>">
         <input type="hidden" name="year"         value="<?=$year?>">
         <input type="hidden" name="usrgrpid"     value="<?=$usrgrpid?>">
+        <input type="hidden" id="schedule_dates" name="schedule_dates" value="">
+
+        <?php if (!$has_shifts): ?>
+        <!-- Grupo sem turnos cadastrados em "Gerenciar Turnos" — modo legado -->
         <input type="hidden" id="userid"         name="userid"         value="">
         <input type="hidden" id="userid_reserva" name="userid_reserva" value="">
-        <input type="hidden" id="schedule_dates" name="schedule_dates" value="">
+        <input type="hidden" id="shift_assignments" name="shift_assignments" value="">
         <div class="plt-form-row">
             <label>Técnico:</label>
             <div class="plt-select-row">
@@ -474,6 +516,35 @@ echo '</tr>';
             </div>
             <button type="submit" class="btn" style="margin-left:8px;">Salvar Plantão</button>
         </div>
+        <?php else: ?>
+        <!-- Grupo com turnos cadastrados — 1 seletor de técnico por turno ativo -->
+        <input type="hidden" id="userid"         name="userid"         value="">
+        <input type="hidden" id="userid_reserva" name="userid_reserva" value="">
+        <input type="hidden" id="shift_assignments" name="shift_assignments" value="">
+        <div class="plt-shift-empty-hint">
+            Sem reserva por turno. Deixe um turno em branco pra não alterar quem já está escalado nele.
+        </div>
+        <div class="plt-shift-fields">
+            <?php foreach ($shifts as $sid => $s): ?>
+            <div class="plt-shift-field">
+                <label><?= htmlspecialchars($s['name']) ?>
+                    <span class="plt-shift-time"><?= substr($s['start_time'],0,5) ?>–<?= substr($s['end_time'],0,5) ?></span>:
+                </label>
+                <div class="plt-select-row">
+                    <div class="multiselect plt-mswrap">
+                        <input type="text" id="shift-name-<?=$sid?>" placeholder="Nenhum técnico selecionado"
+                               autocomplete="off"
+                               oninput="pltAcBuild('plt-ac-shift-<?=$sid?>','shift-uid-<?=$sid?>','shift-name-<?=$sid?>',this.value)">
+                        <div class="plt-ac-dd" id="plt-ac-shift-<?=$sid?>"></div>
+                    </div>
+                    <button type="button" class="btn" onclick="pltOpenModal('shift-<?=$sid?>')">Selecionar</button>
+                </div>
+                <input type="hidden" id="shift-uid-<?=$sid?>" value="">
+            </div>
+            <?php endforeach; ?>
+            <button type="submit" class="btn">Salvar Plantão</button>
+        </div>
+        <?php endif; ?>
     </form>
 </div>
 
@@ -481,8 +552,11 @@ echo '</tr>';
 </div>
 
 <script>
-var selDays    = new Set();
-var pltCtx     = 'main';
+var selDays        = new Set();
+var pltCtx          = 'main';
+var PLT_HAS_SHIFTS  = <?= $has_shifts ? 'true' : 'false' ?>;
+var PLT_SHIFT_IDS    = <?= $shift_ids_json ?>;
+var PLT_SHIFT_LABELS = <?= $shift_labels_json ?>;
 var PLT_USERS  = <?= json_encode(array_values(array_map(function($u){
     $n = trim($u['name'].' '.$u['surname']);
     $l = $n!=='' ? $n : $u['username'];
@@ -494,16 +568,21 @@ var PLT_USERS  = <?= json_encode(array_values(array_map(function($u){
 var ttEl = document.getElementById('plt-tooltip');
 function pltShowTip(e, td) {
     var raw = td.getAttribute('data-tt');
-    if (!raw || raw==='null') return;
+    if (!raw) return;
     var d; try { d=JSON.parse(raw); } catch(x){ return; }
-    var html = '<div class="tt-name">'+esc(d.tech)+'</div>';
-    html += '<div class="tt-phone">'+(d.phone?'📞 '+esc(d.phone):'<span class="tt-warn">sem telefone</span>')+'</div>';
-    if (d.res) {
-        html += '<div class="tt-sep"></div>';
-        html += '<div class="tt-label">Reserva</div>';
-        html += '<div>'+esc(d.res)+'</div>';
-        if (d.res_phone) html += '<div class="tt-phone">📞 '+esc(d.res_phone)+'</div>';
-    }
+    if (!d || !d.items || !d.items.length) return;
+    var html = '';
+    d.items.forEach(function(it, i){
+        if (i>0) html += '<div class="tt-sep"></div>';
+        if (it.shift) html += '<div class="tt-label">'+esc(it.shift)+'</div>';
+        html += '<div class="tt-name">'+esc(it.tech)+'</div>';
+        html += '<div class="tt-phone">'+(it.phone?'📞 '+esc(it.phone):'<span class="tt-warn">sem telefone</span>')+'</div>';
+        if (it.res) {
+            html += '<div class="tt-label" style="margin-top:5px;">Reserva</div>';
+            html += '<div>'+esc(it.res)+'</div>';
+            if (it.res_phone) html += '<div class="tt-phone">📞 '+esc(it.res_phone)+'</div>';
+        }
+    });
     html += '<div class="tt-by" style="margin-top:5px;color:#555;">'+esc(d.date)+'</div>';
     ttEl.innerHTML = html;
     ttEl.style.display = 'block';
@@ -523,20 +602,40 @@ document.querySelectorAll('.plt-cal td[data-date]').forEach(function(td){
 function esc(s){ var d=document.createElement('div');d.textContent=s||'';return d.innerHTML; }
 
 // ── Seleção de dias ───────────────────────────────────────
-function pltToggleDay(ds,uid,name,uidR,nameR) {
-    if (selDays.has(ds)) { selDays.delete(ds); }
-    else {
+function pltToggleDay(td) {
+    var ds = td.dataset.date;
+    if (selDays.has(ds)) {
+        selDays.delete(ds);
+    } else {
         selDays.add(ds);
-        if (uid!==null) {
-            document.getElementById('userid').value    = uid;
-            document.getElementById('plt-sel-name').value = name||'';
-        }
-        if (uidR!==null) {
-            document.getElementById('userid_reserva').value = uidR;
-            document.getElementById('plt-sel-res').value    = nameR||'';
-        }
+        var raw = td.getAttribute('data-entries');
+        var entries = {};
+        if (raw) { try { entries = JSON.parse(raw) || {}; } catch(x) {} }
+        pltPrefillFromEntries(entries);
     }
     pltRefresh(); pltUpdateBar();
+}
+function pltPrefillFromEntries(entries) {
+    if (!PLT_HAS_SHIFTS) {
+        var e = entries['0'];
+        if (e) {
+            document.getElementById('userid').value = e.uid;
+            document.getElementById('plt-sel-name').value = e.name || '';
+            if (e.uidR) {
+                document.getElementById('userid_reserva').value = e.uidR;
+                document.getElementById('plt-sel-res').value = e.nameR || '';
+            }
+        }
+        return;
+    }
+    PLT_SHIFT_IDS.forEach(function(sid){
+        var e = entries[sid];
+        if (!e) return;
+        var hid = document.getElementById('shift-uid-'+sid);
+        var txt = document.getElementById('shift-name-'+sid);
+        if (hid) hid.value = e.uid;
+        if (txt) txt.value = e.name || '';
+    });
 }
 function pltClearSelection() { selDays.clear(); pltRefresh(); pltUpdateBar(); }
 function pltRefresh() {
@@ -562,15 +661,34 @@ function pltUpdateBar() {
 }
 function pltValidate() {
     if (!selDays.size) { alert('Selecione ao menos um dia no calendário.'); return false; }
-    if (!document.getElementById('userid').value) { alert('Selecione um técnico.'); return false; }
+    if (PLT_HAS_SHIFTS) {
+        var assignments = {};
+        PLT_SHIFT_IDS.forEach(function(sid){
+            var hid = document.getElementById('shift-uid-'+sid);
+            if (hid && hid.value) assignments[sid] = hid.value;
+        });
+        if (!Object.keys(assignments).length) {
+            alert('Selecione ao menos um técnico em algum turno.');
+            return false;
+        }
+        document.getElementById('shift_assignments').value = JSON.stringify(assignments);
+    } else {
+        if (!document.getElementById('userid').value) { alert('Selecione um técnico.'); return false; }
+    }
     return true;
 }
 
 // ── Modal ─────────────────────────────────────────────────
 function pltOpenModal(ctx) {
     pltCtx=ctx;
-    document.getElementById('plt-modal-title').textContent=
-        ctx==='res'?'Selecionar Técnico Reserva':'Selecionar Técnico de Plantão';
+    var title = 'Selecionar Técnico de Plantão';
+    if (ctx==='res') {
+        title = 'Selecionar Técnico Reserva';
+    } else if (ctx.indexOf('shift-')===0) {
+        var sid = ctx.substring(6);
+        title = 'Selecionar Técnico — ' + (PLT_SHIFT_LABELS[sid] || 'Turno');
+    }
+    document.getElementById('plt-modal-title').textContent = title;
     document.getElementById('plt-modal-search').value='';
     pltModalFilter('');
     document.getElementById('plt-modal').style.display='';
@@ -584,6 +702,12 @@ function pltPickUser(uid,name) {
     if (pltCtx==='res') {
         document.getElementById('userid_reserva').value=uid;
         document.getElementById('plt-sel-res').value=name;
+    } else if (pltCtx.indexOf('shift-')===0) {
+        var sid = pltCtx.substring(6);
+        var hid = document.getElementById('shift-uid-'+sid);
+        var txt = document.getElementById('shift-name-'+sid);
+        if (hid) hid.value=uid;
+        if (txt) txt.value=name;
     } else {
         document.getElementById('userid').value=uid;
         document.getElementById('plt-sel-name').value=name;
@@ -623,9 +747,19 @@ function pltAcBuild(ddId,hidId,inpId,q) {
 function pltAcFilter(q)    { pltAcBuild('plt-ac-main','userid',        'plt-sel-name',q); }
 function pltAcFilterRes(q) { pltAcBuild('plt-ac-res', 'userid_reserva','plt-sel-res', q); }
 ['plt-sel-name','plt-sel-res'].forEach(function(id){
+    var el = document.getElementById(id);
+    if (!el) return;
     var dd=id==='plt-sel-name'?'plt-ac-main':'plt-ac-res';
-    document.getElementById(id).addEventListener('blur',function(){
+    el.addEventListener('blur',function(){
         setTimeout(function(){ var d=document.getElementById(dd);d.innerHTML='';d.classList.remove('open'); },150);
+    });
+});
+PLT_SHIFT_IDS.forEach(function(sid){
+    var inp = document.getElementById('shift-name-'+sid);
+    var dd  = document.getElementById('plt-ac-shift-'+sid);
+    if (!inp || !dd) return;
+    inp.addEventListener('blur', function(){
+        setTimeout(function(){ dd.innerHTML=''; dd.classList.remove('open'); }, 150);
     });
 });
 

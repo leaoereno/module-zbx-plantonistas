@@ -80,30 +80,57 @@ class PlantaoList extends CController {
 
         $day_map = [];
         $users   = [];
+        $shifts  = [];
 
         if ($usrgrpid > 0) {
+            // Turnos cadastrados para este grupo em "Gerenciar Turnos". Grupo
+            // sem nenhum turno ativo cai no modo legado (técnico + reserva
+            // únicos, shift_id=0) — ver views/plantonistas.list.php.
+            $res_shifts = DBselect(
+                'SELECT id, name, start_time, end_time' .
+                ' FROM module_plantonistas_shifts' .
+                ' WHERE usrgrpid = ' . $usrgrpid . ' AND active = 1' .
+                ' ORDER BY sort_order ASC, start_time ASC'
+            );
+            while ($row = DBfetch($res_shifts)) {
+                $shifts[(int)$row['id']] = [
+                    'id'         => (int)$row['id'],
+                    'name'       => $row['name'],
+                    'start_time' => $row['start_time'],
+                    'end_time'   => $row['end_time'],
+                ];
+            }
+
+            // day_map[data][shift_id] = entrada. shift_id=0 é o modo legado
+            // (sem turno); grupos com turnos podem ter várias entradas por dia.
             $res_sched = DBselect(
                 'SELECT DATE_FORMAT(s.schedule_date, \'%Y-%m-%d\') AS sched_date,' .
-                '  s.scheduleid, s.userid,' .
+                '  s.scheduleid, s.shift_id, s.userid,' .
                 '  u.name, u.surname, u.username,' .
                 '  COALESCE(pm.phone, \'\') AS phone,' .
                 '  IFNULL(s.userid_reserva, \'\') AS userid_reserva,' .
                 '  COALESCE(ur.name, \'\') AS reserva_name,' .
                 '  COALESCE(ur.surname, \'\') AS reserva_surname,' .
-                '  COALESCE(pr.phone, \'\') AS reserva_phone' .
+                '  COALESCE(pr.phone, \'\') AS reserva_phone,' .
+                '  COALESCE(cs.name, \'\') AS shift_name' .
                 ' FROM module_plantonistas_schedule s' .
                 ' JOIN users u ON u.userid = s.userid' .
                 ' LEFT JOIN module_plantonistas_phones pm ON pm.userid = s.userid' .
                 ' LEFT JOIN users ur ON ur.userid = s.userid_reserva' .
                 ' LEFT JOIN module_plantonistas_phones pr ON pr.userid = s.userid_reserva' .
+                ' LEFT JOIN module_plantonistas_shifts cs ON cs.id = s.shift_id' .
                 ' WHERE s.usrgrpid = ' . $usrgrpid .
                 '   AND s.schedule_date >= ' . zbx_dbstr($date_start) .
-                '   AND s.schedule_date <= ' . zbx_dbstr($date_end)
+                '   AND s.schedule_date <= ' . zbx_dbstr($date_end) .
+                ' ORDER BY s.schedule_date ASC, cs.sort_order ASC, cs.start_time ASC'
             );
             while ($row = DBfetch($res_sched)) {
-                $day_map[$row['sched_date']] = [
+                $shift_id = (int)$row['shift_id'];
+                $day_map[$row['sched_date']][$shift_id] = [
                     'date'            => $row['sched_date'],
                     'scheduleid'      => $row['scheduleid'],
+                    'shift_id'        => $shift_id,
+                    'shift_name'      => $row['shift_name'],
                     'userid'          => $row['userid'],
                     'name'            => $row['name'],
                     'surname'         => $row['surname'],
@@ -146,6 +173,7 @@ class PlantaoList extends CController {
             'year'          => $year,
             'days_in_month' => $days_in_month,
             'day_map'       => $day_map,
+            'shifts'        => $shifts,
             'users'         => $users,
             'groups'        => $groups,
             'usrgrpid'      => $usrgrpid,

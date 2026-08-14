@@ -25,20 +25,24 @@ CREATE TABLE IF NOT EXISTS module_plantonistas_phones (
 CREATE TABLE IF NOT EXISTS module_plantonistas_schedule (
     scheduleid     BIGINT NOT NULL AUTO_INCREMENT,
     usrgrpid       BIGINT NOT NULL DEFAULT 0 COMMENT 'FK → usrgrp.usrgrpid',
-    userid         BIGINT NOT NULL COMMENT 'Plantonista titular',
-    userid_reserva BIGINT NULL COMMENT 'Plantonista reserva (opcional)',
+    shift_id       BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'FK → module_plantonistas_shifts.id; 0 = grupo sem turnos configurados (legado, 1 titular/dia)',
+    userid         BIGINT NOT NULL COMMENT 'Plantonista titular (ou titular do turno, se shift_id>0)',
+    userid_reserva BIGINT NULL COMMENT 'Plantonista reserva (opcional; só usado no modo legado, shift_id=0)',
     schedule_date  DATE   NOT NULL,
     created_by     BIGINT NOT NULL DEFAULT 0,
     created_at     INT    NOT NULL DEFAULT 0,
     PRIMARY KEY (scheduleid),
-    UNIQUE KEY uniq_group_day (usrgrpid, schedule_date)
+    UNIQUE KEY uniq_group_day_shift (usrgrpid, schedule_date, shift_id),
+    KEY idx_sched_shift (shift_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-  COMMENT='Escala de plantão: um titular (+reserva) por grupo por dia';
+  COMMENT='Escala de plantão: 1 titular por grupo/dia (sem turnos) ou 1 titular por grupo/dia/turno (com turnos cadastrados em module_plantonistas_shifts)';
 
 CREATE TABLE IF NOT EXISTS module_plantonistas_history (
     historyid     BIGINT      NOT NULL AUTO_INCREMENT,
     scheduleid    BIGINT      NOT NULL DEFAULT 0,
     usrgrpid      BIGINT      NOT NULL DEFAULT 0,
+    shift_id      BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'FK → module_plantonistas_shifts.id; 0 = legado',
+    shift_name    VARCHAR(50) NOT NULL DEFAULT '' COMMENT 'Nome do turno no momento da alteração (snapshot — sobrevive a rename/remoção do turno)',
     schedule_date DATE        NOT NULL,
     action        VARCHAR(16) NOT NULL DEFAULT 'save',
     userid_old    BIGINT      NULL,
@@ -49,9 +53,10 @@ CREATE TABLE IF NOT EXISTS module_plantonistas_history (
     changed_at    INT         NOT NULL DEFAULT 0,
     PRIMARY KEY (historyid),
     KEY idx_schedule_date (schedule_date),
-    KEY idx_usrgrpid (usrgrpid)
+    KEY idx_usrgrpid (usrgrpid),
+    KEY idx_hist_shift (shift_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-  COMMENT='Log de alterações da escala';
+  COMMENT='Log de alterações da escala (1 linha por grupo/dia/turno alterado)';
 
 -- ── 2. Repasse de plantão NOC (ex-custom_*) ─────────────────
 

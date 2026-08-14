@@ -38,12 +38,31 @@ class PlantaoOverview extends CController {
             $groups[(int)$row['usrgrpid']] = $row['name'];
         }
 
-        $overview = []; // [usrgrpid => entry|null]
+        $shifts_by_group = []; // [usrgrpid => [shift_id => turno]]
+        $overview        = []; // [usrgrpid => [shift_id => entrada]]
 
         if (!empty($group_ids)) {
             $ids = implode(',', $group_ids);
+
+            // Turnos ativos de cada grupo visível — grupo sem turno nenhum
+            // continua no modo legado (1 card com titular/reserva).
+            $res_shifts = DBselect(
+                'SELECT id, usrgrpid, name, start_time, end_time' .
+                ' FROM module_plantonistas_shifts' .
+                ' WHERE usrgrpid IN (' . $ids . ') AND active = 1' .
+                ' ORDER BY usrgrpid ASC, sort_order ASC, start_time ASC'
+            );
+            while ($row = DBfetch($res_shifts)) {
+                $shifts_by_group[(int)$row['usrgrpid']][(int)$row['id']] = [
+                    'id'         => (int)$row['id'],
+                    'name'       => $row['name'],
+                    'start_time' => $row['start_time'],
+                    'end_time'   => $row['end_time'],
+                ];
+            }
+
             $res = DBselect(
-                'SELECT s.usrgrpid,' .
+                'SELECT s.usrgrpid, s.shift_id,' .
                 '  s.userid, u.name, u.surname, u.username,' .
                 '  COALESCE(pm.phone,\'\') AS phone,' .
                 '  IFNULL(s.userid_reserva,0) AS userid_reserva,' .
@@ -60,14 +79,15 @@ class PlantaoOverview extends CController {
                 '   AND s.schedule_date = ' . zbx_dbstr($today)
             );
             while ($row = DBfetch($res)) {
-                $overview[(int)$row['usrgrpid']] = $row;
+                $overview[(int)$row['usrgrpid']][(int)$row['shift_id']] = $row;
             }
         }
 
         $response = new CControllerResponseData([
-            'today'    => $today,
-            'groups'   => $groups,
-            'overview' => $overview,
+            'today'           => $today,
+            'groups'          => $groups,
+            'shifts_by_group' => $shifts_by_group,
+            'overview'        => $overview,
         ]);
         $response->setTitle('Visão Geral — Plantão Hoje');
         $this->setResponse($response);
