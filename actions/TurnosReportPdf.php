@@ -236,7 +236,8 @@ class TurnosReportPdf extends CController {
                 echo '<div class="rp-note-item">';
                 echo '<div class="rp-note-header"><strong>' . htmlspecialchars($n['analyst_name']) . '</strong> ';
                 echo '<span class="rp-note-time">' . htmlspecialchars($n['created_at']) . '</span></div>';
-                echo '<div class="rp-note-content">' . nl2br(htmlspecialchars($n['notes'])) . '</div>';
+                $noteHtml = (($n['notes_format'] ?? 'text') === 'html') ? $n['notes'] : nl2br(htmlspecialchars($n['notes']));
+                echo '<div class="rp-note-content">' . $noteHtml . '</div>';
                 echo '</div>';
             }
             echo '</div></div>';

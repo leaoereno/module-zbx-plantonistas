@@ -56,6 +56,16 @@
             "layout": "layout.javascript",
             "view": null
         },
+        "plantonistas.report.mentions.search": {
+            "class": "TurnosMentionsSearch",
+            "layout": "layout.javascript",
+            "view": null
+        },
+        "plantonistas.report.mentions.read": {
+            "class": "TurnosMentionsRead",
+            "layout": "layout.javascript",
+            "view": null
+        },
         "plantonistas.report.pdf": {
             "class": "TurnosReportPdf",
             "view": "plantonistas.report.view"

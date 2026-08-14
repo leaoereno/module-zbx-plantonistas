@@ -650,7 +650,7 @@ trait TurnosReportBase {
         // string já formatada "dd/mm/aaaa" daria resultado errado (comparação
         // léxica não é o mesmo que ordem cronológica).
         if ($isSuperadmin) {
-            $sql  = "SELECT id, analyst_userid, analyst_name, notes,
+            $sql  = "SELECT id, analyst_userid, analyst_name, notes, notes_format,
                         DATE_FORMAT(created_at, '%d/%m/%Y %H:%i') AS created_at,
                         created_at AS created_sort
                      FROM module_plantonistas_shift_notes
@@ -663,7 +663,7 @@ trait TurnosReportBase {
         } else {
             $sameGroup = $this->sameGroupExists($userid, 'csn.analyst_userid');
             $sql = "SELECT DISTINCT csn.id, csn.analyst_userid, csn.analyst_name,
-                        csn.notes,
+                        csn.notes, csn.notes_format,
                         DATE_FORMAT(csn.created_at, '%d/%m/%Y %H:%i') AS created_at,
                         csn.created_at AS created_sort
                     FROM module_plantonistas_shift_notes csn
@@ -963,6 +963,321 @@ trait TurnosReportBase {
             return ['success' => true, 'message' => 'Turno atribuído.'];
         } catch (\Exception $e) {
             return ['success' => false, 'message' => 'Erro ao salvar vínculo.'];
+        }
+    }
+
+    // ── Editor rico / menções (v4.2) ──────────────────────────
+
+    /**
+     * Hostgroups visíveis ao usuário — mesma regra de host_filter em
+     * resolveUserContext() (rights.permission >= 2). Super Admin vê todos.
+     */
+    private function searchHostgroups(\mysqli $db, array $ctx, string $q): array {
+        $like = '%' . $q . '%';
+        try {
+            if (!empty($ctx['is_superadmin'])) {
+                $stmt = $db->prepare(
+                    "SELECT groupid AS id, name AS label
+                     FROM hstgrp
+                     WHERE name LIKE ?
+                     ORDER BY name LIMIT 20"
+                );
+                $stmt->bind_param('s', $like);
+            } else {
+                $userid = (int)$ctx['userid'];
+                $stmt = $db->prepare(
+                    "SELECT DISTINCT hg.groupid AS id, hg.name AS label
+                     FROM hstgrp hg
+                     INNER JOIN rights r ON r.id = hg.groupid
+                     INNER JOIN users_groups ug ON ug.usrgrpid = r.groupid
+                     WHERE ug.userid = ? AND r.permission >= 2 AND hg.name LIKE ?
+                     ORDER BY hg.name LIMIT 20"
+                );
+                $stmt->bind_param('is', $userid, $like);
+            }
+            $stmt->execute();
+            $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            foreach ($rows as &$r) {
+                $r['url'] = 'zabbix.php?action=problem.view&filter_set=1&filter_show=3&filter_groupids[]=' . (int)$r['id'];
+            }
+            return $rows;
+        } catch (\Throwable $e) {
+            error_log('[plantonistas] searchHostgroups() falhou: ' . $e->getMessage());
+            return [];
+        }
+    }
+
+    /**
+     * Hosts visíveis ao usuário — mesma regra de host_filter. Exclui
+     * templates (status=3); inclui monitorados (0) e não monitorados (1).
+     */
+    private function searchHosts(\mysqli $db, array $ctx, string $q): array {
+        $like = '%' . $q . '%';
+        try {
+            if (!empty($ctx['is_superadmin'])) {
+                $stmt = $db->prepare(
+                    "SELECT hostid AS id, name AS label
+                     FROM hosts
+                     WHERE status IN (0,1) AND (host LIKE ? OR name LIKE ?)
+                     ORDER BY name LIMIT 20"
+                );
+                $stmt->bind_param('ss', $like, $like);
+            } else {
+                $userid = (int)$ctx['userid'];
+                $stmt = $db->prepare(
+                    "SELECT DISTINCT h.hostid AS id, h.name AS label
+                     FROM hosts h
+                     INNER JOIN hosts_groups hg ON hg.hostid = h.hostid
+                     INNER JOIN rights r ON r.id = hg.groupid
+                     INNER JOIN users_groups ug ON ug.usrgrpid = r.groupid
+                     WHERE ug.userid = ? AND r.permission >= 2
+                       AND h.status IN (0,1) AND (h.host LIKE ? OR h.name LIKE ?)
+                     ORDER BY h.name LIMIT 20"
+                );
+                $stmt->bind_param('iss', $userid, $like, $like);
+            }
+            $stmt->execute();
+            $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            foreach ($rows as &$r) {
+                $r['url'] = 'zabbix.php?action=problem.view&filter_set=1&filter_show=3&filter_name=' . urlencode($r['label']);
+            }
+            return $rows;
+        } catch (\Throwable $e) {
+            error_log('[plantonistas] searchHosts() falhou: ' . $e->getMessage());
+            return [];
+        }
+    }
+
+    /**
+     * Usuários @mencionáveis: mesma regra de visibilidade já usada em
+     * Notas/Presença (grupo compartilhado) + só usuários ativos (mesmo
+     * critério de Telefones/Escala/Gerenciar Turnos).
+     */
+    private function searchMentionableUsers(\mysqli $db, array $ctx, string $q): array {
+        $like = '%' . $q . '%';
+        $activeClause = "EXISTS (
+            SELECT 1 FROM users_groups ugx
+            INNER JOIN usrgrp gx ON gx.usrgrpid = ugx.usrgrpid
+            WHERE ugx.userid = u.userid AND gx.users_status = 0
+        )";
+        try {
+            if (!empty($ctx['is_superadmin'])) {
+                $stmt = $db->prepare(
+                    "SELECT u.userid AS id,
+                            CONCAT(COALESCE(u.name,''), ' ', COALESCE(u.surname,'')) AS label
+                     FROM users u
+                     WHERE u.username != 'guest' AND $activeClause
+                       AND (u.username LIKE ? OR u.name LIKE ? OR u.surname LIKE ?)
+                     ORDER BY label LIMIT 20"
+                );
+                $stmt->bind_param('sss', $like, $like, $like);
+            } else {
+                $sameGroup = $this->sameGroupExists((int)$ctx['userid'], 'u.userid');
+                $stmt = $db->prepare(
+                    "SELECT DISTINCT u.userid AS id,
+                            CONCAT(COALESCE(u.name,''), ' ', COALESCE(u.surname,'')) AS label
+                     FROM users u
+                     WHERE $sameGroup AND $activeClause
+                       AND (u.username LIKE ? OR u.name LIKE ? OR u.surname LIKE ?)
+                     ORDER BY label LIMIT 20"
+                );
+                $stmt->bind_param('sss', $like, $like, $like);
+            }
+            $stmt->execute();
+            return $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+        } catch (\Throwable $e) {
+            error_log('[plantonistas] searchMentionableUsers() falhou: ' . $e->getMessage());
+            return [];
+        }
+    }
+
+    /**
+     * Sanitiza o HTML do editor rico: allowlist de tags/atributos, remove
+     * atributos on-event, links javascript:/data: e qualquer coisa fora da
+     * lista — o servidor nunca confia no HTML vindo do cliente, mesmo
+     * sendo produzido pelo nosso próprio editor (dá pra postar direto no
+     * endpoint sem passar pela UI). Também extrai os userids marcados via
+     * <span data-mention-userid> (inseridos pelo autocomplete [user]).
+     *
+     * @return array{html:string,mentioned_userids:int[]}
+     */
+    private function sanitizeNoteHtml(string $html): array {
+        if (trim($html) === '' || !class_exists('DOMDocument')) {
+            return ['html' => strip_tags($html), 'mentioned_userids' => []];
+        }
+
+        $allowedTags = ['b', 'strong', 'i', 'em', 'u', 'ul', 'ol', 'li', 'br', 'p', 'div', 'a', 'span'];
+        $allowedAttrs = [
+            'a'    => ['href', 'target', 'rel', 'class', 'title'],
+            'span' => ['class', 'data-mention-userid', 'data-mention-name'],
+        ];
+
+        $doc = new \DOMDocument('1.0', 'UTF-8');
+        libxml_use_internal_errors(true);
+        $doc->loadHTML(
+            '<?xml encoding="utf-8" ?><div>' . $html . '</div>',
+            LIBXML_HTML_NOIMPLIED | LIBXML_HTML_NODEFDTD
+        );
+        libxml_clear_errors();
+
+        $root = $doc->getElementsByTagName('div')->item(0);
+        if (!$root) {
+            return ['html' => '', 'mentioned_userids' => []];
+        }
+
+        $mentioned = [];
+        $this->sanitizeNode($root, $allowedTags, $allowedAttrs, $mentioned);
+
+        $out = '';
+        foreach (iterator_to_array($root->childNodes) as $child) {
+            $out .= $doc->saveHTML($child);
+        }
+        return ['html' => trim($out), 'mentioned_userids' => array_values(array_unique($mentioned))];
+    }
+
+    /**
+     * @param string[] $allowedTags
+     * @param array<string,string[]> $allowedAttrs
+     * @param int[] $mentioned Acumulador por referência dos userids
+     *              encontrados em <span data-mention-userid>.
+     */
+    private function sanitizeNode(\DOMNode $node, array $allowedTags, array $allowedAttrs, array &$mentioned): void {
+        foreach (iterator_to_array($node->childNodes) as $child) {
+            if ($child->nodeType === XML_TEXT_NODE) {
+                continue;
+            }
+            if ($child->nodeType !== XML_ELEMENT_NODE) {
+                $node->removeChild($child);
+                continue;
+            }
+
+            $tag = strtolower($child->nodeName);
+
+            // Sanitiza o subtree ANTES de decidir promover/manter a tag atual.
+            // Se sanitizasse só depois de promover, os filhos de uma tag
+            // descartada (ex.: <iframe><span onclick=...>) escapariam da
+            // limpeza — o foreach deste nível já tem um snapshot fixo e não
+            // revisita nó promovido no meio da iteração.
+            $this->sanitizeNode($child, $allowedTags, $allowedAttrs, $mentioned);
+
+            if (!in_array($tag, $allowedTags, true)) {
+                // Tag não permitida: preserva o conteúdo (já sanitizado), descarta só a tag.
+                while ($child->firstChild) {
+                    $node->insertBefore($child->firstChild, $child);
+                }
+                $node->removeChild($child);
+                continue;
+            }
+
+            $allowed = $allowedAttrs[$tag] ?? [];
+            foreach (iterator_to_array($child->attributes ?? []) as $attr) {
+                $aname = strtolower($attr->nodeName);
+                if (!in_array($aname, $allowed, true)) {
+                    $child->removeAttribute($attr->nodeName);
+                    continue;
+                }
+                if ($aname === 'href') {
+                    $href = trim($attr->nodeValue);
+                    // Só http(s) ou link relativo do próprio Zabbix — nunca
+                    // javascript:/data:/vbscript:.
+                    if (!preg_match('#^(zabbix\.php\?|https?://)#i', $href)) {
+                        $child->removeAttribute('href');
+                    }
+                }
+            }
+            if ($tag === 'a' && $child->getAttribute('href') !== '') {
+                $child->setAttribute('target', '_blank');
+                $child->setAttribute('rel', 'noopener noreferrer');
+            }
+            if ($tag === 'span' && $child->hasAttribute('data-mention-userid')) {
+                $uid = (int)$child->getAttribute('data-mention-userid');
+                if ($uid > 0) {
+                    $mentioned[] = $uid;
+                }
+            }
+        }
+    }
+
+    /**
+     * Grava 1 linha em module_plantonistas_mentions por userid mencionado
+     * válido (ativo + visível ao autor: mesmo grupo, ou autor é Super
+     * Admin). Menção inválida é descartada em silêncio — não deve
+     * derrubar o save da nota por causa de 1 menção ruim.
+     */
+    private function recordMentions(\mysqli $db, int $noteId, array $mentionedUserids, int $authorUserid, array $ctx): void {
+        foreach ($mentionedUserids as $uid) {
+            if ($uid === $authorUserid) {
+                continue; // mencionar a si mesmo não gera notificação
+            }
+            try {
+                $visible = true;
+                if (empty($ctx['is_superadmin'])) {
+                    $stmt = $db->prepare(
+                        'SELECT 1 FROM users_groups ug_r' .
+                        ' JOIN users_groups ug_a ON ug_a.usrgrpid = ug_r.usrgrpid' .
+                        ' WHERE ug_r.userid = ? AND ug_a.userid = ? LIMIT 1'
+                    );
+                    $stmt->bind_param('ii', $authorUserid, $uid);
+                    $stmt->execute();
+                    $visible = (bool)$stmt->get_result()->fetch_row();
+                }
+                if (!$visible) {
+                    continue;
+                }
+                $stmt = $db->prepare(
+                    'INSERT INTO module_plantonistas_mentions (note_id, mentioned_userid, created_by)
+                     VALUES (?, ?, ?)'
+                );
+                $stmt->bind_param('iii', $noteId, $uid, $authorUserid);
+                $stmt->execute();
+            } catch (\Throwable $e) {
+                error_log('[plantonistas] recordMentions() falhou (userid=' . $uid . '): ' . $e->getMessage());
+            }
+        }
+    }
+
+    /**
+     * Menções [user] pendentes (não lidas) para o usuário logado — usado
+     * pelo banner de notificação ao entrar no Repasse Plantão.
+     */
+    private function queryPendingMentions(\mysqli $db, int $userid): array {
+        try {
+            $stmt = $db->prepare(
+                "SELECT m.id, m.note_id, n.shift_date, n.shift_id, n.shift_name, n.analyst_name,
+                        DATE_FORMAT(m.created_at, '%d/%m/%Y %H:%i') AS created_at
+                 FROM module_plantonistas_mentions m
+                 INNER JOIN module_plantonistas_shift_notes n ON n.id = m.note_id
+                 WHERE m.mentioned_userid = ? AND m.is_read = 0
+                 ORDER BY m.created_at DESC
+                 LIMIT 10"
+            );
+            $stmt->bind_param('i', $userid);
+            $stmt->execute();
+            return $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+        } catch (\Throwable $e) {
+            error_log('[plantonistas] queryPendingMentions() falhou: ' . $e->getMessage());
+            return [];
+        }
+    }
+
+    /**
+     * Marca 1 menção como lida — sempre escopada ao próprio usuário
+     * (WHERE mentioned_userid = $userid), então não dá pra marcar como
+     * lida a notificação de outra pessoa trocando o id no request.
+     */
+    private function markMentionRead(\mysqli $db, int $mentionId, int $userid): bool {
+        try {
+            $stmt = $db->prepare(
+                'UPDATE module_plantonistas_mentions
+                 SET is_read = 1, read_at = NOW()
+                 WHERE id = ? AND mentioned_userid = ?'
+            );
+            $stmt->bind_param('ii', $mentionId, $userid);
+            $stmt->execute();
+            return true;
+        } catch (\Throwable $e) {
+            error_log('[plantonistas] markMentionRead() falhou: ' . $e->getMessage());
+            return false;
         }
     }
 }

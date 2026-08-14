@@ -73,6 +73,7 @@ class TurnosReportView extends CController {
                 'top_triggers' => [], 'totals' => ['total'=>0,'critical'=>0,'average'=>0,'low'=>0],
                 'presence' => [], 'notes' => [], 'mtta_timeline' => [],
                 'sev_dist' => [], 'calendar' => [], 'shift_analysts' => [], 'limit' => $limitStr,
+                'pending_mentions' => [],
             ];
         } else {
             $ctx          = $this->resolveUserContext($db, $current_userid);
@@ -105,6 +106,10 @@ class TurnosReportView extends CController {
                 'calendar'       => $this->queryCalendarHeatmap($db, $hostFilter),
                 'shift_analysts' => $shiftAnalysts,
                 'limit'          => $limitStr,
+                // Menções [user] pendentes pro banner de notificação — busca
+                // antes de fechar a conexão, some da tela quando o usuário
+                // marca como lida (ver plantonistas.report.mentions.read).
+                'pending_mentions' => $this->queryPendingMentions($db, $current_userid),
             ];
             $db->close();
         }

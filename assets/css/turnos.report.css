@@ -1072,3 +1072,188 @@ body[class*="dark"] .rp-legacy-chip {
     background: rgba(255, 255, 255, 0.08);
     color: var(--rp-text);
 }
+
+/* ── Editor rico do Diário de Bordo (v4.2) ────────────────
+   contenteditable + toolbar, sem dependência nova (F5 bloqueia .js
+   estático) — ver decisão em CLAUDE.md. */
+.rp-editor-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin-bottom: 6px;
+}
+
+.rp-editor-btn {
+    width: 26px;
+    height: 26px;
+    border: 1px solid var(--rp-border);
+    background: var(--rp-white);
+    color: var(--rp-text);
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 11px;
+}
+
+.rp-editor-btn:hover {
+    background: var(--rp-blue-light);
+    color: var(--rp-blue);
+}
+
+.rp-editor-wrap {
+    position: relative;
+}
+
+.rp-editor {
+    width: 100%;
+    min-height: 80px;
+    padding: 10px 14px;
+    border: 1px solid var(--rp-border);
+    border-radius: 6px;
+    font-family: inherit;
+    font-size: 13px;
+    line-height: 1.6;
+    outline: none;
+    box-sizing: border-box;
+    transition: border 0.2s;
+    color: var(--rp-text);
+    background: var(--rp-white);
+}
+
+.rp-editor:focus {
+    border-color: var(--rp-blue);
+    box-shadow: 0 0 0 3px rgba(2, 117, 184, 0.1);
+}
+
+.rp-editor:empty::before {
+    content: attr(data-placeholder);
+    color: var(--rp-text-muted);
+}
+
+/* ── Chips de menção (dentro da nota, já inseridos) ───────── */
+.rp-mention-chip {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 10px;
+    font-size: 12px;
+    font-weight: 600;
+    text-decoration: none;
+    white-space: nowrap;
+}
+
+a.rp-mention-link {
+    background: var(--rp-blue-light);
+    color: var(--rp-blue);
+}
+
+a.rp-mention-link:hover {
+    background: var(--rp-blue);
+    color: #fff;
+}
+
+.rp-mention-user {
+    background: #fff3e0;
+    color: #e65100;
+}
+
+/* ── Dropdown de busca (autocomplete [hostgroup]/[host]/[user]) ── */
+.rp-mention-dropdown {
+    position: absolute;
+    z-index: 50;
+    min-width: 180px;
+    max-width: 320px;
+    max-height: 220px;
+    overflow-y: auto;
+    background: var(--rp-white);
+    border: 1px solid var(--rp-border);
+    border-radius: 6px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+}
+
+.rp-mention-opt {
+    padding: 7px 12px;
+    font-size: 12px;
+    cursor: pointer;
+    color: var(--rp-text);
+}
+
+.rp-mention-opt:hover {
+    background: var(--rp-blue-light);
+    color: var(--rp-blue);
+}
+
+.rp-mention-empty {
+    padding: 10px 12px;
+    font-size: 12px;
+    color: var(--rp-text-muted);
+    font-style: italic;
+}
+
+/* ── Banner de menção [user] pendente ─────────────────────── */
+.rp-mention-banner {
+    margin-bottom: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.rp-mention-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: #fff3e0;
+    border: 1px solid #ffcc80;
+    color: #7a4a00;
+    border-radius: 6px;
+    padding: 8px 14px;
+    font-size: 12px;
+}
+
+.rp-mention-item i {
+    color: #e65100;
+}
+
+.rp-mention-item span {
+    flex: 1;
+}
+
+.rp-mention-view-link {
+    background: none;
+    color: #e65100;
+    font-weight: 700;
+    text-decoration: underline;
+    white-space: nowrap;
+}
+
+.rp-mention-dismiss {
+    background: none;
+    border: none;
+    color: #7a4a00;
+    font-size: 16px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0 4px;
+}
+
+.rp-mention-dismiss:hover {
+    color: #c62828;
+}
+
+[data-theme="dark-theme"] .rp-editor,
+.theme-dark-blue .rp-editor,
+body[class*="dark"] .rp-editor,
+[data-theme="dark-theme"] .rp-editor-btn,
+.theme-dark-blue .rp-editor-btn,
+body[class*="dark"] .rp-editor-btn,
+[data-theme="dark-theme"] .rp-mention-dropdown,
+.theme-dark-blue .rp-mention-dropdown,
+body[class*="dark"] .rp-mention-dropdown {
+    background: rgba(0, 0, 0, 0.15) !important;
+    border-color: var(--rp-border) !important;
+    color: var(--rp-text) !important;
+}
+
+[data-theme="dark-theme"] .rp-mention-opt:hover,
+.theme-dark-blue .rp-mention-opt:hover,
+body[class*="dark"] .rp-mention-opt:hover {
+    background: rgba(2, 160, 255, 0.12) !important;
+}

@@ -102,6 +102,11 @@ $calendar_json = json_encode($data['calendar']);
             </select>
         </form>
         <div class="rp-nh-time"><i class="far fa-clock"></i> Gerado às <?= date('H:i') ?></div>
+        <?php if (!empty($data['pending_mentions'])): ?>
+        <a href="javascript:void(0)" onclick="document.getElementById('mentionBanner').scrollIntoView({behavior:'smooth'})" class="rp-nh-btn" style="background:#e65100;" title="Você tem menções pendentes">
+            <i class="fas fa-at"></i> <?= count($data['pending_mentions']) ?>
+        </a>
+        <?php endif; ?>
         <?php if (!empty($data['can_manage_shifts'])): ?>
         <a href="zabbix.php?action=plantonistas.shifts.view" class="rp-nh-btn" title="Cadastrar turnos e vincular analistas">
             <i class="fas fa-user-clock"></i> Gerenciar Turnos
@@ -126,6 +131,25 @@ $pview_base = "zabbix.php?action=problem.view&filter_set=1&filter_show=3&from=".
 
 <?php if ($data['db_error']): ?>
 <div class="rp-alert rp-alert-danger"><i class="fas fa-exclamation-triangle"></i> <?= $data['db_error'] ?></div>
+<?php endif; ?>
+
+<?php if (!empty($data['pending_mentions'])): ?>
+<!-- MENÇÕES PENDENTES -->
+<div class="rp-mention-banner" id="mentionBanner">
+    <?php foreach ($data['pending_mentions'] as $pm):
+        $pm_shift_param = !empty($pm['shift_id']) ? $pm['shift_id'] : ($pm['shift_name'] ?: '24h');
+    ?>
+    <div class="rp-mention-item">
+        <i class="fas fa-at"></i>
+        <span><strong><?= htmlspecialchars($pm['analyst_name']) ?></strong> mencionou você numa nota de
+            <?= htmlspecialchars($pm['created_at']) ?> — turno <?= htmlspecialchars($pm['shift_name']) ?>
+            (<?= date('d/m/Y', strtotime($pm['shift_date'])) ?>).</span>
+        <a href="zabbix.php?action=plantonistas.report.view&date=<?= htmlspecialchars($pm['shift_date']) ?>&shift=<?= htmlspecialchars((string)$pm_shift_param) ?>#table-notes"
+           class="rp-mention-view-link" data-mention-id="<?= (int)$pm['id'] ?>">Ver nota</a>
+        <button type="button" class="rp-mention-dismiss" data-mention-id="<?= (int)$pm['id'] ?>" title="Marcar como lida">&times;</button>
+    </div>
+    <?php endforeach; ?>
+</div>
 <?php endif; ?>
 
 <!-- KPI CARDS -->
@@ -352,9 +376,10 @@ $pview_base = "zabbix.php?action=problem.view&filter_set=1&filter_show=3&from=".
 <?php endif; ?>
 
 <!-- DIÁRIO DE BORDO -->
-<div class="rp-card">
+<div class="rp-card" id="table-notes">
     <div class="rp-card-head"><i class="fas fa-book-open"></i> Diário de Bordo</div>
-    <div class="rp-card-desc">Registre aqui ocorrências do turno, pendências para o próximo plantão e ações tomadas — serve de repasse para quem assumir o plantão seguinte.</div>
+    <div class="rp-card-desc">Registre aqui ocorrências do turno, pendências para o próximo plantão e ações tomadas — serve de repasse para quem assumir o plantão seguinte.
+        Digite <code>[hostgroup]</code>, <code>[host]</code> ou <code>[user]</code> pra buscar e mencionar.</div>
     <div class="rp-card-body">
         <form id="turnosNoteForm" class="rp-note-form">
             <div class="rp-note-meta">
@@ -362,7 +387,16 @@ $pview_base = "zabbix.php?action=problem.view&filter_set=1&filter_show=3&from=".
                 <span><strong>Turno:</strong> <?= htmlspecialchars($data['shift_label'] ?? rp_shiftLabel($shift)) ?></span>
                 <span><strong>Data:</strong> <?= $date ?></span>
             </div>
-            <textarea id="noteText" class="rp-textarea" rows="4" placeholder="Descreva as ocorrências do turno, pendências, ações tomadas..."></textarea>
+            <div class="rp-editor-toolbar">
+                <button type="button" class="rp-editor-btn" data-cmd="bold" title="Negrito"><i class="fas fa-bold"></i></button>
+                <button type="button" class="rp-editor-btn" data-cmd="italic" title="Itálico"><i class="fas fa-italic"></i></button>
+                <button type="button" class="rp-editor-btn" data-cmd="insertUnorderedList" title="Lista"><i class="fas fa-list-ul"></i></button>
+                <button type="button" class="rp-editor-btn" data-cmd="createLink" title="Link"><i class="fas fa-link"></i></button>
+            </div>
+            <div class="rp-editor-wrap">
+                <div id="noteText" class="rp-editor" contenteditable="true" data-placeholder="Descreva as ocorrências do turno, pendências, ações tomadas..."></div>
+                <div id="mentionDropdown" class="rp-mention-dropdown" style="display:none;"></div>
+            </div>
             <div class="rp-note-actions">
                 <button type="submit" class="rp-btn rp-btn-primary"><i class="fas fa-save"></i> Salvar Nota</button>
                 <span id="noteSaveStatus" class="rp-note-status"></span>
@@ -375,9 +409,9 @@ $pview_base = "zabbix.php?action=problem.view&filter_set=1&filter_show=3&from=".
             <div class="rp-note-item">
                 <div class="rp-note-header">
                     <strong><?= htmlspecialchars($n['analyst_name']) ?></strong>
-                    <span class="rp-note-time"><?= $n['created_at'] ?></span>
+                    <span class="rp-note-time"><?= htmlspecialchars($n['created_at']) ?></span>
                 </div>
-                <div class="rp-note-content"><?= nl2br(htmlspecialchars($n['notes'])) ?></div>
+                <div class="rp-note-content"><?= (($n['notes_format'] ?? 'text') === 'html') ? $n['notes'] : nl2br(htmlspecialchars($n['notes'])) ?></div>
             </div>
             <?php endforeach; ?>
         </div>
@@ -522,21 +556,169 @@ function toggleSevChart() {
     container.innerHTML = html;
 })();
 
+// ── Editor rico + menções [hostgroup]/[host]/[user] ──
+const editor   = document.getElementById('noteText');
+const dropdown = document.getElementById('mentionDropdown');
+let mentionState = null; // {type, range} da menção em edição no momento
+
+function escHtml(s) {
+    const d = document.createElement('div');
+    d.textContent = s == null ? '' : s;
+    return d.innerHTML;
+}
+
+function closeMentionDropdown() {
+    if (!dropdown) return;
+    dropdown.style.display = 'none';
+    dropdown.innerHTML = '';
+    mentionState = null;
+}
+
+function positionDropdown() {
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0 || !editor) return;
+    const rect = sel.getRangeAt(0).getBoundingClientRect();
+    const wrapRect = editor.parentElement.getBoundingClientRect();
+    dropdown.style.left = Math.max(0, rect.left - wrapRect.left) + 'px';
+    dropdown.style.top = (rect.bottom - wrapRect.top + 4) + 'px';
+}
+
+let mentionDebounce = null;
+function searchMentions(type, q) {
+    clearTimeout(mentionDebounce);
+    mentionDebounce = setTimeout(function () {
+        fetch('zabbix.php?action=plantonistas.report.mentions.search&type=' + encodeURIComponent(type) + '&q=' + encodeURIComponent(q))
+            .then(function (r) { return r.json(); })
+            .then(function (j) { renderMentionResults(type, j.results || []); })
+            .catch(function () { closeMentionDropdown(); });
+    }, 150);
+}
+
+function renderMentionResults(type, results) {
+    if (!mentionState) return;
+    if (!results.length) {
+        dropdown.innerHTML = '<div class="rp-mention-empty">Nenhum resultado.</div>';
+        dropdown.style.display = 'block';
+        positionDropdown();
+        return;
+    }
+    dropdown.innerHTML = results.map(function (r, i) {
+        return '<div class="rp-mention-opt" data-idx="' + i + '">' + escHtml(r.label) + '</div>';
+    }).join('');
+    dropdown.style.display = 'block';
+    positionDropdown();
+    dropdown.querySelectorAll('.rp-mention-opt').forEach(function (el, i) {
+        el.addEventListener('mousedown', function (e) {
+            e.preventDefault(); // não perder a seleção do editor antes de inserir
+            insertMention(type, results[i]);
+        });
+    });
+}
+
+function insertMention(type, item) {
+    if (!mentionState) return;
+    const range = mentionState.range;
+    range.deleteContents();
+
+    let node;
+    if (type === 'user') {
+        node = document.createElement('span');
+        node.className = 'rp-mention-chip rp-mention-user';
+        node.setAttribute('data-mention-userid', item.id);
+        node.setAttribute('data-mention-name', item.label);
+        node.textContent = '@' + item.label;
+    } else {
+        node = document.createElement('a');
+        node.className = 'rp-mention-chip rp-mention-link';
+        node.setAttribute('href', item.url);
+        node.textContent = item.label;
+    }
+    node.setAttribute('contenteditable', 'false');
+    range.insertNode(node);
+
+    const space = document.createTextNode(' ');
+    node.after(space);
+    const newRange = document.createRange();
+    newRange.setStartAfter(space);
+    newRange.collapse(true);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(newRange);
+
+    closeMentionDropdown();
+    editor.focus();
+}
+
+function getCaretTextBeforeCursor() {
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0) return '';
+    const range = sel.getRangeAt(0).cloneRange();
+    range.collapse(true);
+    range.setStart(editor, 0);
+    return range.toString();
+}
+
+if (editor) {
+    editor.addEventListener('input', function () {
+        const sel = window.getSelection();
+        if (!sel || sel.rangeCount === 0 || !sel.isCollapsed) { closeMentionDropdown(); return; }
+
+        const textBefore = getCaretTextBeforeCursor();
+        const m = textBefore.match(/\[(hostgroup|host|user)\]([^[\]\s]{0,40})$/i);
+        if (!m) { closeMentionDropdown(); return; }
+
+        const type = m[1].toLowerCase();
+        const query = m[2];
+        const matchLen = m[0].length;
+        const range = sel.getRangeAt(0).cloneRange();
+        if (range.endOffset - matchLen < 0) { closeMentionDropdown(); return; }
+        range.setStart(range.endContainer, range.endOffset - matchLen);
+
+        mentionState = { type: type, range: range };
+        searchMentions(type, query);
+    });
+
+    editor.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape') closeMentionDropdown();
+    });
+
+    document.addEventListener('click', function (e) {
+        if (dropdown && dropdown.style.display !== 'none' && !dropdown.contains(e.target) && e.target !== editor) {
+            closeMentionDropdown();
+        }
+    });
+
+    document.querySelectorAll('.rp-editor-btn').forEach(function (btn) {
+        btn.addEventListener('mousedown', function (e) { e.preventDefault(); }); // mantém a seleção do editor
+        btn.addEventListener('click', function () {
+            const cmd = btn.dataset.cmd;
+            if (cmd === 'createLink') {
+                const url = prompt('URL do link:');
+                if (url) document.execCommand('createLink', false, url);
+            } else {
+                document.execCommand(cmd, false, null);
+            }
+            editor.focus();
+        });
+    });
+}
+
 // ── Note Form ──
 const noteForm = document.getElementById('turnosNoteForm');
-if (noteForm) {
+if (noteForm && editor) {
     noteForm.addEventListener('submit', function(e) {
         e.preventDefault();
-        const ta = document.getElementById('noteText'), st = document.getElementById('noteSaveStatus');
-        const note = ta.value.trim();
-        if (!note) { st.textContent='Escreva algo antes de salvar.'; st.style.color='#c62828'; return; }
+        const st = document.getElementById('noteSaveStatus');
+        if (!editor.textContent.trim()) { st.textContent='Escreva algo antes de salvar.'; st.style.color='#c62828'; return; }
+        closeMentionDropdown();
+        const noteHtml = editor.innerHTML;
         st.textContent='Salvando...'; st.style.color='#666';
         fetch('zabbix.php?action=plantonistas.report.notes.save', {
             method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},
-            body:new URLSearchParams({note:note,shift:NOTE_SHIFT,shift_date:NOTE_DATE})
+            body:new URLSearchParams({note:noteHtml,shift:NOTE_SHIFT,shift_date:NOTE_DATE})
         }).then(r=>r.json()).then(j=>{
             if(j.success){
-                st.textContent=j.message; st.style.color='#2e7d32'; ta.value='';
+                st.textContent=j.message; st.style.color='#2e7d32'; editor.innerHTML='';
                 let list = document.querySelector('.rp-notes-list');
                 if (!list) {
                     list = document.createElement('div'); list.className='rp-notes-list';
@@ -545,7 +727,7 @@ if (noteForm) {
                 }
                 const d = new Date(), t = String(d.getDate()).padStart(2,'0')+'/'+String(d.getMonth()+1).padStart(2,'0')+'/'+d.getFullYear()+' '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');
                 const item = document.createElement('div'); item.className='rp-note-item';
-                item.innerHTML=`<div class="rp-note-header"><strong>${CURRENT_FULLNAME}</strong><span class="rp-note-time">${t}</span></div><div class="rp-note-content">${note.replace(/\n/g,'<br>')}</div>`;
+                item.innerHTML=`<div class="rp-note-header"><strong>${CURRENT_FULLNAME}</strong><span class="rp-note-time">${t}</span></div><div class="rp-note-content">${noteHtml}</div>`;
                 if(list.children.length>1) { list.insertBefore(item, list.children[1]); } else { list.appendChild(item); }
                 setTimeout(() => { st.textContent=''; }, 3000);
             }
@@ -553,4 +735,31 @@ if (noteForm) {
         }).catch(()=>{st.textContent='Erro de conexão.';st.style.color='#c62828';});
     });
 }
+
+// ── Banner de menções pendentes ──
+document.querySelectorAll('.rp-mention-dismiss').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+        const id = btn.dataset.mentionId;
+        const item = btn.closest('.rp-mention-item');
+        fetch('zabbix.php?action=plantonistas.report.mentions.read', {
+            method: 'POST', headers: {'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},
+            body: new URLSearchParams({mention_id: id})
+        }).catch(function(){});
+        if (item) item.remove();
+    });
+});
+document.querySelectorAll('.rp-mention-view-link').forEach(function (a) {
+    a.addEventListener('click', function () {
+        const id = a.dataset.mentionId;
+        const body = new URLSearchParams({mention_id: id});
+        if (navigator.sendBeacon) {
+            navigator.sendBeacon('zabbix.php?action=plantonistas.report.mentions.read', body);
+        } else {
+            fetch('zabbix.php?action=plantonistas.report.mentions.read', {
+                method: 'POST', headers: {'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'}, body: body
+            }).catch(function(){});
+        }
+        // sem preventDefault — deixa o link navegar normalmente pra tela da nota
+    });
+});
 </script>

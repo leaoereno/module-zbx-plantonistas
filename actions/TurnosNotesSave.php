@@ -8,14 +8,22 @@ use CController,
 /**
  * TurnosNotesSave — AJAX: salvar nota no Diário de Bordo.
  *
- * A visibilidade da nota é determinada automaticamente na leitura
- * com base na tabela `rights` do Zabbix — sem nenhuma configuração manual.
+ * A visibilidade da nota é determinada automaticamente na leitura com base
+ * em grupo de usuário compartilhado (ver TurnosReportBase::queryNotes()).
  * A nota é gravada apenas com o analyst_userid do autor.
+ *
+ * v4.2 — editor rico + menções: o campo "note" agora chega como HTML do
+ * editor (contenteditable), sanitizado aqui via TurnosReportBase::
+ * sanitizeNoteHtml() (allowlist de tags/atributos — o servidor nunca confia
+ * no HTML vindo do cliente). Menções [user] encontradas no HTML viram
+ * notificação em module_plantonistas_mentions.
  *
  * Mantido por Rafael M. A. Leão Ereno (MALE)
  * Fork de: https://github.com/JohnnyIver/zabbix-report-module
  */
 class TurnosNotesSave extends CController {
+
+    use TurnosReportBase;
 
     protected function init(): void {
         $this->disableCsrfValidation();
@@ -37,33 +45,6 @@ class TurnosNotesSave extends CController {
 
     protected function checkPermissions(): bool {
         return !CWebUser::isGuest();
-    }
-
-    private function getDb(): ?\mysqli {
-        try {
-            $server = $GLOBALS['DB']['SERVER']   ?? 'localhost';
-            $port   = (int)($GLOBALS['DB']['PORT'] ?? 3306);
-            $dbname = $GLOBALS['DB']['DATABASE'] ?? 'zabbix';
-            $user   = $GLOBALS['DB']['USER']     ?? 'zabbix';
-            $pass   = $GLOBALS['DB']['PASSWORD'] ?? '';
-
-            mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
-            $mysqli = new \mysqli($server, $user, $pass, $dbname, $port);
-            $mysqli->set_charset('utf8mb4');
-            return $mysqli;
-        } catch (\Exception $e) {
-            return null;
-        }
-    }
-
-    private function validateDate(string $date): string {
-        if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) {
-            [$y, $m, $d] = explode('-', $date);
-            if (checkdate((int)$m, (int)$d, (int)$y)) {
-                return $date;
-            }
-        }
-        return date('Y-m-d');
     }
 
     /**
@@ -91,13 +72,23 @@ class TurnosNotesSave extends CController {
     protected function doAction(): void {
         header('Content-Type: application/json; charset=utf-8');
 
-        $note       = trim($this->getInput('note', ''));
+        $noteRaw    = trim($this->getInput('note', ''));
         $shiftRaw   = $this->getInput('shift', '24h');
         $shift_date = $this->validateDate($this->getInput('shift_date', date('Y-m-d')));
 
         if (!$this->isValidShiftParam($shiftRaw)) {
             $shiftRaw = '24h';
         }
+
+        if ($noteRaw === '') {
+            echo json_encode(['success' => false, 'message' => 'A nota não pode ser vazia.']);
+            die();
+        }
+
+        // Sanitiza o HTML do editor rico e extrai as menções [user] antes de
+        // qualquer coisa tocar o banco — nunca confia no HTML cru do cliente.
+        $sanitized = $this->sanitizeNoteHtml($noteRaw);
+        $note      = $sanitized['html'];
 
         if ($note === '') {
             echo json_encode(['success' => false, 'message' => 'A nota não pode ser vazia.']);
@@ -118,17 +109,17 @@ class TurnosNotesSave extends CController {
 
             [$shift_name, $shift_id] = $this->resolveShiftName($db, $shiftRaw);
 
-            // Tenta INSERT com coluna shift_id (schema v2.5+)
-            // Se a coluna não existir, faz fallback para schema v2.2–v2.4
+            // Tenta INSERT com colunas shift_id/notes_format (schema v4.2+)
+            // Se não existirem (schema muito antigo), faz fallback pro schema legado.
             try {
                 $stmt = $db->prepare(
                     "INSERT INTO module_plantonistas_shift_notes
-                        (shift_date, shift_name, shift_id, analyst_userid, analyst_name, notes, noc_context, created_at)
-                     VALUES (?, ?, ?, ?, ?, ?, NULL, NOW())"
+                        (shift_date, shift_name, shift_id, analyst_userid, analyst_name, notes, notes_format, noc_context, created_at)
+                     VALUES (?, ?, ?, ?, ?, ?, 'html', NULL, NOW())"
                 );
                 $stmt->bind_param('ssiiss', $shift_date, $shift_name, $shift_id, $userid, $fullname, $note);
             } catch (\Exception $e) {
-                // Coluna shift_id não existe (schema < v2.5)
+                // Coluna shift_id ou notes_format não existe (schema < v2.5 / < v4.2)
                 $stmt = $db->prepare(
                     "INSERT INTO module_plantonistas_shift_notes
                         (shift_date, shift_name, analyst_userid, analyst_name, notes, noc_context, created_at)
@@ -138,11 +129,17 @@ class TurnosNotesSave extends CController {
             }
 
             $stmt->execute();
+            $noteId = (int)$db->insert_id;
+
+            if (!empty($sanitized['mentioned_userids'])) {
+                $ctx = $this->resolveUserContext($db, $userid);
+                $this->recordMentions($db, $noteId, $sanitized['mentioned_userids'], $userid, $ctx);
+            }
 
             echo json_encode([
                 'success' => true,
                 'message' => 'Nota salva com sucesso!',
-                'id'      => $db->insert_id,
+                'id'      => $noteId,
             ]);
         } catch (\Exception $e) {
             echo json_encode([
