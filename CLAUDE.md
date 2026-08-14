@@ -163,6 +163,25 @@ constraint), replicada em `sql/schema.sql` pra instalação nova.
   calendário sem rótulo, não é perdida); exportar um grupo com turnos só
   reflete a última entrada do dia lida do banco, não soma os turnos.
 
+### Bug dos campos de turno "grandes demais" na Escala (2026-08-14)
+
+`.plt-select-row` (largura ~300px) foi desenhada pra dentro de `.plt-form-row`,
+que é flex **row** — ali `flex:0 1 300px` vira largura. O bloco novo por turno
+(`.plt-shift-field`) é flex **column**; reaproveitar `.plt-select-row` dentro
+dele faz o MESMO `300px` virar **altura** (flex-basis segue o eixo principal
+do pai), e cada campo de turno inchava pra ~300px de altura. Fix: regra
+escopada `.plt-shift-field .plt-select-row { flex:0 0 auto; width:300px; }`
+restaura largura fixa sem depender do eixo do flex pai.
+
+Investigado também o relato de que campos de técnico apareceriam em grupo
+**sem** turno cadastrado: `PlantaoList::doAction()` já filtra `$shifts` por
+`usrgrpid` e a view faz `if (!$has_shifts)` (par Técnico/Reserva único) /
+`else` (1 campo por turno) — mutuamente exclusivos, sem caminho no código pra
+os dois aparecerem juntos ou pro campo por turno aparecer sem turno
+cadastrado. Não reproduzido por leitura de código; efeito provavelmente do
+bug de altura acima (campo de ~300px lido como "não deveria estar aí").
+Reabrir com print se persistir depois do fix de tamanho.
+
 ### Estado do deploy em produção (2026-08-14)
 
 Feito: repo GitHub criado; clone no **front02**; tabelas de produção verificadas.
@@ -226,14 +245,35 @@ escuro) para `var(--rp-blue)` sólido (mesma cor de `.rp-btn-primary`), com
 borda sutil e sombra. Já respeita dark theme (`--rp-blue` já tem override).
 Botão de reload (ícone só) não foi mexido — tinha estilo inline próprio.
 
+**Regressão do mesmo dia**: o fundo sólido ficou certo, mas o texto continuou
+azul (só ficava legível no `:hover`). Causa: `.rp-nh-btn` é aplicada em `<a>`,
+e o tema nativo do Zabbix define cor de link com especificidade maior que uma
+classe simples — o `color:#fff` da classe perdia a disputa de cascata em
+repouso (no `:hover` não havia regra nativa concorrente, por isso só ali
+ficava legível). Mesmo problema que `.plt-nav a.btn.btn-alt` já tinha
+resolvido com `!important` (`views/plantonistas.list.php`). Fix: `!important`
+em `background`/`color` de `.rp-nh-btn` e `.rp-nh-btn:hover`.
+
 ### Editor rico + menções no Diário de Bordo (2026-08-14)
 
 Decisões tomadas com o Rafael (via perguntas de escopo) antes de implementar:
 editor leve sem dependência nova (contenteditable + JS inline, sem vendorizar
-biblioteca); notificação de menção `[user]` como banner simples com link pra
-nota (sem central de notificações); item escolhido vira link/chip limpo na
-nota (sem manter `[host]texto` literal); os 3 tipos de menção
-(`[hostgroup]`/`[host]`/`[user]`) entregues juntos, não em etapas.
+biblioteca); notificação de menção como banner simples com link pra nota (sem
+central de notificações); item escolhido vira link/chip limpo na nota (sem
+manter texto de gatilho literal); os 3 tipos de menção entregues juntos, não
+em etapas.
+
+**Gatilhos trocados no mesmo dia**: sintaxe original era `[hostgroup]`/`[host]`/
+`[user]` — o Rafael achou ruim (colchetes atrapalham digitação natural) e
+pediu a troca por `@` (usuário), `_h` (host) e `_hg` (grupo de hosts), mais
+próximo do que já se usa em Slack/Teams. `_h` é prefixo de `_hg` — resolvido
+por ordem de alternância no regex (`_hg` testada antes de `_h`; ver comentário
+em `plantonistas.report.view.php`), sem debounce. Ambíguo só no caso
+`_hg<texto colado sem espaço>` (ex.: `_hgateway`): resolve como hostgroup com
+busca "ateway", não host com busca "gateway" — edge case aceito, mesmo
+espírito do edge case de sanitização abaixo. Só o regex de detecção no JS
+mudou; o backend continua recebendo `type=hostgroup|host|user` sem alteração
+nenhuma.
 
 **Schema novo**: `module_plantonistas_shift_notes.notes_format` (`text` |
 `html`, default `text` — distingue nota antiga de nota nova na exibição) e
