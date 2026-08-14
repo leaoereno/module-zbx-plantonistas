@@ -70,6 +70,33 @@ Cron: `scripts/cron_presence_tracker.php` popula `module_plantonistas_user_sessi
 a cada 5 min. Token via env `ZABBIX_API_TOKEN` (nunca versionar). Crontab
 aponta pro caminho do módulo — mudou na unificação.
 
+### Modelo de permissões por perfil
+
+Checado via `getUserType()`/`CWebUser::getType()` (família escala) ou
+`role.type` lido manualmente por `getUserRoleType()` (família repasse, que
+usa mysqli direto e não tem acesso ao `CWebUser` nativo do mesmo jeito).
+Constantes Zabbix: `USER_TYPE_ZABBIX_USER=1`, `USER_TYPE_ZABBIX_ADMIN=2`,
+`USER_TYPE_SUPER_ADMIN=3`. Menu **Plantão** inteiro só aparece para type ≥ 1
+(Guest não vê nada); item **Gerenciar Turnos** só para type ≥ 2.
+
+| Tela | User (1) | Admin (2) | Super Admin (3) |
+|---|---|---|---|
+| Visão Geral / Escala / Histórico | Vê e edita só os próprios grupos | idem User | Todos os grupos |
+| Telefones | Vê só quem tem o **mesmo grupo E o mesmo role** | idem User (por role) | Todos os usuários do sistema |
+| Repasse Plantão (relatório) | Eventos seguem `rights` do Zabbix; MTTA só o próprio; Notas/Presença só do(s) próprio(s) grupo(s) | MTTA de todos; Notas/Presença do(s) próprio(s) grupo(s) | Sem filtro nenhum |
+| Diário de Bordo (escrever) | Pode escrever nota | idem | idem |
+| Gerenciar Turnos | **Sem acesso** (menu nem aparece; controller recusa) | Só as próprias equipes | Todas as equipes com ≥1 membro |
+
+Pontos fora do padrão "grupo = visibilidade":
+- **Telefones** exige grupo **e** role idênticos — um Admin e um User no
+  mesmo grupo não se veem na lista de telefones um do outro. Não confirmado
+  se é intencional.
+- **Diário de Bordo / Presença** (família repasse) segmentam por
+  `users_groups` compartilhado — segmentação própria do módulo, independente
+  da tabela `rights` do Zabbix.
+- **Eventos/alertas** do Repasse (KPIs, Top Hosts, MTTA) seguem `rights` do
+  Zabbix quando configurada; sem `rights` por host, todo mundo vê tudo.
+
 ---
 
 ## 2. Memória (estado e decisões)
@@ -149,6 +176,56 @@ Nota: o fix de UX também ficou não-commitado na working tree do repo antigo
 `module-zbx-repasse-plantao` local — irrelevante após a unificação, mas o
 histórico está no zip `module-zbx-repasse-plantao-commit-1dadacd.zip` se precisar.
 
+### Filtro de usuário ativo/bloqueado (2026-08-14)
+
+Critério adotado — **usuário aparece se tiver pelo menos 1 grupo com
+`usrgrp.users_status=0`** (mesma regra que o Zabbix usa pra marcar alguém
+como "Disabled" em Administração > Usuários; grupos mistos ativo+desabilitado
+ainda contam como ativo). Implementado como
+`AND EXISTS (SELECT 1 FROM users_groups ... JOIN usrgrp ... WHERE
+users_status=0)` em 4 pontos: `PlantaoList` (seletor de técnico da Escala),
+`PhonesList`/`PhonesExport` (tela e CSV de Telefones), `TurnosReportBase::
+listUsersByGroup()` (analistas em Gerenciar Turnos).
+
+Decisão consciente: **não** filtra pelo bloqueio temporário de login
+(`users.attempt_failed`/`attempt_clock`) — é estado transitório de segurança
+(conta trava minutos após senhas erradas), sem relação com elegibilidade pra
+escala. `PlantaoImport` (CSV) não foi alterado — mesma decisão de não mexer
+no import/export já registrada acima.
+
+### Datas e horas em padrão brasileiro (auditoria 2026-08-14)
+
+Auditoria em todo o módulo (`date()` PHP + `Date`/`toLocaleString` JS). Maior
+parte já estava em `d/m/Y` (herdado da família escala). Gaps corrigidos,
+todos na família repasse:
+- `TurnosReportBase::queryNotes()`/`queryPresence()`: `created_at`/
+  `first_seen`/`last_seen` vinham crus do banco (`Y-m-d H:i:s`) — agora
+  `DATE_FORMAT(..., '%d/%m/%Y %H:%i')`. Ordenação usa coluna auxiliar
+  (`created_sort`/`first_seen_sort`) com o valor original — ordenar pela
+  string já formatada dá resultado cronologicamente errado.
+- `plantonistas.report.view.php`: timestamp otimista via JS (nota inserida
+  antes do reload) reconstruído em `dd/mm/aaaa HH:MM`.
+
+Datas usadas só como chave interna (nunca exibidas — heatmap do calendário,
+`$today_str` da Escala) continuam em `Y-m-d` de propósito; não é gap pt-BR.
+
+### Diário de Bordo — sem expiração automática (2026-08-14)
+
+Confirmado por grep no repo inteiro: não existe `DELETE`/TTL/cron de limpeza
+para `module_plantonistas_shift_notes`. As únicas limpezas automáticas do
+módulo são `module_plantonistas_user_sessions` (cron, 7 dias) e os vínculos
+`module_plantonistas_user_shift` (quando o turno é removido). Diário de Bordo
+é histórico permanente — cresce sem limite. Ver Backlog.
+
+### Cores dos botões de navegação do Repasse (2026-08-14)
+
+"Gerenciar Turnos" e "Voltar ao Relatório" usam a mesma classe `.rp-nh-btn` —
+1 fix resolveu os 2 lugares reportados + o botão "Gerar PDF" (mesma classe).
+Fundo trocado de branco 15% translúcido (quase invisível sobre o header
+escuro) para `var(--rp-blue)` sólido (mesma cor de `.rp-btn-primary`), com
+borda sutil e sombra. Já respeita dark theme (`--rp-blue` já tem override).
+Botão de reload (ícone só) não foi mexido — tinha estilo inline próprio.
+
 ### Backlog conhecido
 
 - Salvar vínculo analista→turno em massa (hoje é um clique por analista).
@@ -158,6 +235,15 @@ histórico está no zip `module-zbx-repasse-plantao-commit-1dadacd.zip` se preci
 - CSV import/export da Escala não sabe de turnos (grava/lê sempre shift_id=0,
   modo legado) — decisão consciente do Rafael, ver seção "Turnos dinâmicos".
   Se precisar, adicionar coluna Turno nos dois sentidos depois.
+- Diário de Bordo sem expiração — avaliar TTL/arquivamento se a tabela crescer muito.
+- Conexão mysqli própria (`getDb()`) reconectando a cada request na família
+  repasse (~10 arquivos) em vez de reusar `$GLOBALS['DB']` nativo do Zabbix.
+- `getUserRoleType()`/`resolveUserContext()` duplicados entre `TurnosReportBase`
+  e `TurnosNotesGet`/`TurnosNotesSave` (cada um com sua própria cópia).
+- `PhonesSave` faz SELECT-then-UPDATE-or-INSERT em vez de
+  `INSERT ... ON DUPLICATE KEY UPDATE` (pequena janela de corrida).
+- Telefones: Admin/User só se veem dentro do mesmo `roleid` — confirmar se é
+  intencional (ver "Modelo de permissões" em Contexto).
 
 ---
 
