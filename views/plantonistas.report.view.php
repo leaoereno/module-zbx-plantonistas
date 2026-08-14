@@ -379,7 +379,7 @@ $pview_base = "zabbix.php?action=problem.view&filter_set=1&filter_show=3&from=".
 <div class="rp-card" id="table-notes">
     <div class="rp-card-head"><i class="fas fa-book-open"></i> Diário de Bordo</div>
     <div class="rp-card-desc">Registre aqui ocorrências do turno, pendências para o próximo plantão e ações tomadas — serve de repasse para quem assumir o plantão seguinte.
-        Digite <code>[hostgroup]</code>, <code>[host]</code> ou <code>[user]</code> pra buscar e mencionar.</div>
+        Digite <code>@</code> pra mencionar um usuário, <code>_h</code> pra um host ou <code>_hg</code> pra um grupo de hosts — mostra a lista completa referente ao seu grupo, filtra ao continuar digitando.</div>
     <div class="rp-card-body">
         <form id="turnosNoteForm" class="rp-note-form">
             <div class="rp-note-meta">
@@ -556,10 +556,15 @@ function toggleSevChart() {
     container.innerHTML = html;
 })();
 
-// ── Editor rico + menções [hostgroup]/[host]/[user] ──
+// ── Editor rico + menções @usuário / _h host / _hg grupo de hosts ──
 const editor   = document.getElementById('noteText');
 const dropdown = document.getElementById('mentionDropdown');
 let mentionState = null; // {type, range} da menção em edição no momento
+// _hg tem que vir ANTES de _h na alternância: os dois começam com "_h" e a
+// 1ª alternativa que bater na posição vence. Ambíguo só em "_hg<texto>" logo
+// em seguida (sem espaço) — resolve como hostgroup, não host+query "g...".
+// Ver CLAUDE.md, seção "Editor rico + menções".
+const MENTION_TRIGGER_TYPE = { '_hg': 'hostgroup', '_h': 'host', '@': 'user' };
 
 function escHtml(s) {
     const d = document.createElement('div');
@@ -664,10 +669,12 @@ if (editor) {
         if (!sel || sel.rangeCount === 0 || !sel.isCollapsed) { closeMentionDropdown(); return; }
 
         const textBefore = getCaretTextBeforeCursor();
-        const m = textBefore.match(/\[(hostgroup|host|user)\]([^[\]\s]{0,40})$/i);
+        // Gatilho só conta no início do texto ou depois de espaço — não dispara
+        // no meio de uma palavra (ex.: "user@dominio.com" digitado como texto solto).
+        const m = textBefore.match(/(?<=^|\s)(_hg|_h|@)([^\s]{0,40})$/);
         if (!m) { closeMentionDropdown(); return; }
 
-        const type = m[1].toLowerCase();
+        const type = MENTION_TRIGGER_TYPE[m[1]];
         const query = m[2];
         const matchLen = m[0].length;
         const range = sel.getRangeAt(0).cloneRange();
