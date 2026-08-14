@@ -122,10 +122,14 @@
     background: #fff;
 }
 
+/* !important nas cores: são elementos <a> e o tema nativo do Zabbix aplica
+   sua própria cor de link com especificidade maior que uma classe simples
+   (mesmo problema já resolvido em .plt-nav a.btn.btn-alt, ver plantonistas.list.php) —
+   sem isso o texto herda o azul de link nativo e só troca de cor no :hover. */
 .rp-nh-btn {
     border: 1px solid rgba(255, 255, 255, 0.3);
-    background: var(--rp-blue);
-    color: #fff;
+    background: var(--rp-blue) !important;
+    color: #fff !important;
     height: 28px;
     padding: 0 14px;
     box-sizing: border-box;
@@ -142,9 +146,9 @@
 }
 
 .rp-nh-btn:hover {
-    background: #025f96;
+    background: #025f96 !important;
     border-color: rgba(255, 255, 255, 0.5);
-    color: #fff;
+    color: #fff !important;
 }
 
 .rp-badge-hist {
