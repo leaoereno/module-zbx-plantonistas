@@ -543,7 +543,7 @@ if (noteForm) {
                     list.innerHTML='<div class="rp-notes-title">Notas Anteriores</div>';
                     noteForm.insertAdjacentElement('afterend', list);
                 }
-                const d = new Date(), t = d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')+' '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0')+':'+String(d.getSeconds()).padStart(2,'0');
+                const d = new Date(), t = String(d.getDate()).padStart(2,'0')+'/'+String(d.getMonth()+1).padStart(2,'0')+'/'+d.getFullYear()+' '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');
                 const item = document.createElement('div'); item.className='rp-note-item';
                 item.innerHTML=`<div class="rp-note-header"><strong>${CURRENT_FULLNAME}</strong><span class="rp-note-time">${t}</span></div><div class="rp-note-content">${note.replace(/\n/g,'<br>')}</div>`;
                 if(list.children.length>1) { list.insertBefore(item, list.children[1]); } else { list.appendChild(item); }
