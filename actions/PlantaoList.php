@@ -143,17 +143,22 @@ class PlantaoList extends CController {
                 ];
             }
 
-            // Usuários com todos os grupos desabilitados (usrgrp.users_status=1
-            // em 100% dos grupos do usuário) não aparecem como opção de técnico —
-            // mesmo critério que o Zabbix usa para marcar alguém como "Disabled"
-            // em Administração > Usuários. Pertencer a pelo menos 1 grupo ativo
-            // já é suficiente para continuar aparecendo.
+            // Usuário desabilitado não aparece como opção de técnico. Critério
+            // igual ao do Zabbix (CUser::getAccess usa MAX(users_status), e a
+            // coluna Status da lista de usuários mostra "Disabled"): pertencer a
+            // QUALQUER grupo desabilitado já desabilita a pessoa.
+            //
+            // Antes daqui era o inverso — EXISTS de grupo habilitado — e quem
+            // estava em grupo misto (ex.: "NOC" + "Desligados") continuava
+            // escalável no módulo mesmo já aparecendo como Disabled no Zabbix.
+            // Sem roleid a lista do Zabbix também mostra "Disabled".
             $active_filter =
-                ' AND EXISTS (' .
+                ' AND NOT EXISTS (' .
                 '   SELECT 1 FROM users_groups ugx' .
                 '   JOIN usrgrp gx ON gx.usrgrpid = ugx.usrgrpid' .
-                '   WHERE ugx.userid = u.userid AND gx.users_status = 0' .
-                ' )';
+                '   WHERE ugx.userid = u.userid AND gx.users_status = 1' .
+                ' )' .
+                ' AND u.roleid IS NOT NULL AND u.roleid <> 0';
 
             if ($is_super_admin) {
                 $res_users = DBselect(

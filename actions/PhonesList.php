@@ -40,15 +40,18 @@ class PhonesList extends CController {
             ' JOIN usrgrp       g  ON g.usrgrpid  = ug.usrgrpid' .
             ' LEFT JOIN module_plantonistas_phones p ON p.userid = u.userid';
 
-        // Usuários com todos os grupos desabilitados (usrgrp.users_status=1 em
-        // 100% dos grupos) não aparecem — mesmo critério do Zabbix para marcar
-        // alguém como "Disabled" em Administração > Usuários.
+        // Usuário desabilitado não aparece. Critério igual ao do Zabbix
+        // (MAX(users_status) em CUser::getAccess): pertencer a QUALQUER grupo
+        // desabilitado já desabilita a pessoa — antes daqui era o inverso
+        // (EXISTS de grupo habilitado), e quem estava em grupo misto continuava
+        // listado no módulo já aparecendo como Disabled no Zabbix.
         $active_filter =
-            ' EXISTS (' .
+            ' NOT EXISTS (' .
             '   SELECT 1 FROM users_groups ugx' .
             '   JOIN usrgrp gx ON gx.usrgrpid = ugx.usrgrpid' .
-            '   WHERE ugx.userid = u.userid AND gx.users_status = 0' .
-            ' )';
+            '   WHERE ugx.userid = u.userid AND gx.users_status = 1' .
+            ' )' .
+            ' AND u.roleid IS NOT NULL AND u.roleid <> 0';
 
         if ($is_super_admin) {
             // Super admin: vê TODOS os usuários ativos do sistema

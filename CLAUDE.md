@@ -82,7 +82,7 @@ Constantes Zabbix: `USER_TYPE_ZABBIX_USER=1`, `USER_TYPE_ZABBIX_ADMIN=2`,
 | Tela | User (1) | Admin (2) | Super Admin (3) |
 |---|---|---|---|
 | Visão Geral / Escala / Histórico | Vê e edita só os próprios grupos | idem User | Todos os grupos |
-| Telefones | Vê só quem tem o **mesmo grupo E o mesmo role** | idem User (por role) | Todos os usuários do sistema |
+| Telefones | Vê só quem tem o **mesmo grupo E o mesmo role** | idem User (por role) | Todos os usuários habilitados do sistema |
 | Repasse Plantão (relatório) | Eventos seguem `rights` do Zabbix; MTTA só o próprio; Notas/Presença só do(s) próprio(s) grupo(s) | MTTA de todos; Notas/Presença do(s) próprio(s) grupo(s) | Sem filtro nenhum |
 | Diário de Bordo (escrever) | Pode escrever nota | idem | idem |
 | Gerenciar Turnos | **Sem acesso** (menu nem aparece; controller recusa) | Só as próprias equipes | Todas as equipes com ≥1 membro |
@@ -201,22 +201,20 @@ Nota: o fix de UX também ficou não-commitado na working tree do repo antigo
 `module-zbx-repasse-plantao` local — irrelevante após a unificação, mas o
 histórico está no zip `module-zbx-repasse-plantao-commit-1dadacd.zip` se precisar.
 
-### Filtro de usuário ativo/bloqueado (2026-08-14)
+### Filtro de usuário ativo/bloqueado (2026-08-14, **corrigido em 2026-08-17**)
 
-Critério adotado — **usuário aparece se tiver pelo menos 1 grupo com
-`usrgrp.users_status=0`** (mesma regra que o Zabbix usa pra marcar alguém
-como "Disabled" em Administração > Usuários; grupos mistos ativo+desabilitado
-ainda contam como ativo). Implementado como
-`AND EXISTS (SELECT 1 FROM users_groups ... JOIN usrgrp ... WHERE
-users_status=0)` em 4 pontos: `PlantaoList` (seletor de técnico da Escala),
-`PhonesList`/`PhonesExport` (tela e CSV de Telefones), `TurnosReportBase::
-listUsersByGroup()` (analistas em Gerenciar Turnos).
+⚠️ A versão de 2026-08-14 registrava aqui que "usuário aparece se tiver pelo
+menos 1 grupo com `users_status=0`" era "a mesma regra que o Zabbix usa".
+**Isso estava errado** — a regra era o inverso da do Zabbix. Ver a seção
+"Regra de usuário desabilitado estava invertida" abaixo. O critério vigente
+está descrito lá; `PlantaoImport` (CSV) continua sem filtro, mesma decisão de
+não mexer no import/export.
 
-Decisão consciente: **não** filtra pelo bloqueio temporário de login
-(`users.attempt_failed`/`attempt_clock`) — é estado transitório de segurança
-(conta trava minutos após senhas erradas), sem relação com elegibilidade pra
-escala. `PlantaoImport` (CSV) não foi alterado — mesma decisão de não mexer
-no import/export já registrada acima.
+Decisão consciente que **continua valendo**: escala/telefones/turnos **não**
+filtram pelo bloqueio de login (`users.attempt_failed`/`attempt_clock`) — é
+estado transitório de segurança (conta trava minutos após senhas erradas),
+sem relação com elegibilidade pra escala. A única tela que filtra bloqueio é
+a busca de menção (`@`), por pedido explícito do Rafael.
 
 ### Datas e horas em padrão brasileiro (auditoria 2026-08-14)
 
@@ -437,6 +435,65 @@ com `prefers-reduced-motion` respeitado, scrollbar fina, e navegação por
 teclado: ↑/↓ circulares, Enter/Tab inserem, Esc fecha, item ativo espelhando
 o hover (`.rp-mention-active`) com `scrollIntoView({block:'nearest'})`.
 Enter sem item destacado continua fazendo quebra de linha no editor.
+
+### Regra de usuário desabilitado estava invertida (2026-08-17)
+
+Pesquisa na doc do Zabbix 7.0 + código do frontend, motivada pelo pedido de
+não listar usuário desativado na busca de menção. O que se descobriu:
+
+**O Zabbix resolve o status com `MAX(usrgrp.users_status)`** — pertencer a
+**qualquer** grupo desabilitado já desabilita a pessoa
+(`CUser::getAccess()` faz `MAX(g.users_status)`; `addUserGroupFields()` barra
+o login se qualquer grupo vier desabilitado; a coluna Status da lista de
+usuários mostra "Disabled"). A doc não é explícita sobre grupo misto ("Status
+… depending on the one set for the whole user group"), o código é.
+
+O módulo fazia o **oposto**: `EXISTS (grupo com users_status=0)`, isto é,
+"tem pelo menos 1 grupo ativo → aparece". Consequência: analista em grupo
+misto (membro de "NOC" **e** de um grupo tipo "Desligados") continuava
+aparecendo e sendo escalável no módulo enquanto o Zabbix já o mostrava como
+Disabled. Corrigido nos 5 pontos por decisão do Rafael (a alternativa de
+corrigir só a menção foi oferecida e recusada):
+`TurnosReportBase::enabledUserClause()` novo, usado pela busca de menção e
+por `listUsersByGroup()`, e a mesma cláusula escrita à mão em `PlantaoList`
+(seletor de técnico), `PhonesList` e `PhonesExport`.
+
+A cláusula também exige `roleid` preenchido — a lista do Zabbix mostra
+"Disabled" para usuário sem role. Usuário **sem nenhum grupo** conta como
+habilitado, igual ao Zabbix (que inicializa `users_status = 0` e só mostra um
+ícone de aviso "User does not have user groups").
+
+**Bloqueado por tentativas de login** (`notBlockedUserClause()`, só na busca
+de menção): `attempt_failed >= config.login_attempts`, mesmo critério da
+coluna "Login: Blocked" da lista de usuários — que não olha tempo nenhum.
+Vale saber a assimetria: o bloqueio *efetivo* de login expira sozinho depois
+de `config.login_block` (default 30s), mas `attempt_failed` só zera quando a
+pessoa loga ou um Super Admin usa Unblock. Então alguém pode aparecer
+"Blocked" no Zabbix (e sumir da busca de menção) já podendo logar. É o
+comportamento que casa com o que se vê na tela do Zabbix, e foi a escolha
+consciente. `config.login_block` é string com sufixo (`30s`, `5m`) e
+precisaria de conversão em PHP — motivo extra pra não usar a janela de tempo.
+
+### Busca de menção por nome completo (2026-08-17)
+
+O `@` só achava pelo campo isolado (`username`/`name`/`surname`), então
+buscar "Rafael Leao" não achava `name='Rafael'` + `surname='Leao Ereno'` —
+nome que atravessa os dois campos nunca casa num LIKE campo por campo. E o
+regex do gatilho parava no primeiro espaço, ou seja: era **impossível**
+digitar nome completo. Ninguém procura colega por login (`z148534`), procura
+por "Rafael Leão Ereno".
+
+Agora a query quebra o texto digitado em **termos** e exige que cada termo
+apareça em algum de `username`, `name`, `surname` ou no nome completo
+concatenado. Sendo condições AND independentes, a ordem digitada não importa
+("ereno rafael" acha) e dá pra misturar nome + login. Teto de 5 termos.
+
+O gatilho no JS aceita até 5 palavras (era 1). Escolher um teto baixo é pior
+que um alto: a lista fecharia na cara de quem digitou o nome inteiro
+("Marcos de Queiroz Pastrolin Junior" tem 5 palavras). O que evita o dropdown
+perseguir uma frase é outra coisa: busca **com espaço** e zero resultado
+fecha a lista, sinal de que virou texto comum. Sem espaço, mantém "Nenhum
+resultado" — ali ainda é uma busca em andamento.
 
 ### Backlog conhecido
 

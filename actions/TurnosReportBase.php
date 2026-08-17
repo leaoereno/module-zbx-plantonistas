@@ -870,9 +870,10 @@ trait TurnosReportBase {
      */
     private function listUsersByGroup(\mysqli $db, int $usrgrpid): array {
         try {
-            // Mesmo critério de "usuário ativo" usado em Telefones/Escala: pelo
-            // menos 1 grupo do usuário com usrgrp.users_status=0. Um analista
-            // com todos os grupos desabilitados some da lista de vínculo a turno.
+            // Mesmo critério de "usuário habilitado" usado em Telefones/Escala,
+            // agora igual ao do Zabbix: qualquer grupo desabilitado tira o
+            // analista da lista de vínculo a turno (ver enabledUserClause()).
+            $enabled = $this->enabledUserClause('u');
             $stmt = $db->prepare(
                 "SELECT u.userid, u.username,
                         CONCAT(COALESCE(u.name,''), ' ', COALESCE(u.surname,'')) AS fullname,
@@ -881,11 +882,7 @@ trait TurnosReportBase {
                  INNER JOIN users_groups ugm ON ugm.userid = u.userid
                  LEFT JOIN module_plantonistas_user_shift cush ON cush.userid = u.userid
                  WHERE ugm.usrgrpid = ?
-                   AND EXISTS (
-                       SELECT 1 FROM users_groups ugx
-                       INNER JOIN usrgrp gx ON gx.usrgrpid = ugx.usrgrpid
-                       WHERE ugx.userid = u.userid AND gx.users_status = 0
-                   )
+                   AND $enabled
                  ORDER BY fullname ASC"
             );
             if ($stmt === false) {
@@ -1142,39 +1139,99 @@ trait TurnosReportBase {
         return $name . ' ' . $surname;
     }
 
+    /**
+     * Cláusula SQL de "usuário habilitado", igual ao critério do Zabbix.
+     *
+     * O Zabbix resolve o status com `MAX(usrgrp.users_status)` (ver
+     * CUser::get/getAccess e a coluna Status da lista de usuários): pertencer
+     * a **qualquer** grupo desabilitado já desabilita o usuário. Ou seja
+     * `NOT EXISTS (grupo desabilitado)`, e não "tem pelo menos 1 grupo ativo"
+     * — que era o que o módulo fazia e deixava passar quem está em grupo misto
+     * (ex.: membro de "NOC" e de "Desligados" ao mesmo tempo).
+     *
+     * Usuário sem nenhum grupo conta como habilitado, igual ao Zabbix.
+     * Sem `roleid` a lista do Zabbix mostra "Disabled" — também fica fora.
+     *
+     * @param string $alias alias da tabela `users` na query que vai usar isto
+     */
+    private function enabledUserClause(string $alias = 'u'): string {
+        return "NOT EXISTS (
+                    SELECT 1 FROM users_groups ugx
+                    INNER JOIN usrgrp gx ON gx.usrgrpid = ugx.usrgrpid
+                    WHERE ugx.userid = $alias.userid AND gx.users_status = 1
+                )
+                AND $alias.roleid IS NOT NULL AND $alias.roleid <> 0";
+    }
+
+    /**
+     * Cláusula SQL de "usuário não bloqueado por tentativas de login".
+     *
+     * Mesmo critério da coluna "Login: Blocked" na lista de usuários do
+     * Zabbix: `attempt_failed >= config.login_attempts`, sem olhar o tempo.
+     * O bloqueio efetivo de login expira sozinho após `config.login_block`,
+     * mas o contador só zera quando a pessoa loga ou um Super Admin usa
+     * Unblock — então este é o critério que casa com o que se vê na tela.
+     *
+     * Aplicado só na busca de menção. Para escala/telefones a decisão segue
+     * a de sempre: bloqueio é estado transitório de segurança e não define
+     * elegibilidade (ver CLAUDE.md).
+     */
+    private function notBlockedUserClause(string $alias = 'u'): string {
+        return "$alias.attempt_failed < (SELECT MIN(login_attempts) FROM config)";
+    }
+
     private function searchMentionableUsers(\mysqli $db, array $ctx, string $q): array {
-        $like = '%' . $q . '%';
-        $activeClause = "EXISTS (
-            SELECT 1 FROM users_groups ugx
-            INNER JOIN usrgrp gx ON gx.usrgrpid = ugx.usrgrpid
-            WHERE ugx.userid = u.userid AND gx.users_status = 0
-        )";
+        $activeClause = $this->enabledUserClause('u')
+            . ' AND ' . $this->notBlockedUserClause('u');
         // ORDER BY pelo nome efetivo (username quando não há nome cadastrado):
         // ordenar pelo CONCAT cru jogava todos os labels vazios pro topo da
         // lista, que era exatamente o que aparecia como "itens em branco".
         $orderBy = "ORDER BY IF(TRIM(CONCAT(COALESCE(u.name,''), ' ', COALESCE(u.surname,''))) = '',
                                 u.username,
                                 TRIM(CONCAT(COALESCE(u.name,''), ' ', COALESCE(u.surname,'')))) ASC";
+        // Busca por termos: cada palavra digitada tem que aparecer em ALGUM dos
+        // campos (username, name, surname ou o nome completo montado). É isso
+        // que faz "Rafael Leao" achar name='Rafael' + surname='Leao Ereno' — o
+        // LIKE campo por campo, sozinho, nunca casa um nome que atravessa os
+        // dois campos. Como cada termo é uma condição AND, a ordem digitada não
+        // importa ("ereno rafael" acha igual) e dá pra combinar nome + username.
+        $fullName = "TRIM(CONCAT(COALESCE(u.name,''), ' ', COALESCE(u.surname,'')))";
+        $terms    = preg_split('/\s+/', $q, -1, PREG_SPLIT_NO_EMPTY) ?: [];
+        $terms    = array_slice($terms, 0, 5); // teto de termos: query previsível
+
+        $termSql    = '';
+        $bindTypes  = '';
+        $bindValues = [];
+        foreach ($terms as $t) {
+            $termSql .= " AND (u.username LIKE ? OR u.name LIKE ? OR u.surname LIKE ? OR $fullName LIKE ?)";
+            $like     = '%' . $t . '%';
+            $bindTypes .= 'ssss';
+            array_push($bindValues, $like, $like, $like, $like);
+        }
+
         try {
             if (!empty($ctx['is_superadmin'])) {
                 $stmt = $db->prepare(
                     "SELECT u.userid AS id, u.username, u.name, u.surname
                      FROM users u
                      WHERE u.username != 'guest' AND $activeClause
-                       AND (u.username LIKE ? OR u.name LIKE ? OR u.surname LIKE ?)
+                       $termSql
                      $orderBy LIMIT 20"
                 );
-                $stmt->bind_param('sss', $like, $like, $like);
             } else {
                 $sameGroup = $this->sameGroupExists((int)$ctx['userid'], 'u.userid');
                 $stmt = $db->prepare(
                     "SELECT DISTINCT u.userid AS id, u.username, u.name, u.surname
                      FROM users u
                      WHERE $sameGroup AND $activeClause
-                       AND (u.username LIKE ? OR u.name LIKE ? OR u.surname LIKE ?)
+                       $termSql
                      $orderBy LIMIT 20"
                 );
-                $stmt->bind_param('sss', $like, $like, $like);
+            }
+            // Sem termo digitado (só o gatilho) não há placeholder pra ligar —
+            // bind_param com string de tipos vazia é erro.
+            if ($bindTypes !== '') {
+                $stmt->bind_param($bindTypes, ...$bindValues);
             }
             $stmt->execute();
             $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);

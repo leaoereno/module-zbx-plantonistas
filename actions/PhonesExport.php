@@ -30,14 +30,16 @@ class PhonesExport extends CController {
             ' JOIN users_groups ug ON ug.userid  = u.userid' .
             ' LEFT JOIN module_plantonistas_phones p ON p.userid = u.userid';
 
-        // Mesmo critério de "usuário ativo" das telas Telefones/Escala/Gerenciar
-        // Turnos — pelo menos 1 grupo com usrgrp.users_status=0.
+        // Mesmo critério de "usuário habilitado" das telas Telefones/Escala/
+        // Gerenciar Turnos, igual ao do Zabbix: QUALQUER grupo desabilitado
+        // desabilita a pessoa (era o inverso antes — ver PhonesList).
         $active_filter =
-            'EXISTS (' .
+            'NOT EXISTS (' .
             '   SELECT 1 FROM users_groups ugx' .
             '   JOIN usrgrp gx ON gx.usrgrpid = ugx.usrgrpid' .
-            '   WHERE ugx.userid = u.userid AND gx.users_status = 0' .
-            ' )';
+            '   WHERE ugx.userid = u.userid AND gx.users_status = 1' .
+            ' )' .
+            ' AND u.roleid IS NOT NULL AND u.roleid <> 0';
 
         if ($is_super) {
             $sql = $select . " WHERE u.username != 'guest' AND " . $active_filter . " ORDER BY u.name, u.surname";

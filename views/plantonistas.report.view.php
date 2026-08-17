@@ -401,7 +401,8 @@ $pview_base = "zabbix.php?action=problem.view&filter_set=1&filter_show=3&from=".
 <div class="rp-card" id="table-notes">
     <div class="rp-card-head"><i class="fas fa-book-open"></i> Diário de Bordo</div>
     <div class="rp-card-desc">Registre aqui ocorrências do turno, pendências para o próximo plantão e ações tomadas — serve de repasse para quem assumir o plantão seguinte.
-        Digite <code>@</code> pra mencionar um usuário, <code>_h</code> pra um host ou <code>_hg</code> pra um grupo de hosts — mostra a lista completa referente ao seu grupo, filtra ao continuar digitando.</div>
+        Digite <code>@</code> pra mencionar um usuário, <code>_h</code> pra um host ou <code>_hg</code> pra um grupo de hosts — mostra a lista completa referente ao seu grupo, filtra ao continuar digitando.
+        Dá pra buscar por nome, sobrenome ou login: <code>@Rafael Leao</code> e <code>@z148534</code> chegam na mesma pessoa.</div>
     <div class="rp-card-body">
         <form id="turnosNoteForm" class="rp-note-form">
             <div class="rp-note-meta">
@@ -676,6 +677,14 @@ function renderMentionResults(type, results) {
     mentionActive  = -1;
 
     if (!results.length) {
+        // Query com espaço e zero resultado = a pessoa provavelmente parou de
+        // procurar alguém e voltou a escrever a nota. Fecha em vez de deixar
+        // "Nenhum resultado" pendurado no meio do texto. Sem espaço, mantém a
+        // mensagem: ainda é uma busca em andamento.
+        if (mentionState.query && mentionState.query.indexOf(' ') !== -1) {
+            closeMentionDropdown();
+            return;
+        }
         dropdown.innerHTML = '<div class="rp-mention-empty">Nenhum resultado.</div>';
         dropdown.style.display = 'block';
         positionDropdown();
@@ -768,7 +777,15 @@ if (editor) {
         const textBefore = getCaretTextBeforeCursor();
         // Gatilho só conta no início do texto ou depois de espaço — não dispara
         // no meio de uma palavra (ex.: "user@dominio.com" digitado como texto solto).
-        const m = textBefore.match(/(?<=^|\s)(_hg|_h|@)([^\s]{0,40})$/);
+        //
+        // A busca aceita ATÉ 5 PALAVRAS (4 espaços) porque ninguém procura
+        // colega pelo username: procura por "Erica Felix de Oliveira". Parar no
+        // primeiro espaço, como antes, tornava impossível buscar por nome
+        // completo — e parar cedo demais é pior que não parar, porque a lista
+        // fecharia na cara de quem digitou o nome inteiro. O que segura o
+        // dropdown de perseguir uma frase é renderMentionResults(): busca com
+        // espaço e zero resultado fecha a lista, sinal de que virou texto comum.
+        const m = textBefore.match(/(?<=^|\s)(_hg|_h|@)([^\s]{0,40}(?:[ ][^\s]{0,40}){0,4})$/);
         if (!m) { closeMentionDropdown(); return; }
 
         const type = MENTION_TRIGGER_TYPE[m[1]];
@@ -778,7 +795,7 @@ if (editor) {
         if (range.endOffset - matchLen < 0) { closeMentionDropdown(); return; }
         range.setStart(range.endContainer, range.endOffset - matchLen);
 
-        mentionState = { type: type, range: range };
+        mentionState = { type: type, range: range, query: query };
         searchMentions(type, query);
     });
 
