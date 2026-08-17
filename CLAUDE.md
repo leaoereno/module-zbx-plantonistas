@@ -616,6 +616,70 @@ Lição pra qualquer módulo futuro: liberar action de módulo por SQL direto em
 módulo pela UI (Papéis de utilizador), que é o caminho que usa
 `reserveIds()` corretamente.
 
+### Máscara de telefone e importação em massa (2026-08-17)
+
+`module_plantonistas_phones.phone` guarda **só dígitos** (quem salva já roda
+`preg_replace('/\D/','')`), então máscara é assunto de exibição. Novo trait
+`PhonesFormat` (`phoneDigits()` + `formatPhoneBr()`) é o único lugar que sabe
+formatar, usado por `PhonesList`, `PhonesExport` e `PhonesImport`:
+
+| dígitos | saída | caso |
+|---|---|---|
+| 11 iniciando com 0 | `0800 777-1234` | não geográfico |
+| 11 | `(11) 98765-4321` | celular com DDD |
+| 10 | `(11) 3456-7890` | fixo com DDD |
+| 9 / 8 | `98765-4321` / `3456-7890` | sem DDD |
+| resto | cru | ramal, +55 colado, cadastro errado |
+
+O ramo do `0` existe porque **DDD brasileiro vai de 11 a 99, nunca começa com
+0** — sem ele, `08007771234` sairia como `(08) 00777-1234`. Fora dos padrões
+conhecidos devolve cru de propósito: parênteses em número sem DDD produz um
+telefone com cara de certo e conteúdo errado.
+
+A view exibe `phone_fmt` (montado no controller, view sem regra de negócio).
+O `phnMask()` do JS espelha o PHP linha a linha — se as duas regras
+divergirem, a linha muda de formato ao recarregar a página.
+
+**Dois defeitos corrigidos no caminho**, ambos no `phnMask()` que já existia:
+
+1. Ele rodava no `oninput` e assumia DDD sempre, então quem digitasse ramal de
+   5 dígitos via o número virar `(12) 345` no meio da digitação. Agora roda no
+   `onblur` — dá pra digitar em paz.
+2. Ele fazia `substring(0, 11)` nos dígitos. Como o `value` do input é o que
+   vai no submit, um número com `+55` colado (13 dígitos) seria **gravado
+   mutilado**. O truncamento saiu; fora dos padrões o campo devolve os dígitos
+   inteiros, igual ao PHP.
+
+**Importação em massa** (`plantonistas.phones.import` → `PhonesImport`): lê o
+MESMO CSV que a exportação gera (`Usuario;Nome;Telefone`), para o fluxo ser
+exportar → editar no Excel → reimportar. Detalhes decididos com o Rafael:
+
+- Casa por `users.username` (único, não muda com correção de cadastro); a
+  coluna Nome é ignorada — existe só para quem preenche a planilha se situar.
+- Cabeçalho detectado por sinônimos (`usuario/username/login/user` e
+  `telefone/celular/fone/phone/contato/ramal`), com e sem acento, e separador
+  detectado entre `;`, TAB e `,`. Aceita planilha de 2 colunas.
+- **Telefone vazio NÃO apaga** o cadastro: o CSV traz todos os usuários, a
+  maioria sem telefone, e um round-trip parcial limparia a base. Conta as
+  linhas ignoradas no resultado. Para remover, limpa-se o campo na tela.
+- Permissão: a mesma regra da edição individual (Super Admin altera qualquer
+  um; os demais só quem compartilha grupo **e** tem o mesmo papel). Linha fora
+  do alcance é recusada e reportada, nunca aplicada em silêncio.
+- `INSERT ... ON DUPLICATE KEY UPDATE` (userid é PK) — nasceu sem a janela de
+  corrida do SELECT-then-INSERT que o `PhonesSave` ainda tem (ver Backlog).
+- Limites: 4 a 15 dígitos. O piso de 4 aceita ramal curto; o teto barra lixo.
+
+**A exportação passou a gravar o telefone com máscara** por causa do Excel:
+telefone só-dígitos é lido como número, o que come zero à esquerda e vira
+notação científica em campo longo. A importação remove a máscara de volta. E
+se ainda assim chegar `9,87654E+10`, a linha é **recusada com aviso** em vez de
+limpar os não-dígitos — isso produziria um número plausível e errado, que
+ninguém notaria depois.
+
+Upload via base64 em campo hidden, mesmo padrão do import da Escala (a rota do
+Zabbix nessa action não trata multipart). Como as outras actions de redirect do
+módulo, `phones.import` não tem `"view"` no manifest — responde redirect.
+
 ### Backlog conhecido
 
 - Salvar vínculo analista→turno em massa (hoje é um clique por analista) —
@@ -636,7 +700,12 @@ módulo pela UI (Papéis de utilizador), que é o caminho que usa
 - `getUserRoleType()`/`resolveUserContext()` duplicados entre `TurnosReportBase`
   e `TurnosNotesGet`/`TurnosNotesSave` (cada um com sua própria cópia).
 - `PhonesSave` faz SELECT-then-UPDATE-or-INSERT em vez de
-  `INSERT ... ON DUPLICATE KEY UPDATE` (pequena janela de corrida).
+  `INSERT ... ON DUPLICATE KEY UPDATE` (pequena janela de corrida) — o
+  `PhonesImport` novo já usa a forma certa, dá pra copiar de lá.
+- `readCsv()` duplicado entre `PlantaoImport` e `PhonesImport` (~20 linhas,
+  detecção de separador e BOM). Extrair pra trait se aparecer um terceiro.
+- Importação de telefones aceita só CSV; o leitor de XLSX existe, mas está
+  privado no `PlantaoImport`. Extrair se pedirem planilha nativa.
 - Telefones: Admin/User só se veem dentro do mesmo `roleid` — confirmar se é
   intencional (ver "Modelo de permissões" em Contexto).
 - Nome duplicado (`name` + `surname` concatenados às cegas) ainda existe nos

@@ -10,6 +10,8 @@ use CController, CWebUser;
  */
 class PhonesExport extends CController {
 
+    use PhonesFormat;
+
     public function init(): void { $this->disableCsrfValidation(); }
 
     protected function checkInput(): bool { return true; }
@@ -86,7 +88,11 @@ class PhonesExport extends CController {
             fputcsv($out, [
                 $u['username'],
                 $nome !== '' ? $nome : '—',
-                $u['phone'],
+                // Com máscara: este CSV é o modelo da importação em massa, e
+                // telefone só com dígitos o Excel trata como número (come zero
+                // à esquerda e joga pra notação científica em campo longo).
+                // A importação remove a máscara de volta.
+                $this->formatPhoneBr($u['phone']),
             ], ';');
         }
         fclose($out);

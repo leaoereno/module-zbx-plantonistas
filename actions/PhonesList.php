@@ -8,6 +8,8 @@ use CController,
 
 class PhonesList extends CController {
 
+    use PhonesFormat;
+
     public function init(): void {
         $this->disableCsrfValidation();
     }
@@ -88,7 +90,11 @@ class PhonesList extends CController {
                     'name'     => $row['name'],
                     'surname'  => $row['surname'],
                     'username' => $row['username'],
-                    'phone'    => $row['phone'],
+                    // `phone` é o valor cru do banco (só dígitos); `phone_fmt`
+                    // é o mesmo número com máscara. A view usa o formatado —
+                    // formatar aqui evita a view ter regra de negócio própria.
+                    'phone'     => $row['phone'],
+                    'phone_fmt' => $this->formatPhoneBr($row['phone']),
                     'groups'   => [],
                 ];
             }

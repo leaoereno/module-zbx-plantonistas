@@ -50,7 +50,103 @@ a.phn-export-btn {
     <button class="btn btn-alt" onclick="location.href='zabbix.php?action=plantonistas.phones.export'" title="Baixar lista de usuários em CSV">
         ↓ Exportar Usuários
     </button>
+    <button class="btn btn-alt" onclick="phnOpenImport()" title="Importar telefones em massa via CSV">
+        ↑ Importar Telefones
+    </button>
 </div>
+
+<!-- Modal de importação em massa -->
+<div id="phn-import-bg" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:1000;"
+     onclick="phnCloseImport()"></div>
+<div id="phn-import-modal" class="overlay-dialogue modal modal-popup modal-popup-medium"
+     style="display:none;top:80px;left:50%;transform:translateX(-50%);z-index:1001;" role="dialog">
+    <div class="overlay-dialogue-header">
+        <h4>Importar Telefones</h4>
+        <button class="btn-overlay-close" onclick="phnCloseImport()"></button>
+    </div>
+    <div class="overlay-dialogue-body" style="padding:18px 22px;background:#fff;">
+        <p style="color:#000;font-size:13px;margin:0 0 10px;">
+            Arquivo <strong>CSV</strong> com uma coluna de usuário e uma de telefone:
+        </p>
+        <p style="font-size:13px;margin:0 0 10px;line-height:2;">
+            <span style="color:#3b9c3b;font-weight:600;">Usuario</span><span style="color:#000;"> (login do Zabbix, ex.: z148534) &nbsp;·&nbsp; </span><span style="color:#3b9c3b;font-weight:600;">Telefone</span><span style="color:#000;"> (com ou sem máscara)</span>
+        </p>
+        <p style="font-size:12px;color:#666;margin:0 0 16px;line-height:1.6;">
+            💡 Use <strong>↓ Exportar Usuários</strong> para baixar o modelo já preenchido,
+            edite a coluna Telefone e reimporte — a coluna Nome é ignorada.<br>
+            Linha com telefone <strong>vazio não apaga</strong> o cadastro: para remover,
+            limpe o campo na tabela abaixo e salve.<br>
+            Só são atualizados usuários que você já pode editar aqui.
+        </p>
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+            <label style="flex:1;min-width:220px;background:#fff;border:1px solid #aaa;border-radius:3px;
+                          padding:6px 10px;color:#000;font-size:13px;cursor:pointer;
+                          white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
+                <input type="file" id="phn-import-file" accept=".csv,.tsv,.txt"
+                       style="display:none;" onchange="phnImportFileChosen(this)">
+                <span id="phn-import-filename">Escolher arquivo…</span>
+            </label>
+            <button type="button" class="btn" id="phn-import-btn"
+                    onclick="phnSubmitImport()" disabled>Importar</button>
+        </div>
+        <div id="phn-import-hint" style="margin-top:10px;font-size:12px;min-height:18px;"></div>
+    </div>
+    <div class="overlay-dialogue-footer">
+        <button type="button" class="btn-alt" onclick="phnCloseImport()">Cancelar</button>
+    </div>
+</div>
+
+<script>
+function phnOpenImport() {
+    document.getElementById('phn-import-bg').style.display = 'block';
+    document.getElementById('phn-import-modal').style.display = 'block';
+}
+function phnCloseImport() {
+    document.getElementById('phn-import-bg').style.display = 'none';
+    document.getElementById('phn-import-modal').style.display = 'none';
+    document.getElementById('phn-import-hint').textContent = '';
+}
+function phnImportFileChosen(inp) {
+    var f = inp.files[0];
+    document.getElementById('phn-import-filename').textContent = f ? f.name : 'Escolher arquivo…';
+    document.getElementById('phn-import-btn').disabled = !f;
+}
+function phnSubmitImport() {
+    var f = document.getElementById('phn-import-file').files[0];
+    if (!f) return;
+    var btn  = document.getElementById('phn-import-btn');
+    var hint = document.getElementById('phn-import-hint');
+    btn.disabled = true;              // anti duplo clique
+    hint.style.color = '#666';
+    hint.textContent = '⏳ Lendo arquivo…';
+
+    var reader = new FileReader();
+    reader.onload = function(e) {
+        hint.textContent = '⏳ Enviando…';
+        // Mesmo padrão do import da Escala: base64 em campo hidden, porque a
+        // rota do Zabbix nesta action não trata multipart.
+        var form = document.createElement('form');
+        form.method = 'post';
+        form.action = 'zabbix.php?action=plantonistas.phones.import';
+        form.style.display = 'none';
+        var add = function(name, val) {
+            var i = document.createElement('input');
+            i.type = 'hidden'; i.name = name; i.value = val;
+            form.appendChild(i);
+        };
+        add('import_file_b64',  e.target.result.split(',')[1]);
+        add('import_file_name', f.name);
+        document.body.appendChild(form);
+        form.submit();
+    };
+    reader.onerror = function() {
+        hint.style.color = '#dc3545';
+        hint.textContent = 'Erro ao ler o arquivo.';
+        btn.disabled = false;
+    };
+    reader.readAsDataURL(f);
+}
+</script>
 
 <?php if (empty($data['users'])): ?>
     <div style="padding:20px;color:#666;font-style:italic;">Nenhum usuário encontrado.</div>
@@ -119,7 +215,7 @@ a.phn-export-btn {
         </td>
         <td>
             <?php if ($u['phone']): ?>
-                <span class="phn-badge-ok"><?= htmlspecialchars($u['phone']) ?></span>
+                <span class="phn-badge-ok"><?= htmlspecialchars($u['phone_fmt']) ?></span>
             <?php else: ?>
                 <span class="phn-badge-no">não cadastrado</span>
             <?php endif; ?>
@@ -128,10 +224,10 @@ a.phn-export-btn {
             <form method="post" action="zabbix.php?action=plantonistas.phones.save" class="phn-form">
                 <input type="hidden" name="userid" value="<?= (int)$u['userid'] ?>">
                 <input type="text" name="phone" id="phn-inp-<?= (int)$u['userid'] ?>"
-                       value="<?= htmlspecialchars($u['phone']) ?>"
-                       placeholder="(11) 99999-9999" maxlength="15"
+                       value="<?= htmlspecialchars($u['phone_fmt']) ?>"
+                       placeholder="(11) 99999-9999" maxlength="16"
                        style="width:140px;" autocomplete="off"
-                       oninput="phnMask(this)">
+                       onblur="phnMask(this)">
                 <button class="btn" type="submit">Salvar</button>
             </form>
         </td>
@@ -141,20 +237,36 @@ a.phn-export-btn {
 </table>
 
 <script>
+// Máscara espelhando PhonesFormat::formatPhoneBr() do PHP — as duas regras
+// TÊM que concordar, senão a linha muda de formato ao recarregar a página.
+//
+// Roda no blur, não no input: a versão anterior formatava a cada tecla e
+// assumia DDD sempre, então quem digitasse um ramal de 5 dígitos ou um fixo
+// de 8 sem DDD via o número virar "(12) 345" no meio da digitação. O dado
+// gravado nunca foi afetado (o backend só guarda dígitos), mas a tela mentia.
+// Formatar quando o campo perde o foco deixa digitar em paz.
 function phnMask(inp) {
-    // Remove tudo que não for dígito
-    var v = inp.value.replace(/\D/g, '').substring(0, 11);
-    // Formata: (DD) 9XXXX-XXXX  ou  (DD) XXXX-XXXX
-    if (v.length === 0) { inp.value = ''; return; }
-    var r = '(' + v.substring(0, 2);
-    if (v.length > 2) r += ') ' + v.substring(2, v.length > 10 ? 7 : 6);
-    if (v.length > (v.length > 10 ? 7 : 6)) r += '-' + v.substring(v.length > 10 ? 7 : 6);
-    inp.value = r;
+    // NÃO truncar em 11 dígitos: o value daqui é o que vai no submit, então
+    // cortar dígitos gravaria um telefone MUTILADO no banco (um número com
+    // +55 colado, 13 dígitos, viraria "(55) 11987-6543" e salvaria errado).
+    // Fora dos padrões conhecidos, devolve os dígitos inteiros — igual ao PHP.
+    var d = inp.value.replace(/\D/g, '');
+    var n = d.length;
+    if (n === 11 && d.charAt(0) === '0') {
+        // 0800 e afins: nenhum DDD começa com 0
+        inp.value = d.substr(0, 4) + ' ' + d.substr(4, 3) + '-' + d.substr(7);
+    } else if (n === 11) {
+        inp.value = '(' + d.substr(0, 2) + ') ' + d.substr(2, 5) + '-' + d.substr(7);
+    } else if (n === 10) {
+        inp.value = '(' + d.substr(0, 2) + ') ' + d.substr(2, 4) + '-' + d.substr(6);
+    } else if (n === 9) {
+        inp.value = d.substr(0, 5) + '-' + d.substr(5);
+    } else if (n === 8) {
+        inp.value = d.substr(0, 4) + '-' + d.substr(4);
+    } else {
+        inp.value = d; // ramal, 0800, cadastro fora de padrão: deixa cru
+    }
 }
-// Aplicar máscara nos valores já preenchidos ao carregar
-document.querySelectorAll('input[id^="phn-inp-"]').forEach(function(inp) {
-    if (inp.value) phnMask(inp);
-});
 
 function phnFilter() {
     var q     = document.getElementById('phn-filter-name').value.toLowerCase().trim();

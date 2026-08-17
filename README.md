@@ -16,7 +16,7 @@ Tudo fica no menu **Plantão** (após Reports):
 | Visão Geral | `plantonistas.overview` | Quem está de plantão hoje, por grupo (por turno, se o grupo tiver turnos cadastrados) |
 | Escala | `plantonistas.list` | Calendário mensal; escalar por turno (se o grupo tiver turnos em "Gerenciar Turnos") ou titular/reserva único (grupos sem turno); import/export CSV-XLSX (sempre no modo titular/reserva, mesmo em grupos com turnos) |
 | Histórico | `plantonistas.history` | Log de alterações da escala |
-| Telefones | `plantonistas.phones.list` | Telefone de contato por usuário |
+| Telefones | `plantonistas.phones.list` | Telefone de contato por usuário, com máscara brasileira; export CSV e importação em massa (`plantonistas.phones.import`) |
 | Repasse Plantão | `plantonistas.report.view` | Relatório de repasse NOC (eventos, MTTA, presença, diário de bordo com editor rico e menções `@`usuário/`_h`host/`_hg`grupo de hosts, PDF) |
 | Gerenciar Turnos | `plantonistas.shifts.view` | Turnos por equipe + vínculo analista→turno (só Admin/Super Admin) |
 

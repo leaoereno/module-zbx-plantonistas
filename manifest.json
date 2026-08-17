@@ -42,6 +42,9 @@
         "plantonistas.phones.save": {
             "class": "PhonesSave"
         },
+        "plantonistas.phones.import": {
+            "class": "PhonesImport"
+        },
         "plantonistas.report.view": {
             "class": "TurnosReportView",
             "view": "plantonistas.report.view"
