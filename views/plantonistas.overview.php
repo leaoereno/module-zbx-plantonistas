@@ -84,11 +84,13 @@ ob_start(); ?>
         <div style="color:#666;font-style:italic;">Nenhum grupo disponível.</div>
     <?php else: ?>
 
+    <?php if (!empty($data['can_manage'])): ?>
     <div class="ov-actions" style="margin-bottom:20px;">
         <button class="btn btn-alt" onclick="location.href='zabbix.php?action=plantonistas.list'">
             Gerenciar Escala
         </button>
     </div>
+    <?php endif; ?>
 
     <div class="ov-grid">
     <?php foreach ($groups as $gid => $gname):

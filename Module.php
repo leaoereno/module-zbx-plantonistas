@@ -44,16 +44,43 @@ class Module extends CModule {
             error_log('[plantonistas] migrateSchema falhou: ' . $e->getMessage());
         }
 
-        if (CWebUser::getType() < USER_TYPE_ZABBIX_USER) {
+        $user_type = CWebUser::getType();
+
+        if ($user_type < USER_TYPE_ZABBIX_USER) {
             return;
         }
 
+        // User (1) enxerga apenas Visão Geral e Repasse Plantão.
+        // Escala, Histórico, Telefones e Gerenciar Turnos são Admin (2)+.
+        $is_admin = ($user_type >= USER_TYPE_ZABBIX_ADMIN);
+
         try {
             $submenu = (new CMenu())
-                ->add((new CMenuItem(_('Visão Geral')))->setAction('plantonistas.overview'))
-                ->add((new CMenuItem(_('Escala')))->setAction('plantonistas.list'))
-                ->add((new CMenuItem(_('Histórico')))->setAction('plantonistas.history'))
-                ->add((new CMenuItem(_('Telefones')))->setAction('plantonistas.phones.list'))
+                ->add((new CMenuItem(_('Visão Geral')))->setAction('plantonistas.overview'));
+
+            if ($is_admin) {
+                $submenu
+                    ->add((new CMenuItem(_('Escala')))
+                        ->setAction('plantonistas.list')
+                        ->setAliases([
+                            'plantonistas.save',
+                            'plantonistas.delete',
+                            'plantonistas.export',
+                            'plantonistas.import',
+                        ])
+                    )
+                    ->add((new CMenuItem(_('Histórico')))->setAction('plantonistas.history'))
+                    ->add((new CMenuItem(_('Telefones')))
+                        ->setAction('plantonistas.phones.list')
+                        ->setAliases([
+                            'plantonistas.phones.save',
+                            'plantonistas.phones.export',
+                            'plantonistas.phones.import',
+                        ])
+                    );
+            }
+
+            $submenu
                 ->add((new CMenuItem(_('Repasse Plantão')))
                     ->setAction('plantonistas.report.view')
                     ->setAliases([
@@ -66,7 +93,7 @@ class Module extends CModule {
                 );
 
             // Gerenciar Turnos só para Admin (2) / Super Admin (3).
-            if (CWebUser::getType() >= USER_TYPE_ZABBIX_ADMIN) {
+            if ($is_admin) {
                 $submenu->add((new CMenuItem(_('Gerenciar Turnos')))
                     ->setAction('plantonistas.shifts.view')
                     ->setAliases([

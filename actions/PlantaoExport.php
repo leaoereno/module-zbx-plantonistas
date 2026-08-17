@@ -17,7 +17,9 @@ class PlantaoExport extends CController {
     }
 
     public function checkPermissions(): bool {
-        return ($this->getUserType() >= USER_TYPE_ZABBIX_USER);
+        // Escala / Histórico / Telefones: somente Admin (2) e Super Admin (3).
+        // Usuário comum (1) só tem Visão Geral e Repasse Plantão.
+        return ($this->getUserType() >= USER_TYPE_ZABBIX_ADMIN);
     }
 
     protected function doAction(): void {

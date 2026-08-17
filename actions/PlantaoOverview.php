@@ -88,6 +88,8 @@ class PlantaoOverview extends CController {
             'groups'          => $groups,
             'shifts_by_group' => $shifts_by_group,
             'overview'        => $overview,
+            // Botão "Gerenciar Escala" só aparece para Admin (2) / Super Admin (3).
+            'can_manage'      => ($this->getUserType() >= USER_TYPE_ZABBIX_ADMIN),
         ]);
         $response->setTitle('Visão Geral — Plantão Hoje');
         $this->setResponse($response);

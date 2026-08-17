@@ -33,7 +33,8 @@ class TurnosShiftsSave extends CController {
     }
 
     protected function checkPermissions(): bool {
-        return !CWebUser::isGuest();
+        // Gerenciar Turnos: somente Admin (2) e Super Admin (3).
+        return !CWebUser::isGuest() && $this->getUserType() >= USER_TYPE_ZABBIX_ADMIN;
     }
 
     protected function doAction(): void {
