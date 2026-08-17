@@ -536,6 +536,56 @@ UTF-8 (Excel pt-BR) e cujo import aceita `d/m/Y`, `d-m-Y`, `Y-m-d` e serial
 do Excel, com `d/m/Y` testado ANTES de qualquer outro formato (nunca
 interpreta 03/04 como 4 de março).
 
+### "Não é possível atualizar a função do usuário" ao habilitar o módulo (2026-08-17)
+
+Salvar um papel (Usuários → Papéis de utilizador) com o módulo marcado
+falhava com `Duplicate entry '4182' for key 'role_rule.PRIMARY'` em
+`CRole::updateRules() → DB::insertBatch()`.
+
+**Não é bug do módulo** — o Plantonistas não escreve em `role_rule` (só o
+README tem um DELETE opcional de regras órfãs). É a tabela `ids` do Zabbix
+fora de sincronia: `role_rule.role_ruleid` **não** é auto-increment, o
+Zabbix reserva IDs via `DB::reserveIds()`, que lê `ids.nextid` e usa
+`nextid + 1` em diante. Se alguém insere linhas em `role_rule` por SQL
+direto (o velho `MAX(id)+1`) sem atualizar `ids`, o contador fica atrasado e
+todo INSERT novo colide.
+
+Números reais de produção em 2026-08-17: `ids.nextid = 4181` contra
+`MAX(role_ruleid) = 4418` — 237 IDs de atraso. As linhas 4182–4194 eram do
+módulo **`fcorr`** (`fcorr.list`, `fcorr.save`, … nos roleid 3 e 8),
+inseridas na mão. O Plantonistas só foi o próximo a tentar usar a faixa.
+
+Diagnóstico e correção (no banco `172.18.190.21`, não nos frontends — `ids`
+é compartilhada):
+
+```sql
+SELECT MAX(role_ruleid) FROM role_rule;
+SELECT * FROM ids WHERE table_name = 'role_rule';
+
+UPDATE ids SET nextid = (SELECT MAX(role_ruleid) FROM role_rule)
+ WHERE table_name = 'role_rule' AND field_name = 'role_ruleid';
+```
+
+`nextid` guarda o **último** ID usado, então igualar ao `MAX` é o valor
+certo. Se a linha em `ids` não existir, o Zabbix a recria a partir do
+`MAX` — aí a colisão teria outra origem.
+
+Auditoria das outras tabelas (o hábito de inserir `role_rule` na mão
+provavelmente atingiu mais coisa). Esta query só **gera** os SELECTs de
+conferência; rodar o resultado dela:
+
+```sql
+SELECT CONCAT('SELECT ''', table_name, ''' AS tbl, ', nextid,
+              ' AS nextid, MAX(', field_name, ') AS max_real FROM ', table_name,
+              ' HAVING max_real > ', nextid, ';')
+  FROM ids;
+```
+
+Lição pra qualquer módulo futuro: liberar action de módulo por SQL direto em
+`role_rule` **exige** acertar `ids` na mesma transação. Preferir marcar o
+módulo pela UI (Papéis de utilizador), que é o caminho que usa
+`reserveIds()` corretamente.
+
 ### Backlog conhecido
 
 - Salvar vínculo analista→turno em massa (hoje é um clique por analista) —

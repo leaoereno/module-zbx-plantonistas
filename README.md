@@ -100,15 +100,48 @@ módulos antigos, confira na seção Modules se "Plantonistas" está permitido.
 Roles com "Default access to new modules" desmarcado precisam de liberação
 manual.
 
+> ⚠️ Se salvar o papel falhar com **"Não é possível atualizar a função do
+> usuário"** e `Duplicate entry '<N>' for key 'role_rule.PRIMARY'`, o
+> problema não é o módulo: é a tabela `ids` do Zabbix atrasada em relação ao
+> `MAX(role_ruleid)` (acontece quando alguém insere `role_rule` por SQL
+> direto sem atualizar `ids`). Correção no banco:
+>
+> ```sql
+> SELECT MAX(role_ruleid) FROM role_rule;
+> SELECT * FROM ids WHERE table_name = 'role_rule';
+>
+> UPDATE ids SET nextid = (SELECT MAX(role_ruleid) FROM role_rule)
+>  WHERE table_name = 'role_rule' AND field_name = 'role_ruleid';
+> ```
+
 **4. Crontab do presence tracker** — o caminho mudou. Onde estiver o cron
-antigo (ex.: `/etc/cron.d/turnos-presence`):
+antigo (ex.: `/etc/cron.d/turnos-presence`), o jeito mais seguro é derivar do
+arquivo existente, sem redigitar credencial:
 
 ```bash
-# remover/comentar a linha antiga (module-zbx-repasse-plantao) e apontar para:
-*/5 * * * * apache /usr/bin/php /usr/share/zabbix/modules/module-zbx-plantonistas/scripts/cron_presence_tracker.php >> /var/log/zabbix_presence.log 2>&1
+sed 's|module-zbx-repasse-plantao|module-zbx-plantonistas|g' \
+  /etc/cron.d/<arquivo-antigo> > /etc/cron.d/plantonistas-presence
+chmod 644 /etc/cron.d/plantonistas-presence
 ```
 
-O token da API continua vindo da variável de ambiente `ZABBIX_API_TOKEN`.
+Atenção a três coisas que já causaram tabela de presença vazia em produção:
+
+- **Nome do arquivo em `/etc/cron.d/` não pode ter ponto** — o cron ignora
+  `zbx-repasse-plantao.disabled` silenciosamente (é assim que se desativa).
+- **As variáveis `DB_HOST`/`DB_PORT`/`DB_NAME`/`DB_USER`/`DB_PASS` são
+  obrigatórias no arquivo de cron**: em CLI não existe `$GLOBALS['DB']`, e sem
+  elas o script tenta `localhost`. `ZABBIX_API_TOKEN` e `ZABBIX_URL` idem —
+  `ZABBIX_URL` é o endpoint da API, não a URL do frontend.
+- **Rodar em UM frontend só** — grava no banco compartilhado; nos dois
+  duplica escrita e consumo da API.
+
+Teste manual antes de esperar o cron (as aspas simples do arquivo protegem o
+`$` da senha):
+
+```bash
+set -a; source <(grep -E "^(ZABBIX|DB)_" /etc/cron.d/plantonistas-presence); set +a
+php /usr/share/zabbix/modules/module-zbx-plantonistas/scripts/cron_presence_tracker.php
+```
 
 **5. Validação** — abrir cada tela uma vez (Visão Geral, Escala, Histórico,
 Telefones, Repasse Plantão, Gerenciar Turnos), com `catch_workers_output = yes`
