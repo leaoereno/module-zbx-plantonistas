@@ -571,16 +571,38 @@ certo. Se a linha em `ids` não existir, o Zabbix a recria a partir do
 `MAX` — aí a colisão teria outra origem.
 
 Auditoria das outras tabelas (o hábito de inserir `role_rule` na mão
-provavelmente atingiu mais coisa). São ~125 tabelas em `ids`, então não dá pra
-conferir uma a uma: encadeia-se um `mysql` que **gera** os SELECTs com outro
-que os executa. Credencial num `~/.my.cnf` (`chmod 600`, apagar depois) pra
-não repetir senha nem deixá-la visível no `ps`:
+provavelmente atingiu mais coisa). São ~124 linhas em `ids`, então roda-se tudo
+de uma vez com prepared statement, direto no cliente `mysql`:
 
-```bash
-mysql -N -B -e "SELECT CONCAT('SELECT ''',table_name,''' AS tbl, ',nextid,
-  ' AS nextid, MAX(',field_name,') AS max_real FROM ',table_name,
-  ' HAVING max_real > ',nextid,';') FROM ids;" | mysql -t
+```sql
+SET SESSION group_concat_max_len = 1000000;
+
+SET @sql = (SELECT CONCAT(
+  'SELECT * FROM (',
+  GROUP_CONCAT(CONCAT('SELECT ''',i.table_name,''' AS tbl,',i.nextid,
+                      ' AS nextid,MAX(',i.field_name,') AS max_real FROM ',i.table_name)
+               SEPARATOR ' UNION ALL '),
+  ') t WHERE max_real > nextid ORDER BY max_real - nextid DESC'
+) FROM ids i
+  JOIN information_schema.columns c
+    ON c.table_schema = DATABASE()
+   AND c.table_name  = i.table_name
+   AND c.column_name = i.field_name);
+
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
 ```
+
+**O JOIN com `information_schema` não é enfeite**: a tabela `ids` de produção
+carrega linhas órfãs de versões antigas do Zabbix — `applications`,
+`application_discovery`, `application_prototype`, `application_template`,
+`items_applications`, `item_application_prototype`, `screens`,
+`screens_items`, `screen_user`, `screen_usrgrp`, `valuemaps` (applications e
+screens saíram do schema no 5.4). Sem o filtro, o `PREPARE` morre inteiro com
+`Table 'zabbix.application_discovery' doesn't exist`. Essas linhas são
+inofensivas (nenhum código do 7.0 as consulta) — resíduo de upgrade. Listá-las:
+mesmo JOIN, com `LEFT JOIN ... WHERE c.table_name IS NULL`.
 
 Só retorna tabela com o contador atrasado; o conserto é o mesmo `UPDATE ids`
 trocando `table_name`/`field_name`. Ler o resultado com duas ressalvas:
