@@ -571,15 +571,23 @@ certo. Se a linha em `ids` não existir, o Zabbix a recria a partir do
 `MAX` — aí a colisão teria outra origem.
 
 Auditoria das outras tabelas (o hábito de inserir `role_rule` na mão
-provavelmente atingiu mais coisa). Esta query só **gera** os SELECTs de
-conferência; rodar o resultado dela:
+provavelmente atingiu mais coisa). São ~125 tabelas em `ids`, então não dá pra
+conferir uma a uma: encadeia-se um `mysql` que **gera** os SELECTs com outro
+que os executa. Credencial num `~/.my.cnf` (`chmod 600`, apagar depois) pra
+não repetir senha nem deixá-la visível no `ps`:
 
-```sql
-SELECT CONCAT('SELECT ''', table_name, ''' AS tbl, ', nextid,
-              ' AS nextid, MAX(', field_name, ') AS max_real FROM ', table_name,
-              ' HAVING max_real > ', nextid, ';')
-  FROM ids;
+```bash
+mysql -N -B -e "SELECT CONCAT('SELECT ''',table_name,''' AS tbl, ',nextid,
+  ' AS nextid, MAX(',field_name,') AS max_real FROM ',table_name,
+  ' HAVING max_real > ',nextid,';') FROM ids;" | mysql -t
 ```
+
+Só retorna tabela com o contador atrasado; o conserto é o mesmo `UPDATE ids`
+trocando `table_name`/`field_name`. Ler o resultado com duas ressalvas:
+`nextid` **maior** que o `MAX` é normal (ID reservado e não usado, ou
+housekeeper que apagou linhas) e nem aparece nessa listagem; e se aparecer
+tabela grande do server (`items`, `hosts`, `triggers`, `events`), tratar em
+janela — ali quem reserva ID também é o Zabbix server, não só o frontend.
 
 Lição pra qualquer módulo futuro: liberar action de módulo por SQL direto em
 `role_rule` **exige** acertar `ids` na mesma transação. Preferir marcar o
