@@ -25,6 +25,20 @@ function rp_shiftLabel(string $sh): string {
 function rp_isCustomShift($sh): bool {
     return ctype_digit((string)$sh);
 }
+/**
+ * Rótulo do turno vinculado ao usuário (tela Gerenciar Turnos).
+ * Mesmo formato do seletor de turno: "Diurno (06:00–14:00)".
+ * Usuário sem vínculo → string vazia (a view mostra "Sem turno").
+ */
+function rp_userShiftLabel(array $row): string {
+    $name = trim((string)($row['shift_name'] ?? ''));
+    if ($name === '') return '';
+    if (!empty($row['shift_start']) && !empty($row['shift_end'])) {
+        $name .= ' (' . substr((string)$row['shift_start'], 0, 5)
+               . '–' . substr((string)$row['shift_end'], 0, 5) . ')';
+    }
+    return $name;
+}
 function rp_probLink(?string $h=null): string {
     $u = 'zabbix.php?action=problem.view&filter_set=1&filter_show=3';
     return $h ? $u.'&filter_name='.urlencode($h) : $u;
@@ -334,11 +348,19 @@ $pview_base = "zabbix.php?action=problem.view&filter_set=1&filter_show=3&from=".
     <?php if (empty($data['presence'])): ?>
         <div class="rp-card-body rp-empty">Nenhum dado de presença. Execute o cron <code>cron_presence_tracker.php</code>.</div>
     <?php else: ?>
-        <table class="rp-table"><thead><tr><th>Analista</th><th>Username</th><th>Primeira Atividade</th><th>Última Atividade</th><th>Tempo Online</th></tr></thead><tbody>
+        <table class="rp-table"><thead><tr><th>Analista</th><th>Username</th><th>Turno</th><th>Primeira Atividade</th><th>Última Atividade</th><th>Tempo Online</th></tr></thead><tbody>
         <?php foreach ($data['presence'] as $p): ?>
+        <?php $p_shift = rp_userShiftLabel($p); ?>
         <tr>
             <td class="td-bold"><?= htmlspecialchars($p['fullname']) ?></td>
             <td><?= htmlspecialchars($p['username']) ?></td>
+            <td>
+                <?php if ($p_shift !== ''): ?>
+                    <?= htmlspecialchars($p_shift) ?>
+                <?php else: ?>
+                    <span class="rp-muted" title="Analista sem turno vinculado em Gerenciar Turnos">Sem turno</span>
+                <?php endif; ?>
+            </td>
             <td class="td-mono"><?= $p['first_seen'] ?></td>
             <td class="td-mono"><?= $p['last_seen'] ?></td>
             <td class="td-bold"><?= rp_duration((int)$p['online_minutes'] * 60) ?></td>

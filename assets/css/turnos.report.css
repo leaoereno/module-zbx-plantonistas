@@ -409,6 +409,12 @@
     text-align: center;
 }
 
+/* Texto secundário dentro de célula de tabela (ex.: "Sem turno" na Presença) */
+.rp-muted {
+    color: var(--rp-text-muted);
+    font-style: italic;
+}
+
 /* ── Badges ────────────────────────────────────────────── */
 .rp-badge {
     background: var(--rp-blue-light);
