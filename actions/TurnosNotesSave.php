@@ -104,8 +104,15 @@ class TurnosNotesSave extends CController {
         try {
             $userid   = (int)(CWebUser::$data['userid'] ?? 0);
             $username = CWebUser::$data['username'] ?? 'unknown';
-            $fullname = trim((CWebUser::$data['name'] ?? '') . ' ' . (CWebUser::$data['surname'] ?? ''))
-                        ?: $username;
+            // formatUserLabel(): o nome do autor é PERSISTIDO em analyst_name,
+            // então concatenar name+surname cru deixaria o nome duplicado
+            // ("Rafael Rafael Leao Ereno") gravado no Diário de Bordo pra
+            // sempre — aqui não tem cron que corrija depois.
+            $fullname = $this->formatUserLabel(
+                CWebUser::$data['name']    ?? '',
+                CWebUser::$data['surname'] ?? '',
+                $username
+            );
 
             [$shift_name, $shift_id] = $this->resolveShiftName($db, $shiftRaw);
 

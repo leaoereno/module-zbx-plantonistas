@@ -101,8 +101,11 @@ class TurnosReportPdf extends CController {
         $db->close();
 
         $gmtta   = $this->calcGlobalMTTA($mtta);
-        $user_fn = trim((CWebUser::$data['name'] ?? '') . ' ' . (CWebUser::$data['surname'] ?? ''))
-                   ?: (CWebUser::$data['username'] ?? 'Admin');
+        $user_fn = $this->formatUserLabel(
+            CWebUser::$data['name']    ?? '',
+            CWebUser::$data['surname'] ?? '',
+            CWebUser::$data['username'] ?? 'Admin'
+        );
 
         $isUserRole = ($roleType < 2);
         $mttaKpiLabel  = $isUserRole ? 'Seu MTTA' : 'MTTA Global';

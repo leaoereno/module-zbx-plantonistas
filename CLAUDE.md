@@ -400,6 +400,44 @@ cadastro do Zabbix agora se reflete na próxima execução do cron.
 Correção é só de gravação: **nada reescreve as linhas já no banco**, elas se
 corrigem sozinhas na próxima passada do cron (UPDATE) ou expiram em 7 dias.
 
+### Dropdown de menções: itens em branco, corte e polimento (2026-08-17)
+
+Três problemas na lista que abre ao digitar `@` no Diário de Bordo:
+
+**1. Itens em branco no topo.** O label vinha de
+`CONCAT(name,' ',surname)` cru — conta que só tem `username` (serviço,
+integração) produzia label `' '`, e o `ORDER BY label` jogava justamente
+esses para o começo da lista. Agora o SQL devolve `username`/`name`/`surname`
+separados, o label é montado por `formatUserLabel()` (novo helper no trait,
+mesma regra de bordas do `buildFullName()` do cron) com o **username como
+reserva**, e o `ORDER BY` usa o nome efetivo. A duplicação da lógica entre
+trait e cron é proposital: o cron roda em CLI sem carregar o módulo.
+`formatUserLabel()` também passou a ser usado em `current_fullname`
+(`TurnosReportView`, aparece no "Analista:" e no rodapé), no
+`TurnosReportPdf` e no `TurnosNotesSave` — este último é o mais importante
+porque `analyst_name` é **persistido**: ali o nome duplicado ficaria gravado
+para sempre, sem cron que corrija depois.
+
+**2. Lista cortada, "sem barra de rolagem".** O dropdown era
+`position: absolute` dentro de `.rp-editor-wrap`, e `.rp-card` tem
+`overflow: hidden` (necessário pro border-radius das tabelas) — tudo que
+passava da borda do card era recortado, inclusive a scrollbar, dando a
+impressão de que a lista tinha só os primeiros itens. Virou
+`position: fixed` com coordenadas de viewport calculadas no JS, que **não**
+sofre clipping de ancestral. Consequências que o fixed traz e estão
+tratadas: `positionDropdown()` é chamado em `scroll` (com `capture: true`,
+pra pegar scroll de container interno do Zabbix, não só o da janela) e em
+`resize`, senão a lista ficaria parada enquanto o texto rola; inverte pra
+cima (`.rp-flip-up`) quando não cabe embaixo; e prende nas bordas laterais.
+
+**3. Polimento visual/UX.** Ícone por tipo (`fa-user`/`fa-server`/
+`fa-layer-group`), cabeçalho sticky com o tipo e a contagem, username como
+segunda linha do item (desambigua homônimo), animação de entrada de 0.14s
+com `prefers-reduced-motion` respeitado, scrollbar fina, e navegação por
+teclado: ↑/↓ circulares, Enter/Tab inserem, Esc fecha, item ativo espelhando
+o hover (`.rp-mention-active`) com `scrollIntoView({block:'nearest'})`.
+Enter sem item destacado continua fazendo quebra de linha no editor.
+
 ### Backlog conhecido
 
 - Salvar vínculo analista→turno em massa (hoje é um clique por analista) —
@@ -423,6 +461,13 @@ corrigem sozinhas na próxima passada do cron (UPDATE) ou expiram em 7 dias.
   `INSERT ... ON DUPLICATE KEY UPDATE` (pequena janela de corrida).
 - Telefones: Admin/User só se veem dentro do mesmo `roleid` — confirmar se é
   intencional (ver "Modelo de permissões" em Contexto).
+- Nome duplicado (`name` + `surname` concatenados às cegas) ainda existe nos
+  `CONCAT` feitos em SQL: `queryShiftAnalysts()`, `queryMTTA()` e
+  `listUsersByGroup()` no trait, e em toda a família escala (`PlantaoList`,
+  `PlantaoExport`, `PhonesList`, `PhonesExport`, `PlantaoOverview`,
+  `PlantaoHistory`). Corrigir exige trazer `name`/`surname` separados e
+  montar o label em PHP com `formatUserLabel()` — feito só onde o defeito
+  estava visível/persistido; o resto ficou pra quando incomodar.
 - Editor rico do Diário de Bordo: sem suporte a colar imagem/anexo (só texto
   formatado + menções). Sem histórico de menções lidas (só as pendentes
   aparecem — decisão consciente, ver seção acima).

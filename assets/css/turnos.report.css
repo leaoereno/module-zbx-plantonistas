@@ -1165,30 +1165,152 @@ a.rp-mention-link:hover {
     color: #e65100;
 }
 
-/* ── Dropdown de busca (autocomplete [hostgroup]/[host]/[user]) ── */
+/* ── Dropdown de busca (autocomplete @user / _h host / _hg grupo) ──
+   position: FIXED, não absolute. O ancestral .rp-card tem overflow:hidden
+   (necessário pro border-radius das tabelas), que recortava o dropdown
+   posicionado em absolute: a lista abria, mas tudo que passava da borda do
+   card ficava invisível — inclusive a barra de rolagem, dando a impressão
+   de que só existiam os primeiros registros. Em fixed o clipping do
+   ancestral não se aplica; o JS calcula left/top em coordenadas de
+   viewport e inverte pra cima quando não cabe embaixo. */
 .rp-mention-dropdown {
-    position: absolute;
-    z-index: 50;
-    min-width: 180px;
-    max-width: 320px;
-    max-height: 220px;
+    position: fixed;
+    z-index: 1000;
+    min-width: 260px;
+    max-width: 380px;
+    max-height: 300px;
     overflow-y: auto;
+    overscroll-behavior: contain;
     background: var(--rp-white);
     border: 1px solid var(--rp-border);
-    border-radius: 6px;
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+    border-radius: 8px;
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.18), 0 2px 6px rgba(0, 0, 0, 0.08);
+    padding: 4px;
+    animation: rp-mention-in 0.14s ease-out;
+    transform-origin: top left;
+}
+
+/* Dropdown aberto pra cima (flip): cresce da base */
+.rp-mention-dropdown.rp-flip-up {
+    transform-origin: bottom left;
+}
+
+@keyframes rp-mention-in {
+    from { opacity: 0; transform: translateY(-4px) scale(0.98); }
+    to   { opacity: 1; transform: translateY(0)    scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .rp-mention-dropdown { animation: none; }
+}
+
+/* Barra de rolagem fina — a nativa do Zabbix é larga e some no fundo claro */
+.rp-mention-dropdown::-webkit-scrollbar {
+    width: 8px;
+}
+.rp-mention-dropdown::-webkit-scrollbar-track {
+    background: transparent;
+}
+.rp-mention-dropdown::-webkit-scrollbar-thumb {
+    background: var(--rp-border);
+    border-radius: 4px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+}
+.rp-mention-dropdown::-webkit-scrollbar-thumb:hover {
+    background: var(--rp-text-muted);
+    background-clip: content-box;
+}
+.rp-mention-dropdown {
+    scrollbar-width: thin;
+    scrollbar-color: var(--rp-border) transparent;
+}
+
+/* Cabeçalho fixo: tipo da busca + contagem, some junto com a lista */
+.rp-mention-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px 8px;
+    margin-bottom: 2px;
+    border-bottom: 1px solid var(--rp-border);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--rp-text-muted);
+    position: sticky;
+    top: -4px;
+    background: var(--rp-white);
+    z-index: 1;
+}
+
+.rp-mention-head .rp-mention-count {
+    margin-left: auto;
+    text-transform: none;
+    letter-spacing: 0;
+    font-weight: 600;
 }
 
 .rp-mention-opt {
-    padding: 7px 12px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 7px 10px;
+    border-radius: 6px;
     font-size: 12px;
     cursor: pointer;
     color: var(--rp-text);
+    transition: background 0.12s, color 0.12s;
 }
 
-.rp-mention-opt:hover {
+/* Ícone do tipo, num quadradinho pra dar ritmo visual à lista */
+.rp-mention-opt .rp-mention-ico {
+    flex: 0 0 22px;
+    height: 22px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 5px;
     background: var(--rp-blue-light);
     color: var(--rp-blue);
+    font-size: 11px;
+}
+
+.rp-mention-opt .rp-mention-txt {
+    min-width: 0; /* deixa o ellipsis funcionar dentro do flex */
+}
+
+.rp-mention-opt .rp-mention-label {
+    display: block;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-weight: 600;
+}
+
+/* Username embaixo do nome: desambigua homônimo */
+.rp-mention-opt .rp-mention-sub {
+    display: block;
+    font-size: 10px;
+    color: var(--rp-text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* .rp-mention-active = item sob navegação por teclado (setas).
+   Mesmo destaque do hover, pra teclado e mouse falarem a mesma língua. */
+.rp-mention-opt:hover,
+.rp-mention-opt.rp-mention-active {
+    background: var(--rp-blue-light);
+    color: var(--rp-blue);
+}
+
+.rp-mention-opt:hover .rp-mention-ico,
+.rp-mention-opt.rp-mention-active .rp-mention-ico {
+    background: var(--rp-blue);
+    color: #fff;
 }
 
 .rp-mention-empty {
@@ -1196,6 +1318,28 @@ a.rp-mention-link:hover {
     font-size: 12px;
     color: var(--rp-text-muted);
     font-style: italic;
+}
+
+/* Rodapé com as teclas de atalho */
+.rp-mention-foot {
+    padding: 6px 10px 2px;
+    margin-top: 2px;
+    border-top: 1px solid var(--rp-border);
+    font-size: 10px;
+    color: var(--rp-text-muted);
+}
+
+.rp-mention-foot kbd {
+    display: inline-block;
+    padding: 0 4px;
+    border: 1px solid var(--rp-border);
+    border-bottom-width: 2px;
+    border-radius: 3px;
+    font-family: inherit;
+    font-size: 9px;
+    line-height: 14px;
+    color: var(--rp-text);
+    background: var(--rp-white);
 }
 
 /* ── Banner de menção [user] pendente ─────────────────────── */

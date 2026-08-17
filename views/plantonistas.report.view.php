@@ -594,20 +594,67 @@ function escHtml(s) {
     return d.innerHTML;
 }
 
+let mentionResults = [];  // resultados na tela agora
+let mentionActive  = -1;  // índice do item sob navegação por teclado
+
+const MENTION_META = {
+    user:      { icon: 'fa-user',        title: 'Usuários' },
+    host:      { icon: 'fa-server',      title: 'Hosts' },
+    hostgroup: { icon: 'fa-layer-group', title: 'Grupos de hosts' }
+};
+
 function closeMentionDropdown() {
     if (!dropdown) return;
     dropdown.style.display = 'none';
     dropdown.innerHTML = '';
-    mentionState = null;
+    dropdown.classList.remove('rp-flip-up');
+    mentionState   = null;
+    mentionResults = [];
+    mentionActive  = -1;
 }
 
+// O dropdown é position:fixed (o .rp-card tem overflow:hidden e recortava a
+// lista em absolute), então aqui as coordenadas são de VIEWPORT — sem
+// subtrair o offset do wrapper. Inverte pra cima se não couber embaixo e
+// segura nas bordas laterais pra não vazar da janela.
 function positionDropdown() {
     const sel = window.getSelection();
     if (!sel || sel.rangeCount === 0 || !editor) return;
-    const rect = sel.getRangeAt(0).getBoundingClientRect();
-    const wrapRect = editor.parentElement.getBoundingClientRect();
-    dropdown.style.left = Math.max(0, rect.left - wrapRect.left) + 'px';
-    dropdown.style.top = (rect.bottom - wrapRect.top + 4) + 'px';
+
+    let rect = sel.getRangeAt(0).getBoundingClientRect();
+    // Caret colapsado no começo de uma linha pode devolver rect zerado —
+    // aí o editor serve de âncora.
+    if (!rect || (rect.top === 0 && rect.left === 0 && rect.width === 0)) {
+        rect = editor.getBoundingClientRect();
+    }
+
+    const gap  = 6;
+    const dw   = dropdown.offsetWidth  || 260;
+    const dh   = dropdown.offsetHeight || 300;
+    const vw   = window.innerWidth;
+    const vh   = window.innerHeight;
+
+    const spaceBelow = vh - rect.bottom;
+    const flipUp     = spaceBelow < dh + gap && rect.top > spaceBelow;
+
+    dropdown.classList.toggle('rp-flip-up', flipUp);
+    dropdown.style.top  = (flipUp ? Math.max(gap, rect.top - dh - gap)
+                                  : rect.bottom + gap) + 'px';
+    dropdown.style.left = Math.min(Math.max(gap, rect.left), vw - dw - gap) + 'px';
+}
+
+function setMentionActive(idx) {
+    const opts = dropdown.querySelectorAll('.rp-mention-opt');
+    if (!opts.length) return;
+    // Circular: passar do fim volta ao começo, e vice-versa.
+    mentionActive = (idx + opts.length) % opts.length;
+    opts.forEach(function (el, i) {
+        el.classList.toggle('rp-mention-active', i === mentionActive);
+    });
+    const el = opts[mentionActive];
+    if (el && el.scrollIntoView) {
+        el.scrollIntoView({ block: 'nearest' });
+    }
 }
 
 let mentionDebounce = null;
@@ -623,22 +670,50 @@ function searchMentions(type, q) {
 
 function renderMentionResults(type, results) {
     if (!mentionState) return;
+
+    const meta = MENTION_META[type] || MENTION_META.user;
+    mentionResults = results;
+    mentionActive  = -1;
+
     if (!results.length) {
         dropdown.innerHTML = '<div class="rp-mention-empty">Nenhum resultado.</div>';
         dropdown.style.display = 'block';
         positionDropdown();
         return;
     }
-    dropdown.innerHTML = results.map(function (r, i) {
-        return '<div class="rp-mention-opt" data-idx="' + i + '">' + escHtml(r.label) + '</div>';
+
+    const head = '<div class="rp-mention-head">'
+        + '<i class="fas ' + meta.icon + '"></i> ' + meta.title
+        + '<span class="rp-mention-count">' + results.length + '</span>'
+        + '</div>';
+
+    const opts = results.map(function (r, i) {
+        // Label vazio não deveria mais chegar aqui (o backend cai no username),
+        // mas se chegar, mostra algo em vez de uma linha em branco clicável.
+        const label = (r.label && r.label.trim() !== '') ? r.label : '(sem nome)';
+        const sub   = r.sub ? '<span class="rp-mention-sub">' + escHtml(r.sub) + '</span>' : '';
+        return '<div class="rp-mention-opt" data-idx="' + i + '">'
+            + '<span class="rp-mention-ico"><i class="fas ' + meta.icon + '"></i></span>'
+            + '<span class="rp-mention-txt">'
+            + '<span class="rp-mention-label">' + escHtml(label) + '</span>' + sub
+            + '</span></div>';
     }).join('');
+
+    const foot = '<div class="rp-mention-foot">'
+        + '<kbd>&uarr;</kbd> <kbd>&darr;</kbd> navegar &middot; '
+        + '<kbd>Enter</kbd> inserir &middot; <kbd>Esc</kbd> fechar</div>';
+
+    dropdown.innerHTML = head + opts + foot;
     dropdown.style.display = 'block';
+    dropdown.scrollTop = 0;
     positionDropdown();
+
     dropdown.querySelectorAll('.rp-mention-opt').forEach(function (el, i) {
         el.addEventListener('mousedown', function (e) {
             e.preventDefault(); // não perder a seleção do editor antes de inserir
             insertMention(type, results[i]);
         });
+        el.addEventListener('mouseenter', function () { setMentionActive(i); });
     });
 }
 
@@ -708,13 +783,40 @@ if (editor) {
     });
 
     editor.addEventListener('keydown', function (e) {
-        if (e.key === 'Escape') closeMentionDropdown();
+        const open = dropdown && dropdown.style.display !== 'none';
+
+        if (e.key === 'Escape') { closeMentionDropdown(); return; }
+        if (!open || !mentionResults.length) return;
+
+        // Com a lista aberta, as setas navegam o dropdown em vez de mover o
+        // caret; Enter/Tab inserem o item destacado. Sem item destacado,
+        // Enter cai no comportamento normal do editor (quebra de linha).
+        if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            setMentionActive(mentionActive + 1);
+        } else if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            setMentionActive(mentionActive - 1);
+        } else if ((e.key === 'Enter' || e.key === 'Tab') && mentionActive >= 0) {
+            e.preventDefault();
+            insertMention(mentionState.type, mentionResults[mentionActive]);
+        }
     });
 
     document.addEventListener('click', function (e) {
         if (dropdown && dropdown.style.display !== 'none' && !dropdown.contains(e.target) && e.target !== editor) {
             closeMentionDropdown();
         }
+    });
+
+    // position:fixed não acompanha scroll: sem isto o dropdown ficaria
+    // parado enquanto o texto se move. capture=true pega também o scroll
+    // de containers internos do Zabbix, não só o da janela.
+    window.addEventListener('scroll', function () {
+        if (dropdown && dropdown.style.display !== 'none') positionDropdown();
+    }, true);
+    window.addEventListener('resize', function () {
+        if (dropdown && dropdown.style.display !== 'none') positionDropdown();
     });
 
     document.querySelectorAll('.rp-editor-btn').forEach(function (btn) {

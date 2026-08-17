@@ -48,9 +48,14 @@ class TurnosReportView extends CController {
 
         $current_user     = CWebUser::$data['username']  ?? 'admin';
         $current_userid   = (int)(CWebUser::$data['userid'] ?? 0);
-        $current_fullname = trim(
-            (CWebUser::$data['name'] ?? '') . ' ' . (CWebUser::$data['surname'] ?? '')
-        ) ?: $current_user;
+        // formatUserLabel() em vez de concatenar name+surname: cadastro com o
+        // nome completo no campo surname exibia "Rafael Rafael Leao Ereno" no
+        // "Analista:" do Diário de Bordo e no rodapé do relatório.
+        $current_fullname = $this->formatUserLabel(
+            CWebUser::$data['name']    ?? '',
+            CWebUser::$data['surname'] ?? '',
+            $current_user
+        );
 
         $db       = $this->getDb();
         $db_error = null;

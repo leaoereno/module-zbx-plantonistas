@@ -1110,6 +1110,38 @@ trait TurnosReportBase {
      * Notas/Presença (grupo compartilhado) + só usuários ativos (mesmo
      * critério de Telefones/Escala/Gerenciar Turnos).
      */
+    /**
+     * Nome de exibição a partir de users.name/surname, com username de reserva.
+     *
+     * Existe porque CONCAT(name,' ',surname) cru produz duas falhas visíveis:
+     *  - label em branco para conta que só tem username (serviço, integração);
+     *  - nome duplicado ("Rafael Rafael Leao Ereno") em cadastro que colocou o
+     *    nome completo no campo surname e só o primeiro nome em name.
+     *
+     * Mesma regra de buildFullName() em scripts/cron_presence_tracker.php: um
+     * campo só absorve o outro se o contiver **nas bordas**, com espaço como
+     * limite de palavra — "Ana" + "Mariana Costa" é substring coincidente e
+     * continua concatenando. A duplicação de lógica é proposital: o cron roda
+     * em CLI sem carregar o módulo, não dá pra reusar este trait.
+     */
+    private function formatUserLabel(?string $name, ?string $surname, string $username = ''): string {
+        $norm    = fn(?string $v) => trim(preg_replace('/\s+/', ' ', (string)$v));
+        $name    = $norm($name);
+        $surname = $norm($surname);
+
+        if ($name === '' && $surname === '') return $username;
+        if ($name === '')    return $surname;
+        if ($surname === '') return $name;
+
+        $ln = mb_strtolower($name);
+        $ls = mb_strtolower($surname);
+
+        if ($ln === $ls || str_starts_with($ls, $ln . ' ')) return $surname;
+        if (str_ends_with($ln, ' ' . $ls))                  return $name;
+
+        return $name . ' ' . $surname;
+    }
+
     private function searchMentionableUsers(\mysqli $db, array $ctx, string $q): array {
         $like = '%' . $q . '%';
         $activeClause = "EXISTS (
@@ -1117,31 +1149,49 @@ trait TurnosReportBase {
             INNER JOIN usrgrp gx ON gx.usrgrpid = ugx.usrgrpid
             WHERE ugx.userid = u.userid AND gx.users_status = 0
         )";
+        // ORDER BY pelo nome efetivo (username quando não há nome cadastrado):
+        // ordenar pelo CONCAT cru jogava todos os labels vazios pro topo da
+        // lista, que era exatamente o que aparecia como "itens em branco".
+        $orderBy = "ORDER BY IF(TRIM(CONCAT(COALESCE(u.name,''), ' ', COALESCE(u.surname,''))) = '',
+                                u.username,
+                                TRIM(CONCAT(COALESCE(u.name,''), ' ', COALESCE(u.surname,'')))) ASC";
         try {
             if (!empty($ctx['is_superadmin'])) {
                 $stmt = $db->prepare(
-                    "SELECT u.userid AS id,
-                            CONCAT(COALESCE(u.name,''), ' ', COALESCE(u.surname,'')) AS label
+                    "SELECT u.userid AS id, u.username, u.name, u.surname
                      FROM users u
                      WHERE u.username != 'guest' AND $activeClause
                        AND (u.username LIKE ? OR u.name LIKE ? OR u.surname LIKE ?)
-                     ORDER BY label LIMIT 20"
+                     $orderBy LIMIT 20"
                 );
                 $stmt->bind_param('sss', $like, $like, $like);
             } else {
                 $sameGroup = $this->sameGroupExists((int)$ctx['userid'], 'u.userid');
                 $stmt = $db->prepare(
-                    "SELECT DISTINCT u.userid AS id,
-                            CONCAT(COALESCE(u.name,''), ' ', COALESCE(u.surname,'')) AS label
+                    "SELECT DISTINCT u.userid AS id, u.username, u.name, u.surname
                      FROM users u
                      WHERE $sameGroup AND $activeClause
                        AND (u.username LIKE ? OR u.name LIKE ? OR u.surname LIKE ?)
-                     ORDER BY label LIMIT 20"
+                     $orderBy LIMIT 20"
                 );
                 $stmt->bind_param('sss', $like, $like, $like);
             }
             $stmt->execute();
-            return $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+
+            $out = [];
+            foreach ($rows as $r) {
+                $label = $this->formatUserLabel($r['name'] ?? '', $r['surname'] ?? '', $r['username']);
+                $out[] = [
+                    'id'    => $r['id'],
+                    'label' => $label,
+                    // Username como linha secundária no dropdown: desambigua
+                    // homônimo e dá o que mostrar quando o label caiu no
+                    // próprio username (aí some, pra não repetir).
+                    'sub'   => ($label !== $r['username']) ? $r['username'] : '',
+                ];
+            }
+            return $out;
         } catch (\Throwable $e) {
             error_log('[plantonistas] searchMentionableUsers() falhou: ' . $e->getMessage());
             return [];
