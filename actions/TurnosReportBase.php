@@ -1140,6 +1140,18 @@ trait TurnosReportBase {
     }
 
     /**
+     * Y-m-d (formato de trânsito: input type="date", URL, banco) → d/m/Y,
+     * para exibição. Toda data que aparece na tela passa por aqui; o valor
+     * cru só continua onde é protocolo, não texto (o `value` do
+     * input type="date" exige ISO por especificação do HTML, e mudar
+     * quebraria o filtro; URLs e a const JS idem).
+     */
+    private function formatDateBr(?string $ymd): string {
+        $ts = $ymd ? strtotime($ymd) : false;
+        return $ts === false ? (string)$ymd : date('d/m/Y', $ts);
+    }
+
+    /**
      * Cláusula SQL de "usuário habilitado", igual ao critério do Zabbix.
      *
      * O Zabbix resolve o status com `MAX(usrgrp.users_status)` (ver

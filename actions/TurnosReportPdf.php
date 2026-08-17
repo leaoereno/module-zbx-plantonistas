@@ -111,11 +111,15 @@ class TurnosReportPdf extends CController {
         $mttaKpiLabel  = $isUserRole ? 'Seu MTTA' : 'MTTA Global';
         $mttaCardTitle = $isUserRole ? 'Seu MTTA' : 'MTTA por Analista';
 
-        // Título completo para o PDF inclui o contexto NOC
+        // Título completo para o PDF inclui o contexto NOC.
+        // Data com hífen (17-08-2026), não barra: o <title> é o que o navegador
+        // sugere como NOME DO ARQUIVO ao salvar/imprimir em PDF, e barra não é
+        // caractere válido em nome de arquivo — viria substituída por _ ou -
+        // dependendo do sistema. Continua dia-mês-ano, padrão brasileiro.
         $pdfTitle = 'Repasse de Plantão'
             . ($nocLabel ? ' — ' . $nocLabel : '')
             . ' — ' . $this->shiftLabel($shift, $shiftOptions)
-            . ' — ' . $date;
+            . ' — ' . str_replace('/', '-', $this->formatDateBr($date));
 
         // ── HTML ─────────────────────────────────────────────
         echo '<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8">';
@@ -145,7 +149,7 @@ class TurnosReportPdf extends CController {
         if ($nocLabel) {
             echo '<span class="rp-noc-badge"><i class="fas fa-shield-alt"></i> ' . htmlspecialchars($nocLabel) . '</span>';
         }
-        echo '<span class="rp-nh-sub">' . $this->shiftLabel($shift, $shiftOptions) . ' — ' . htmlspecialchars($date) . '</span>';
+        echo '<span class="rp-nh-sub">' . $this->shiftLabel($shift, $shiftOptions) . ' — ' . htmlspecialchars($this->formatDateBr($date)) . '</span>';
         echo '</div></div>';
 
         // KPIs

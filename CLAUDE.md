@@ -495,6 +495,47 @@ perseguir uma frase é outra coisa: busca **com espaço** e zero resultado
 fecha a lista, sinal de que virou texto comum. Sem espaço, mantém "Nenhum
 resultado" — ali ainda é uma busca em andamento.
 
+### 2ª auditoria de datas/horas pt-BR (2026-08-17)
+
+Revarredura do módulo inteiro (`date()`/`DATE_FORMAT`/`->format()` no PHP,
+`Date`/`toISOString`/`toLocale` no JS, e todo `<?= ... ?>` de campo de data
+nas views). A auditoria de 2026-08-14 tinha coberto o que vinha do banco; o
+que faltava era a data que **transita pela URL** e era ecoada crua na tela:
+
+- Cabeçalho do Repasse (`rp-nh-sub`) e o "**Data:**" do formulário do Diário
+  de Bordo imprimiam `$date` direto — `2026-08-17` na cara do usuário.
+- `TurnosReportPdf`: mesmo gap no subtítulo e no `<title>`.
+
+Helpers novos, um por camada (a view não usa o trait): `rp_dateBr()` em
+`plantonistas.report.view.php` e `TurnosReportBase::formatDateBr()`.
+
+No `<title>` do PDF a data vai com **hífen** (`17-08-2026`), não barra: o
+`<title>` é o nome de arquivo que o navegador sugere ao salvar/imprimir em
+PDF, e barra não é caractere válido em nome de arquivo. Continua dia-mês-ano.
+
+**Bug de fuso achado de brinde (heatmap do Repasse)**: a chave dos 30 dias
+saía de `d.toISOString().slice(0,10)`, que converte pra **UTC** — em UTC-3,
+das 21h em diante devolvia a data de amanhã, e o calendário inteiro
+(contagem, célula de "hoje", link do relatório) deslizava um dia. Ou seja:
+quebrava justamente durante o turno da noite. Agora a chave é montada com
+`getFullYear/getMonth/getDate` (componentes locais). Verificado com TZ
+America/Sao_Paulo às 9h/18h/20h/21h/22h/23h.
+
+**Y-m-d que é protocolo e NÃO deve ser "corrigido"** (comentado no código pra
+não cair na próxima auditoria): `value` do `input type="date"` (a spec do HTML
+exige ISO — mudar quebra o filtro), `from`/`to` da URL do `problem.view`
+nativo, `date=` dos links do módulo, a const JS `NOTE_DATE` (volta pro
+backend no save da nota), as chaves internas (`$today_str`, chave do heatmap)
+e o timestamp dos logs do cron.
+
+Conferido e já correto: Histórico (`d/m/Y` e `d/m/Y H:i`), Visão Geral
+(`d/m/Y` + dia da semana em pt-BR), Escala (nomes de mês em pt-BR), Gerenciar
+Turnos (`HH:MM` 24h), notas e presença (`DATE_FORMAT` pt-BR com coluna
+auxiliar de ordenação), e o CSV da Escala — que exporta `d/m/Y` com `;` e BOM
+UTF-8 (Excel pt-BR) e cujo import aceita `d/m/Y`, `d-m-Y`, `Y-m-d` e serial
+do Excel, com `d/m/Y` testado ANTES de qualquer outro formato (nunca
+interpreta 03/04 como 4 de março).
+
 ### Backlog conhecido
 
 - Salvar vínculo analista→turno em massa (hoje é um clique por analista) —

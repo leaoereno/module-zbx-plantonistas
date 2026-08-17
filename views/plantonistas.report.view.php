@@ -39,6 +39,15 @@ function rp_userShiftLabel(array $row): string {
     }
     return $name;
 }
+/**
+ * Y-m-d → d/m/Y para exibição. O valor cru continua onde é protocolo e não
+ * texto: `value` do input type="date" (a spec do HTML exige ISO), querystring
+ * dos links e a const NOTE_DATE do JS, que volta pro backend no save da nota.
+ */
+function rp_dateBr(?string $ymd): string {
+    $ts = $ymd ? strtotime($ymd) : false;
+    return $ts === false ? (string)$ymd : date('d/m/Y', $ts);
+}
 function rp_probLink(?string $h=null): string {
     $u = 'zabbix.php?action=problem.view&filter_set=1&filter_show=3';
     return $h ? $u.'&filter_name='.urlencode($h) : $u;
@@ -95,7 +104,7 @@ $calendar_json = json_encode($data['calendar']);
             <rect x="9" y="3" width="6" height="4" rx="1"/><path d="M9 14l2 2 4-4"/>
         </svg>
         <span class="rp-nh-title">Repasse de Plantão</span>
-        <span class="rp-nh-sub"><?= htmlspecialchars($data['shift_label'] ?? rp_shiftLabel($shift)) ?> — <?= $date ?></span>
+        <span class="rp-nh-sub"><?= htmlspecialchars($data['shift_label'] ?? rp_shiftLabel($shift)) ?> — <?= rp_dateBr($date) ?></span>
         <?php if ($data['is_history']): ?>
             <span class="rp-badge-hist">HISTÓRICO</span>
         <?php endif; ?>
@@ -137,7 +146,9 @@ $calendar_json = json_encode($data['calendar']);
 </div>
 
 <?php 
-// Build base URL for Problem View filtering by time
+// URL base do Problem View filtrado por período.
+// Y-m-d H:i:s aqui NÃO é gap de pt-BR: é o formato que o filtro nativo do
+// Zabbix aceita em from/to. Formatar como d/m/Y quebraria o link.
 $f = date('Y-m-d H:i:s', $data['ts_start']);
 $t = date('Y-m-d H:i:s', $data['ts_end']);
 $pview_base = "zabbix.php?action=problem.view&filter_set=1&filter_show=3&from=".urlencode($f)."&to=".urlencode($t);
@@ -408,7 +419,7 @@ $pview_base = "zabbix.php?action=problem.view&filter_set=1&filter_show=3&from=".
             <div class="rp-note-meta">
                 <span><strong>Analista:</strong> <?= htmlspecialchars($data['current_fullname']) ?></span>
                 <span><strong>Turno:</strong> <?= htmlspecialchars($data['shift_label'] ?? rp_shiftLabel($shift)) ?></span>
-                <span><strong>Data:</strong> <?= $date ?></span>
+                <span><strong>Data:</strong> <?= rp_dateBr($date) ?></span>
             </div>
             <div class="rp-editor-toolbar">
                 <button type="button" class="rp-editor-btn" data-cmd="bold" title="Negrito"><i class="fas fa-bold"></i></button>
@@ -549,7 +560,13 @@ function toggleSevChart() {
     Object.values(data).forEach(d => { if (parseInt(d.cnt) > maxCnt) maxCnt = parseInt(d.cnt); });
     for (let i = 29; i >= 0; i--) {
         const d = new Date(today); d.setDate(d.getDate() - i);
-        const key = d.toISOString().slice(0,10);
+        // Chave em Y-m-d montada com os componentes LOCAIS. toISOString()
+        // converte pra UTC: em UTC-3, das 21h em diante ele devolve a data de
+        // amanhã, e o heatmap inteiro (contagem, célula de hoje, link do
+        // relatório) deslizava um dia à noite — justamente no turno da noite.
+        const key = d.getFullYear() + '-'
+            + String(d.getMonth() + 1).padStart(2, '0') + '-'
+            + String(d.getDate()).padStart(2, '0');
         const info = data[key];
         const cnt = info ? parseInt(info.cnt) : 0;
         const crit = info ? parseInt(info.critical) : 0;
