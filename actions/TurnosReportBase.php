@@ -689,58 +689,97 @@ trait TurnosReportBase {
         $ds = date('Y-m-d H:i:s', $s);
         $de = date('Y-m-d H:i:s', $e);
 
-        // Turno do usuário: vínculo fixo de "Gerenciar Turnos"
-        // (module_plantonistas_user_shift.userid é PK → o LEFT JOIN não
-        // duplica linha de presença). MIN() nas colunas do turno porque o
-        // MariaDB de produção roda com ONLY_FULL_GROUP_BY e elas não estão
-        // no GROUP BY; sendo 1 turno por usuário, MIN() é o próprio valor.
-        // Turno inativo (active=0) continua sendo exibido — o vínculo existe.
-        $shiftJoin = "LEFT JOIN module_plantonistas_user_shift cush
-                             ON cush.userid = cus.userid
-                      LEFT JOIN module_plantonistas_shifts sh
-                             ON sh.id = cush.shift_id";
-        $shiftCols = "MIN(sh.name)       AS shift_name,
-                      MIN(sh.start_time) AS shift_start,
-                      MIN(sh.end_time)   AS shift_end,";
-
+        // A coluna Turno NÃO é buscada por JOIN aqui de propósito: um JOIN nas
+        // tabelas de turno faz a presença inteira desaparecer se essas tabelas
+        // não existirem no ambiente (getDb() roda com MYSQLI_REPORT_STRICT, e
+        // o prepare de uma tabela ausente lança exceção). Turno é enfeite —
+        // não pode derrubar o dado principal. Vem depois, em query própria.
         if ($isSuperadmin) {
             $sql = "SELECT cus.userid, cus.username, cus.name AS fullname,
-                        $shiftCols
                         DATE_FORMAT(MIN(cus.session_start), '%d/%m/%Y %H:%i') AS first_seen,
                         DATE_FORMAT(MAX(cus.lastaccess), '%d/%m/%Y %H:%i')    AS last_seen,
                         MIN(cus.session_start) AS first_seen_sort,
                         TIMESTAMPDIFF(MINUTE, MIN(cus.session_start), MAX(cus.lastaccess)) AS online_minutes
                     FROM module_plantonistas_user_sessions cus
-                    $shiftJoin
                     WHERE cus.lastaccess BETWEEN ? AND ?
                     GROUP BY cus.userid, cus.username, cus.name
                     ORDER BY first_seen_sort ASC";
-            $stmt = $db->prepare($sql);
-            $stmt->bind_param('ss', $ds, $de);
         } else {
             $sameGroup = $this->sameGroupExists($userid, 'cus.userid');
             $sql = "SELECT cus.userid, cus.username, cus.name AS fullname,
-                        $shiftCols
                         DATE_FORMAT(MIN(cus.session_start), '%d/%m/%Y %H:%i') AS first_seen,
                         DATE_FORMAT(MAX(cus.lastaccess), '%d/%m/%Y %H:%i')    AS last_seen,
                         MIN(cus.session_start) AS first_seen_sort,
                         TIMESTAMPDIFF(MINUTE, MIN(cus.session_start), MAX(cus.lastaccess)) AS online_minutes
                     FROM module_plantonistas_user_sessions cus
-                    $shiftJoin
                     WHERE cus.lastaccess BETWEEN ? AND ?
                       AND $sameGroup
                     GROUP BY cus.userid, cus.username, cus.name
                     ORDER BY first_seen_sort ASC";
-            $stmt = $db->prepare($sql);
-            $stmt->bind_param('ss', $ds, $de);
         }
 
+        // prepare() dentro do try: com MYSQLI_REPORT_STRICT ele lança exceção
+        // (tabela/coluna ausente) e, fora do try, derrubava a página inteira.
         try {
+            $stmt = $db->prepare($sql);
+            $stmt->bind_param('ss', $ds, $de);
             $stmt->execute();
-            return $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
-        } catch (\Exception $e) {
+            $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+        } catch (\Throwable $ex) {
+            error_log('[plantonistas] queryPresence() falhou: ' . $ex->getMessage());
             return [];
         }
+
+        return $this->attachUserShift($db, $rows);
+    }
+
+    /**
+     * Anexa o turno vinculado (tela Gerenciar Turnos) às linhas de presença.
+     *
+     * Query separada, e não JOIN dentro de queryPresence(), porque as tabelas
+     * de turno podem não existir no ambiente (schema v2.5 nunca rodou em
+     * produção — ver CLAUDE.md). Falha aqui só faz a coluna Turno mostrar
+     * "Sem turno"; a presença continua na tela.
+     *
+     * Turno inativo (active=0) continua sendo exibido de propósito: o vínculo
+     * existe, e esconder seria pior que mostrar um turno desativado.
+     */
+    private function attachUserShift(\mysqli $db, array $rows): array {
+        if (empty($rows)) {
+            return $rows;
+        }
+
+        $ids = array_values(array_unique(array_map(
+            fn($r) => (int)$r['userid'],
+            $rows
+        )));
+        $in = implode(',', $ids); // inteiros já convertidos — sem entrada do usuário
+
+        $map = [];
+        try {
+            $res = $db->query(
+                "SELECT cush.userid, sh.name, sh.start_time, sh.end_time
+                   FROM module_plantonistas_user_shift cush
+                   INNER JOIN module_plantonistas_shifts sh ON sh.id = cush.shift_id
+                  WHERE cush.userid IN ($in)"
+            );
+            while ($r = $res->fetch_assoc()) {
+                $map[(int)$r['userid']] = $r;
+            }
+        } catch (\Throwable $ex) {
+            error_log('[plantonistas] attachUserShift() falhou (coluna Turno da Presença fica vazia): '
+                . $ex->getMessage());
+        }
+
+        foreach ($rows as &$row) {
+            $s = $map[(int)$row['userid']] ?? null;
+            $row['shift_name']  = $s['name']       ?? null;
+            $row['shift_start'] = $s['start_time'] ?? null;
+            $row['shift_end']   = $s['end_time']   ?? null;
+        }
+        unset($row);
+
+        return $rows;
     }
 
     // ── Helper: MTTA global ponderado ────────────────────────
