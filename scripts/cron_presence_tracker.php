@@ -57,6 +57,42 @@ function logMsg(string $msg): void {
     echo "$ts $msg\n";
 }
 
+/**
+ * Monta o nome de exibição a partir de users.name + users.surname.
+ *
+ * Concatenar às cegas duplica nome em cadastros do Zabbix onde o nome
+ * completo foi digitado no campo errado. Casos reais em produção:
+ *   name='Rafael', surname='Rafael Leao Ereno' → "Rafael Rafael Leao Ereno"
+ *   name='Erica',  surname='Erica Felix de Oliveira'
+ *
+ * Regra: se um campo já contém o outro (nas bordas, comparação sem
+ * distinguir maiúscula), usa só o mais completo. Contenção no meio da
+ * string NÃO conta — "Ana" em "Mariana Costa" é coincidência de substring,
+ * não repetição; por isso a comparação exige limite de palavra (o espaço).
+ */
+function buildFullName(?string $name, ?string $surname): string {
+    $norm = fn(?string $v) => trim(preg_replace('/\s+/', ' ', (string)$v));
+    $name    = $norm($name);
+    $surname = $norm($surname);
+
+    if ($name === '')    return $surname;
+    if ($surname === '') return $name;
+
+    $ln = mb_strtolower($name);
+    $ls = mb_strtolower($surname);
+
+    // surname já traz o nome completo ('Rafael' + 'Rafael Leao Ereno')
+    if ($ln === $ls || str_starts_with($ls, $ln . ' ')) {
+        return $surname;
+    }
+    // name já traz o sobrenome ('Rafael Leao Ereno' + 'Ereno')
+    if (str_ends_with($ln, ' ' . $ls)) {
+        return $name;
+    }
+
+    return $name . ' ' . $surname;
+}
+
 // ── API Zabbix ────────────────────────────────────────────────────────────────
 
 /**
@@ -242,7 +278,7 @@ foreach ($active_users as $userid => $lastaccess_ts) {
     if (!$u) continue;
 
     $username    = $u['username'];
-    $fullname    = trim(($u['name'] ?? '') . ' ' . ($u['surname'] ?? ''));
+    $fullname    = buildFullName($u['name'] ?? '', $u['surname'] ?? '');
     $lastaccess  = date('Y-m-d H:i:s', $lastaccess_ts);
 
     // Determinar noc_context a partir dos grupos do usuário
@@ -272,13 +308,17 @@ foreach ($active_users as $userid => $lastaccess_ts) {
     $stmt->close();
 
     if ($existing) {
-        // Atualiza lastaccess da sessão existente
+        // Atualiza lastaccess da sessão existente. `name` também entra no SET
+        // (antes só era gravado no INSERT): sem isso, a sessão aberta hoje
+        // ficaria com o nome antigo até a limpeza de 7 dias — inclusive o nome
+        // duplicado que buildFullName() passou a corrigir, e qualquer renomeação
+        // feita no cadastro do Zabbix depois da sessão abrir.
         $stmt = $db->prepare("
             UPDATE module_plantonistas_user_sessions
-            SET lastaccess = ?, noc_context = ?
+            SET lastaccess = ?, noc_context = ?, name = ?
             WHERE id = ?
         ");
-        $stmt->bind_param('ssi', $lastaccess, $noc_context, $existing['id']);
+        $stmt->bind_param('sssi', $lastaccess, $noc_context, $fullname, $existing['id']);
         $stmt->execute();
         $stmt->close();
         $updated++;

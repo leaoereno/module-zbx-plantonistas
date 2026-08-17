@@ -2,7 +2,7 @@
 
 Contexto, memória e instruções de trabalho deste projeto. Portável: serve como
 knowledge de projeto no Claude.ai e como contexto de agente ao trabalhar neste
-repositório. Atualizado em 2026-08-14.
+repositório. Atualizado em 2026-08-17.
 
 ---
 
@@ -191,6 +191,12 @@ módulos antigos; habilitar Plantonistas; atualizar crontab do presence tracker;
 conferir roles (Modules → Plantonistas); validar as 6 telas; remover pastas
 antigas após estabilizar. Runbook completo no README.md.
 
+Atualização 2026-08-17: front01 rodando o código novo, tela de Repasse
+validada (Presença voltou a listar, 16 analistas) e cron do presence tracker
+recriado ali — ver "Cron de presença estava desabilitado". Continua pendente
+conferir o `/etc/cron.d/` do **front02** (se o cron antigo estiver ativo lá,
+desabilitar: o tracker deve rodar em um nó só).
+
 Nota: o fix de UX também ficou não-commitado na working tree do repo antigo
 `module-zbx-repasse-plantao` local — irrelevante após a unificação, mas o
 histórico está no zip `module-zbx-repasse-plantao-commit-1dadacd.zip` se precisar.
@@ -322,9 +328,86 @@ texto depois do `<` — o parser HTML do DOMDocument é mais permissivo que um
 navegador nisso. Não afeta o uso normal (o navegador sempre serializa `<`
 digitado como `&lt;` no `innerHTML`), só input adversarial/manual.
 
+### Coluna Turno na Presença de Analistas (2026-08-17)
+
+Tabela "Presença de Analistas" (Repasse) ganhou a coluna **Turno**, entre
+Username e Primeira Atividade: nome + horário do turno vinculado ao usuário
+em Gerenciar Turnos, no mesmo formato do seletor de turno do relatório
+(`Diurno (07:00–19:00)`). Sem vínculo → "Sem turno" em itálico cinza
+(classe `.rp-muted`, criada agora, com `var(--rp-text-muted)`).
+`TurnosReportPdf` não renderiza essa tabela — não precisou de ajuste.
+
+**Regressão do mesmo dia, e a lição que ficou**: a primeira versão buscou o
+turno por `LEFT JOIN` dentro de `queryPresence()` e a tabela de presença
+inteira voltou vazia, exibindo "Nenhum dado de presença. Execute o cron" —
+mensagem enganosa, porque o cron não era o problema. Causa: `getDb()` liga
+`MYSQLI_REPORT_STRICT`, então `prepare()` de query que referencia tabela
+ausente **lança** `mysqli_sql_exception`, e as tabelas de turno podem não
+existir no ambiente (schema v2.5 nunca rodou em produção — só o `init()` do
+v4 as cria). Agravante: o `prepare()` estava **fora** do try, que só cobria
+o `execute()` — a falha não era nem logada.
+
+Regra que vale pro módulo inteiro: **informação acessória não entra por JOIN
+na query do dado principal**. O turno virou query própria
+(`attachUserShift()`, `IN` com userids já convertidos pra int) que anexa as
+colunas às linhas de presença; se ela falhar, loga `[plantonistas]` e a
+coluna mostra "Sem turno" — a presença continua na tela. `prepare()`/
+`bind_param()` de `queryPresence()` passaram pra dentro do try com
+`error_log`. Turno inativo (`active=0`) é exibido de propósito: o vínculo
+existe, e esconder seria pior que mostrar um turno desativado.
+
+Maioria dos analistas aparece como "Sem turno" porque o vínculo é um clique
+por analista em Gerenciar Turnos (ver Backlog: salvar em massa).
+
+### Cron de presença estava desabilitado desde a unificação (2026-08-17)
+
+`/etc/cron.d/` do **front01** tinha só `zbx-repasse-plantao.disabled` — nome
+com ponto é ignorado pelo cron.d, e ainda apontava pro script do módulo
+antigo (que escreve em `custom_user_sessions`, tabela renomeada pelo v4).
+Era a causa real da tabela vazia (a regressão do JOIN acima mascarou o
+diagnóstico por um tempo).
+
+Recriado como `/etc/cron.d/plantonistas-presence` derivando do arquivo antigo
+por `sed` de `module-zbx-repasse-plantao` → `module-zbx-plantonistas`, o que
+preserva credenciais sem redigitar e mantém o truque do `; sleep 150; php ...`
+(roda a cada 2,5 min em vez de 5). As env `DB_*` no arquivo de cron são
+**obrigatórias**: em CLI não existe `$GLOBALS['DB']`, e sem elas o script cai
+no default `localhost`. `ZABBIX_URL` de produção é o endpoint do
+`nessus.claroempresas.com.br:22443/services/zabbix/api/v1/api_jsonrpc.php`,
+não a URL do frontend. Tracker deve rodar em **um** frontend só (grava no
+banco compartilhado; nos dois duplica escrita e consumo da API).
+
+Gap ainda aberto: `install.sh` escreve a linha do cron sem nenhuma env, então
+o cron que ele gera nunca autentica (`CRITICAL: ZABBIX_API_TOKEN não
+configurado`) nem acha o banco. Ver Backlog.
+
+### Nome duplicado no rastreador de presença (2026-08-17)
+
+Analistas apareciam como "Rafael Rafael Leao Ereno" / "Erica Erica Felix de
+Oliveira": vários cadastros do Zabbix têm o nome completo no campo `surname`
+e só o primeiro nome em `name`, e o cron concatenava os dois às cegas.
+Novo `buildFullName()` em `cron_presence_tracker.php` devolve só o campo mais
+completo quando um já contém o outro **nas bordas** — contenção no meio não
+conta ("Ana" + "Mariana Costa" continua concatenando; exigir o espaço como
+limite de palavra é o que evita esse falso positivo). Cobre também o caso
+inverso (`name` já com o sobrenome) e comparação sem distinguir maiúscula.
+
+O `UPDATE` da sessão existente passou a incluir `name` no SET (antes o nome
+só era gravado no INSERT) — sem isso a sessão aberta hoje carregaria o nome
+duplicado até a limpeza de 7 dias. Efeito colateral bom: renomeação no
+cadastro do Zabbix agora se reflete na próxima execução do cron.
+
+Correção é só de gravação: **nada reescreve as linhas já no banco**, elas se
+corrigem sozinhas na próxima passada do cron (UPDATE) ou expiram em 7 dias.
+
 ### Backlog conhecido
 
-- Salvar vínculo analista→turno em massa (hoje é um clique por analista).
+- Salvar vínculo analista→turno em massa (hoje é um clique por analista) —
+  ganhou urgência: a coluna Turno da Presença mostra "Sem turno" pra quase
+  todo mundo enquanto os vínculos não forem cadastrados.
+- `install.sh` gera `/etc/cron.d/plantonistas-presence` sem as env
+  `ZABBIX_API_TOKEN`/`ZABBIX_URL`/`DB_*` — o cron criado por ele não roda.
+  Passar a perguntar e escrever no arquivo (com `chmod 600`, é credencial).
 - Chart.js estático vs F5 (embutir inline se os gráficos falharem em produção).
 - Limpeza opcional de `role_rule` órfãs dos módulos antigos (SQL no README).
 - Unificação visual das duas famílias (escala dark × repasse claro) — só com demanda.
@@ -368,7 +451,12 @@ digitado como `&lt;` no `innerHTML`), só input adversarial/manual.
 - Prefixo CSS por tela (`plt-`, `rp-`, `ov-`, `phn-`) — não misturar famílias.
 - Texto de UI e mensagens em PT-BR; logs com prefixo `[plantonistas]`.
 - Nunca engolir exceção de DB em silêncio: `error_log` + UI distinguindo
-  "vazio de verdade" de "consulta falhou".
+  "vazio de verdade" de "consulta falhou". Na família repasse o `prepare()`
+  também tem que estar **dentro** do try — `getDb()` liga
+  `MYSQLI_REPORT_STRICT` e ele lança exceção antes do `execute()`.
+- Informação acessória (turno, rótulo, enfeite) não entra por JOIN na query
+  do dado principal: se a tabela do enfeite não existir naquele ambiente, o
+  dado principal desaparece inteiro. Query separada + fallback na UI.
 - Migrações: sempre idempotentes dentro do `migrateSchema()`; nunca DROP de
   tabela com dados; RENAME/ALTER guardados por INFORMATION_SCHEMA.
 - Diff mínimo: em refactors, não renomear classes/arquivos sem necessidade.
