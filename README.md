@@ -7,18 +7,46 @@ em um só módulo, menu e repositório.
 **Versão:** 4.0.0 · **Autor:** Rafael M. A. Leão Ereno (MALE)
 Forks de origem: [pandradee/zabbix-escala-de-plantao](https://github.com/pandradee/zabbix-escala-de-plantao) e [JohnnyIver/zabbix-report-module](https://github.com/JohnnyIver/zabbix-report-module)
 
+## ⚠️ Banco de dados: MySQL / MariaDB (por enquanto)
+
+**O módulo funciona — e é homologado em produção — apenas com backend
+MySQL 5.7+ / MySQL 8.0 / MariaDB 10.x.** Em Zabbix rodando sobre
+**PostgreSQL o módulo NÃO funciona hoje** (as telas vão falhar na criação
+das tabelas e nas consultas do Repasse). Suporte a PostgreSQL está no
+roadmap — ver [Roadmap](#roadmap).
+
+Não é limitação do Zabbix, é do módulo: ele fala MySQL direto em quatro
+pontos.
+
+| O que | Onde | Por que trava no PostgreSQL |
+|---|---|---|
+| DDL com `ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`, `AUTO_INCREMENT`, `BIGINT UNSIGNED` | `Module.php` (init/provisionamento), `sql/schema.sql` | Sintaxe inexistente no PG (`BIGSERIAL`/`GENERATED AS IDENTITY`, sem `UNSIGNED`, sem engine/charset por tabela) |
+| `RENAME TABLE a TO b` na migração dos módulos antigos | `Module.php`, `sql/migrate-*.sql`, `sql/rollback-*.sql` | No PG é `ALTER TABLE ... RENAME TO` |
+| Introspecção por `INFORMATION_SCHEMA.STATISTICS` (checagem de índices) | `Module.php`, `scripts/cron_presence_tracker.php` | `STATISTICS` é exclusiva do MySQL; no PG seria `pg_indexes` / `pg_class` |
+| Conexão `mysqli` própria (fora do `DBselect`/`DBexecute` do Zabbix) + `ON DUPLICATE KEY UPDATE`, `DATE_FORMAT()`, `IFNULL()`, `FROM_UNIXTIME()`, crases | `actions/TurnosReportBase.php`, `TurnosNotesGet.php`, `TurnosNotesSave.php`, `scripts/cron_presence_tracker.php`, `actions/PhonesImport.php` | Driver e dialeto diferentes: `ON CONFLICT`, `to_char()`, `COALESCE()`, `to_timestamp()`, aspas duplas |
+
+Resumindo: **se o seu Zabbix está em MySQL/MariaDB, pode instalar. Se está em
+PostgreSQL, aguarde a v5.**
+
 ## Telas
 
 Tudo fica no menu **Plantão** (após Reports):
 
 | Item de menu | Action | O que faz |
 |---|---|---|
-| Visão Geral | `plantonistas.overview` | Quem está de plantão hoje, por grupo (por turno, se o grupo tiver turnos cadastrados) |
-| Escala | `plantonistas.list` | Calendário mensal; escalar por turno (se o grupo tiver turnos em "Gerenciar Turnos") ou titular/reserva único (grupos sem turno); import/export CSV-XLSX (sempre no modo titular/reserva, mesmo em grupos com turnos) |
-| Histórico | `plantonistas.history` | Log de alterações da escala |
-| Telefones | `plantonistas.phones.list` | Telefone de contato por usuário, com máscara brasileira; export CSV e importação em massa (`plantonistas.phones.import`) |
-| Repasse Plantão | `plantonistas.report.view` | Relatório de repasse NOC (eventos, MTTA, presença, diário de bordo com editor rico e menções `@`usuário/`_h`host/`_hg`grupo de hosts, PDF) |
-| Gerenciar Turnos | `plantonistas.shifts.view` | Turnos por equipe + vínculo analista→turno (só Admin/Super Admin) |
+| Item de menu | Action | Perfil mínimo | O que faz |
+|---|---|---|---|
+| Visão Geral | `plantonistas.overview` | User | Quem está de plantão hoje, por grupo (por turno, se o grupo tiver turnos cadastrados) |
+| Escala | `plantonistas.list` | Admin | Calendário mensal; escalar por turno (se o grupo tiver turnos em "Gerenciar Turnos") ou titular/reserva único (grupos sem turno); import/export CSV-XLSX (sempre no modo titular/reserva, mesmo em grupos com turnos) |
+| Histórico | `plantonistas.history` | Admin | Log de alterações da escala |
+| Telefones | `plantonistas.phones.list` | Admin | Telefone de contato por usuário, com máscara brasileira; export CSV e importação em massa (`plantonistas.phones.import`) |
+| Repasse Plantão | `plantonistas.report.view` | User | Relatório de repasse NOC (eventos, MTTA, presença, diário de bordo com editor rico e menções `@`usuário/`_h`host/`_hg`grupo de hosts, PDF) |
+| Gerenciar Turnos | `plantonistas.shifts.view` | Admin | Turnos por equipe + vínculo analista→turno |
+
+Usuário do tipo **User (1)** enxerga apenas **Visão Geral** e **Repasse
+Plantão**; as demais telas são **Admin (2)+**, bloqueadas tanto no menu
+quanto no `checkPermissions()` de cada action (esconder o item do menu não
+basta — a action continua acessível pela URL). Guest não vê o menu.
 
 A segmentação por equipe continua a mesma dos módulos antigos: grupos de
 usuário do Zabbix (`users_groups`), e `rights` para visibilidade de eventos
@@ -177,6 +205,9 @@ Enquanto as pastas antigas existirem nos frontends, o rollback é rápido:
 
 ## Instalação nova (lab / ambiente limpo)
 
+Pré-requisito: Zabbix 7.0 LTS com backend **MySQL 5.7+ / 8.0 ou MariaDB
+10.x**. PostgreSQL ainda não é suportado (ver [Roadmap](#roadmap)).
+
 ```bash
 cd /usr/share/zabbix/modules
 git clone https://github.com/leaoereno/module-zbx-plantonistas.git
@@ -188,6 +219,36 @@ Zabbix UI → Administration → General → Modules → Scan directory → habi
 "Plantonistas". O `scripts/install.sh` interativo também funciona (Docker,
 all-in-one ou segmentado) e pergunta se o banco é novo antes de rodar o
 schema.
+
+## Roadmap
+
+**v5.0 — suporte a PostgreSQL.** O objetivo é o mesmo código rodar nos dois
+backends, detectando o tipo de banco em tempo de execução (`$DB['TYPE']`, que
+o Zabbix já expõe em `zabbix.conf.php`). O caminho planejado:
+
+1. **Sair do `mysqli` e passar tudo pelo `DBselect()`/`DBexecute()` do
+   Zabbix** — é a camada que já é agnóstica de banco. Hoje quatro arquivos
+   abrem conexão própria; esse é o pré-requisito de todo o resto.
+2. **Separar o DDL por dialeto** — `sql/schema.mysql.sql` e
+   `sql/schema.pgsql.sql`, com o `init()` do `Module.php` escolhendo o
+   conjunto certo. Sem `UNSIGNED`, `AUTO_INCREMENT` vira `BIGSERIAL`, sem
+   `ENGINE`/`CHARSET`.
+3. **Trocar as funções específicas de dialeto** por equivalentes ou por um
+   pequeno helper: `IFNULL` → `COALESCE`, `DATE_FORMAT` → `to_char`,
+   `FROM_UNIXTIME` → `to_timestamp`, `ON DUPLICATE KEY UPDATE` →
+   `ON CONFLICT ... DO UPDATE`, crases → aspas duplas (ou nada).
+4. **Reescrever a introspecção** — `INFORMATION_SCHEMA.STATISTICS` (índices)
+   vira `pg_indexes` no PG; `INFORMATION_SCHEMA.TABLES`/`COLUMNS` já é padrão
+   SQL e funciona nos dois.
+5. **Migração/rollback em PostgreSQL** — `RENAME TABLE` vira
+   `ALTER TABLE ... RENAME TO`. Sem custo de cópia de dados nos dois casos.
+6. **`scripts/cron_presence_tracker.php`** — CLI, sem `$GLOBALS['DB']`; vai
+   precisar de PDO com DSN montado a partir de `DB_TYPE` no arquivo de cron.
+7. **Homologação em lab PostgreSQL** antes de qualquer release, com as seis
+   telas abertas e o cron de presença rodando um ciclo completo.
+
+Sem data fechada. Enquanto isso, o requisito de MySQL/MariaDB continua
+valendo e está documentado no topo deste README.
 
 ## Notas de operação
 

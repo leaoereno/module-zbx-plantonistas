@@ -76,16 +76,32 @@ Checado via `getUserType()`/`CWebUser::getType()` (família escala) ou
 `role.type` lido manualmente por `getUserRoleType()` (família repasse, que
 usa mysqli direto e não tem acesso ao `CWebUser` nativo do mesmo jeito).
 Constantes Zabbix: `USER_TYPE_ZABBIX_USER=1`, `USER_TYPE_ZABBIX_ADMIN=2`,
-`USER_TYPE_SUPER_ADMIN=3`. Menu **Plantão** inteiro só aparece para type ≥ 1
-(Guest não vê nada); item **Gerenciar Turnos** só para type ≥ 2.
+`USER_TYPE_SUPER_ADMIN=3`. Menu **Plantão** aparece a partir de type ≥ 1
+(Guest não vê nada), mas **User (1) só enxerga dois itens: Visão Geral e
+Repasse Plantão**. Escala, Histórico, Telefones e Gerenciar Turnos são
+Admin (2)+ — commit `9959722`, ver abaixo.
 
 | Tela | User (1) | Admin (2) | Super Admin (3) |
 |---|---|---|---|
-| Visão Geral / Escala / Histórico | Vê e edita só os próprios grupos | idem User | Todos os grupos |
-| Telefones | Vê só quem tem o **mesmo grupo E o mesmo role** | idem User (por role) | Todos os usuários habilitados do sistema |
+| Visão Geral | Vê só os próprios grupos | idem User | Todos os grupos |
+| Escala / Histórico | **Sem acesso** (menu não aparece; `checkPermissions()` recusa) | Vê e edita só os próprios grupos | Todos os grupos |
+| Telefones | **Sem acesso** (idem) | Vê só quem tem o **mesmo grupo E o mesmo role** | Todos os usuários habilitados do sistema |
 | Repasse Plantão (relatório) | Eventos seguem `rights` do Zabbix; MTTA só o próprio; Notas/Presença só do(s) próprio(s) grupo(s) | MTTA de todos; Notas/Presença do(s) próprio(s) grupo(s) | Sem filtro nenhum |
 | Diário de Bordo (escrever) | Pode escrever nota | idem | idem |
-| Gerenciar Turnos | **Sem acesso** (menu nem aparece; controller recusa) | Só as próprias equipes | Todas as equipes com ≥1 membro |
+| Gerenciar Turnos | **Sem acesso** (idem) | Só as próprias equipes | Todas as equipes com ≥1 membro |
+
+**Restrição de User (1) a Visão Geral + Repasse — commit `9959722`
+(2026-08-17).** Antes disso o User via o menu Plantão inteiro e abria todas
+as telas. Duas camadas foram necessárias, e a segunda é a que importa:
+`Module.php:53-55` monta o submenu condicional ao tipo (Escala e Telefones
+com `setAliases()` das actions filhas, pra o item continuar marcado durante
+save/delete/export/import), **mas esconder o item do menu não basta — a
+action continua acessível pela URL**. Por isso o `checkPermissions()` de
+`PlantaoList/Save/Delete/History/Export/Import` e de
+`PhonesList/Save/Export/Import` passou de `USER_TYPE_ZABBIX_USER` para
+`USER_TYPE_ZABBIX_ADMIN`. Os AJAX de turnos (`shifts.save`, `shifts.delete`,
+`usershift.save`) validavam só `!isGuest()` — qualquer usuário autenticado
+gravava turno por POST direto — e agora exigem Admin também.
 
 Pontos fora do padrão "grupo = visibilidade":
 - **Telefones** exige grupo **e** role idênticos — um Admin e um User no
