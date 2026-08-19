@@ -152,9 +152,18 @@ class Module extends CModule {
         }
 
         // 2. Criar o que ainda faltar (instalação nova / tabela nunca usada).
-        foreach ($this->tableDdl() as $table => $ddl) {
-            if (!isset($exists[$table])) {
-                \DBexecute($ddl);
+        //
+        // O DDL vem do Schema, que descreve as tabelas uma vez e gera o
+        // dialeto certo — antes estava escrito à mão aqui e de novo no
+        // sql/schema.sql, em MySQL puro (issue #1). Cada tabela pode render
+        // mais de um statement: no PostgreSQL, os índices e os comentários
+        // são comandos separados.
+        foreach (Schema::ddl($this->isPgsql()) as $table => $stmts) {
+            if (isset($exists[$table])) {
+                continue;
+            }
+            foreach ($stmts as $stmt) {
+                \DBexecute($stmt);
             }
         }
 
@@ -357,13 +366,21 @@ class Module extends CModule {
             }
             // id INT estoura em 2,1 bi de linhas — a tabela é de alta rotação
             // (uma escrita por analista a cada ciclo do cron).
-            if (str_starts_with((string)($types[$t]['id'] ?? ''), 'int')) {
-                \DBexecute("ALTER TABLE $t MODIFY COLUMN id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT");
+            // Só no MySQL: `int` no PostgreSQL vem como 'integer' e a promoção
+            // é outra sintaxe. Instalação PG nova nunca passou pelo cron
+            // antigo, então não há o que consertar lá.
+            if (!$this->isPgsql()
+                    && str_starts_with((string)($types[$t]['id'] ?? ''), 'int')) {
+                \DBexecute("ALTER TABLE $t MODIFY COLUMN id BIGINT NOT NULL AUTO_INCREMENT");
             }
-            if (str_contains((string)($types[$t]['userid'] ?? ''), 'bigint')
-                    && !str_contains((string)($types[$t]['userid'] ?? ''), 'unsigned')) {
-                \DBexecute("ALTER TABLE $t MODIFY COLUMN userid BIGINT UNSIGNED NOT NULL");
-            }
+            // A promoção de `userid` para UNSIGNED saiu: o Schema passou a
+            // gerar BIGINT sem unsigned nos dois bancos (o PostgreSQL não tem
+            // unsigned, e o ganho de dobrar um teto que essas tabelas nunca vão
+            // encostar não paga a divergência). Mantê-la aqui faria toda
+            // instalação MySQL nova rodar um ALTER inútil no primeiro request,
+            // reescrevendo a tabela para desfazer o que o CREATE acabou de
+            // fazer. Coluna já UNSIGNED em produção fica como está — é
+            // compatível e converter custaria um rebuild sem ganho nenhum.
             if (!isset($cols[$t]['noc_context'])) {
                 \DBexecute("ALTER TABLE $t ADD COLUMN noc_context VARCHAR(50) DEFAULT NULL AFTER ip");
                 \DBexecute("ALTER TABLE $t ADD INDEX idx_cus_noc_context (noc_context)");
@@ -406,140 +423,4 @@ class Module extends CModule {
         }
     }
 
-    private function tableDdl(): array {
-        return [
-            'module_plantonistas_phones' =>
-                'CREATE TABLE IF NOT EXISTS module_plantonistas_phones (' .
-                '  userid BIGINT NOT NULL,' .
-                '  phone  VARCHAR(100) NOT NULL DEFAULT \'\',' .
-                '  PRIMARY KEY (userid)' .
-                ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4',
-
-            'module_plantonistas_schedule' =>
-                'CREATE TABLE IF NOT EXISTS module_plantonistas_schedule (' .
-                '  scheduleid     BIGINT  NOT NULL AUTO_INCREMENT,' .
-                '  usrgrpid       BIGINT  NOT NULL DEFAULT 0,' .
-                '  shift_id       BIGINT UNSIGNED NOT NULL DEFAULT 0,' .
-                '  userid         BIGINT  NOT NULL,' .
-                '  userid_reserva BIGINT  NULL,' .
-                '  schedule_date  DATE    NOT NULL,' .
-                '  created_by     BIGINT  NOT NULL DEFAULT 0,' .
-                '  created_at     INT     NOT NULL DEFAULT 0,' .
-                '  PRIMARY KEY (scheduleid),' .
-                '  UNIQUE KEY uniq_group_day_shift (usrgrpid, schedule_date, shift_id),' .
-                '  KEY idx_sched_shift (shift_id)' .
-                ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4',
-
-            'module_plantonistas_history' =>
-                'CREATE TABLE IF NOT EXISTS module_plantonistas_history (' .
-                '  historyid     BIGINT      NOT NULL AUTO_INCREMENT,' .
-                '  scheduleid    BIGINT      NOT NULL DEFAULT 0,' .
-                '  usrgrpid      BIGINT      NOT NULL DEFAULT 0,' .
-                '  shift_id      BIGINT UNSIGNED NOT NULL DEFAULT 0,' .
-                '  shift_name    VARCHAR(50) NOT NULL DEFAULT \'\',' .
-                '  schedule_date DATE        NOT NULL,' .
-                '  action        VARCHAR(16) NOT NULL DEFAULT \'save\',' .
-                '  userid_old    BIGINT      NULL,' .
-                '  userid_new    BIGINT      NULL,' .
-                '  reserva_old   BIGINT      NULL,' .
-                '  reserva_new   BIGINT      NULL,' .
-                '  changed_by    BIGINT      NOT NULL DEFAULT 0,' .
-                '  changed_at    INT         NOT NULL DEFAULT 0,' .
-                '  PRIMARY KEY (historyid),' .
-                '  KEY idx_schedule_date (schedule_date),' .
-                '  KEY idx_usrgrpid (usrgrpid),' .
-                '  KEY idx_hist_shift (shift_id)' .
-                ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4',
-
-            'module_plantonistas_user_sessions' =>
-                'CREATE TABLE IF NOT EXISTS module_plantonistas_user_sessions (' .
-                '  id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,' .
-                '  userid        BIGINT UNSIGNED NOT NULL,' .
-                '  username      VARCHAR(100)    NOT NULL,' .
-                '  name          VARCHAR(128)    DEFAULT NULL,' .
-                '  session_start DATETIME        NOT NULL,' .
-                '  lastaccess    DATETIME        NOT NULL,' .
-                '  ip            VARCHAR(39)     DEFAULT NULL,' .
-                '  noc_context   VARCHAR(50)     DEFAULT NULL,' .
-                '  PRIMARY KEY (id),' .
-                '  INDEX idx_cus_userid        (userid),' .
-                '  INDEX idx_cus_lastaccess    (lastaccess),' .
-                '  INDEX idx_cus_session_start (session_start),' .
-                '  INDEX idx_cus_noc_context   (noc_context)' .
-                ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4',
-
-            'module_plantonistas_shift_notes' =>
-                'CREATE TABLE IF NOT EXISTS module_plantonistas_shift_notes (' .
-                '  id             BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,' .
-                '  shift_date     DATE            NOT NULL,' .
-                '  shift_name     VARCHAR(50)     NOT NULL,' .
-                '  shift_id       BIGINT UNSIGNED DEFAULT NULL,' .
-                '  analyst_userid BIGINT UNSIGNED NOT NULL,' .
-                '  analyst_name   VARCHAR(128)    NOT NULL,' .
-                '  notes          TEXT            NOT NULL,' .
-                "  notes_format   VARCHAR(10)     NOT NULL DEFAULT 'text'," .
-                '  noc_context    VARCHAR(50)     DEFAULT NULL,' .
-                '  created_at     DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,' .
-                '  PRIMARY KEY (id),' .
-                '  INDEX idx_csn_shift    (shift_date, shift_name),' .
-                '  INDEX idx_csn_shift_id (shift_id),' .
-                '  INDEX idx_csn_analyst  (analyst_userid),' .
-                '  INDEX idx_csn_noc      (noc_context)' .
-                ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4',
-
-            'module_plantonistas_mentions' =>
-                'CREATE TABLE IF NOT EXISTS module_plantonistas_mentions (' .
-                '  id               BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,' .
-                '  note_id          BIGINT UNSIGNED NOT NULL,' .
-                '  mentioned_userid BIGINT UNSIGNED NOT NULL,' .
-                '  created_by       BIGINT UNSIGNED NOT NULL,' .
-                '  is_read          TINYINT(1)      NOT NULL DEFAULT 0,' .
-                '  created_at       DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,' .
-                '  read_at          DATETIME        NULL,' .
-                '  PRIMARY KEY (id),' .
-                '  INDEX idx_mention_user_unread (mentioned_userid, is_read),' .
-                '  INDEX idx_mention_note        (note_id)' .
-                ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4',
-
-            'module_plantonistas_shift_reports' =>
-                'CREATE TABLE IF NOT EXISTS module_plantonistas_shift_reports (' .
-                '  id           BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,' .
-                '  shift_date   DATE            NOT NULL,' .
-                '  shift_name   VARCHAR(20)     NOT NULL,' .
-                '  generated_by BIGINT UNSIGNED NOT NULL,' .
-                '  noc_context  VARCHAR(50)     DEFAULT NULL,' .
-                '  generated_at DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,' .
-                '  report_json  LONGTEXT        NOT NULL,' .
-                '  PRIMARY KEY (id),' .
-                '  INDEX idx_csr_shift (shift_date, shift_name),' .
-                '  INDEX idx_csr_noc   (noc_context)' .
-                ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4',
-
-            'module_plantonistas_shifts' =>
-                'CREATE TABLE IF NOT EXISTS module_plantonistas_shifts (' .
-                '  id         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,' .
-                '  usrgrpid   BIGINT UNSIGNED NOT NULL,' .
-                '  name       VARCHAR(50)     NOT NULL,' .
-                '  start_time TIME            NOT NULL,' .
-                '  end_time   TIME            NOT NULL,' .
-                '  sort_order INT             NOT NULL DEFAULT 0,' .
-                '  active     TINYINT(1)      NOT NULL DEFAULT 1,' .
-                '  created_at DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,' .
-                '  updated_at DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,' .
-                '  PRIMARY KEY (id),' .
-                '  UNIQUE KEY uq_cs_group_name (usrgrpid, name),' .
-                '  INDEX idx_cs_usrgrp (usrgrpid),' .
-                '  INDEX idx_cs_active (active)' .
-                ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4',
-
-            'module_plantonistas_user_shift' =>
-                'CREATE TABLE IF NOT EXISTS module_plantonistas_user_shift (' .
-                '  userid     BIGINT UNSIGNED NOT NULL,' .
-                '  shift_id   BIGINT UNSIGNED NOT NULL,' .
-                '  updated_at DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,' .
-                '  PRIMARY KEY (userid),' .
-                '  INDEX idx_cush_shift (shift_id)' .
-                ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4',
-        ];
-    }
 }

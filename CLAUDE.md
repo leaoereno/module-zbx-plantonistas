@@ -1126,8 +1126,26 @@ teste. Perigoso é o que roda nos dois bancos e devolve resultado **diferente**.
   banco — no PG `unsigned` não existe, então aquele ramo de correção
   simplesmente não tem o que fazer.
 
+**DDL com fonte única** (mesma passada): as 9 tabelas eram descritas duas
+vezes, em MySQL puro — no `Module::tableDdl()` e no `sql/schema.sql`. Agora
+`Schema.php` descreve cada tabela UMA vez, em tipos abstratos, e gera o DDL do
+banco em uso; `sql/schema.mysql.sql` e `sql/schema.pgsql.sql` são **gerados**
+por `scripts/gen_schema.php` e não devem ser editados à mão. Mapeamentos
+decididos: `TINYINT(1)` → **`SMALLINT`** e não `BOOLEAN` (o código compara
+`active = 1` em 10 lugares, e no PG `boolean = integer` é erro);
+`BIGINT UNSIGNED` → `BIGINT` (o PG não tem unsigned, e o ganho não paga a
+divergência — a migração que promovia `userid` para unsigned saiu junto, senão
+toda instalação MySQL nova faria um ALTER inútil desfazendo o próprio CREATE);
+`AUTO_INCREMENT` → `BIGSERIAL`; `KEY` inline → `CREATE INDEX` (só no PG:
+`CREATE INDEX IF NOT EXISTS` **não existe no MySQL 8.0**, então lá o índice
+continua inline, que é o que já rodava). `ON UPDATE CURRENT_TIMESTAMP` não tem
+equivalente de coluna no PG e exigiria trigger — como as duas colunas assim
+(`updated_at` de `shifts` e de `user_shift`) não são lidas por tela nenhuma,
+no PG elas ficam sem auto-atualização, e isso está registrado no `Schema.php`.
+
 **Regra para daqui em diante**: `Module::isPgsql()` (lê `$DB['TYPE']`) é o
-único lugar que decide dialeto. Consulta nova não usa `IF()`, `IFNULL`,
+único lugar que decide dialeto. Tabela nova ou coluna nova entra no
+`Schema.php`, nunca em SQL escrito à mão nos dois lugares. Consulta nova não usa `IF()`, `IFNULL`,
 `DATE_FORMAT`, `FROM_UNIXTIME`, `TIMESTAMPDIFF` nem devolve booleano cru — e
 comparação de texto com valor digitado por gente leva `LOWER()`.
 
@@ -1140,11 +1158,13 @@ vive duplicado no `Module.php` e no `sql/schema.sql`), as funções de data/hora
 - Salvar vínculo analista→turno em massa (hoje é um clique por analista) —
   ganhou urgência: a coluna Turno da Presença mostra "Sem turno" pra quase
   todo mundo enquanto os vínculos não forem cadastrados.
-- `install.sh` gerava `/etc/cron.d/plantonistas-presence` sem env nenhuma — o
-  cron criado por ele não rodava. **O arquivo não existe mais no repo** (só as
-  menções na doc sobreviveram). Se voltar, precisa perguntar e escrever as
-  `DB_*` no arquivo, com `chmod 600` — é credencial. As env de API saíram de
-  cena com a issue #4.
+- ~~`install.sh` gerava `/etc/cron.d/plantonistas-presence` sem env nenhuma~~ —
+  **corrigido em 2026-08-19**: os três blocos de cron do `scripts/install.sh`
+  (docker, RHEL e Ubuntu) passaram a escrever `DB_HOST`/`DB_NAME`/`DB_USER`/
+  `DB_PASS` no arquivo, com `chmod 600` em vez de 644, porque ali tem senha.
+  (Correção de registro: uma versão anterior desta nota dizia que o
+  `install.sh` não existia mais no repo. Existe — está em `scripts/`, não na
+  raiz, que foi onde procurei.)
 - Chart.js estático vs F5 (embutir inline se os gráficos falharem em produção).
 - Limpeza opcional de `role_rule` órfãs dos módulos antigos (SQL no README).
 - Unificação visual das duas famílias (escala dark × repasse claro) — só com demanda.
