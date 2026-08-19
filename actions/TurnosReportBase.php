@@ -1412,7 +1412,95 @@ trait TurnosReportBase {
                 $stmt->execute();
             } catch (\Throwable $e) {
                 error_log('[plantonistas] recordMentions() falhou (userid=' . $uid . '): ' . $e->getMessage());
+                continue;   // sem a linha gravada, não faz sentido notificar
             }
+
+            // Notificação pelo media type (issue #6). Fica FORA do try acima de
+            // propósito: a menção já está gravada e o banner da tela já
+            // funciona — o envio é um extra que não pode desfazer nada. O
+            // notifyUser() nunca lança; devolve o motivo de não ter enviado.
+            $this->notifyMention($db, $uid, $authorUserid, $noteId);
+        }
+    }
+
+    /**
+     * URL base do frontend, com barra no fim, para montar link em e-mail.
+     *
+     * Prefere a "URL do frontend" configurada em Administração → Geral (é a
+     * única que sabe o nome público atrás do F5). O acesso é defensivo de
+     * propósito: a constante/método do CSettingsHelper varia entre versões do
+     * Zabbix, e um link errado num e-mail é bem menos grave que um fatal error
+     * no meio do save da nota. Sem ela, cai para o host da requisição atual.
+     */
+    private function frontendUrl(): string {
+        try {
+            if (class_exists('\CSettingsHelper')
+                    && defined('\CSettingsHelper::URL')
+                    && method_exists('\CSettingsHelper', 'getPublic')) {
+                $url = trim((string) \CSettingsHelper::getPublic(\CSettingsHelper::URL));
+                if ($url !== '') {
+                    return rtrim($url, '/') . '/';
+                }
+            }
+        } catch (\Throwable $e) {
+            // segue para o fallback
+        }
+
+        // Sem a URL configurada, o link vai RELATIVO — de propósito.
+        //
+        // Reconstruir a partir de $_SERVER['HTTP_HOST'] pareceria mais útil,
+        // mas o Host é controlado por quem faz a requisição: quem escreve a
+        // nota poderia postar com "Host: sitefalso.com" e o colega mencionado
+        // receberia, pelo canal legítimo do Zabbix, um e-mail com link para o
+        // domínio do atacante. Link relativo não clica, mas também não engana.
+        return '';
+    }
+
+    /**
+     * Avisa o mencionado pelo media type dele.
+     *
+     * Silencioso quando não há token de API configurado (env
+     * PLANTONISTAS_ALERT_TOKEN) — é o estado normal de quem não ligou o
+     * recurso, e encher o log a cada menção não ajudaria ninguém. Os demais
+     * motivos vão para o log, porque aí há o que investigar.
+     */
+    private function notifyMention(ZbxDb $db, int $uid, int $authorUserid, int $noteId): void {
+        try {
+            $autor = 'um analista';
+            $stmt  = $db->prepare('SELECT username, name, surname FROM users WHERE userid = ?');
+            $stmt->bind_param('i', $authorUserid);
+            $stmt->execute();
+            $a = $stmt->get_result()->fetch_assoc();
+            if ($a !== null) {
+                $autor = $this->formatUserLabel(
+                    $a['name'] ?? '', $a['surname'] ?? '', (string) ($a['username'] ?? '')
+                );
+            }
+
+            $base = $this->frontendUrl();
+            $link = $base . 'zabbix.php?action=plantonistas.report.view';
+
+            $subject = 'Você foi mencionado no Diário de Bordo';
+            $message = $autor . " mencionou você numa nota do Diário de Bordo do Repasse de Plantão.\n\n"
+                     . ($base !== ''
+                        ? "Abra o Repasse para ler: " . $link . "\n\n"
+                        : "Abra o Repasse de Plantão no Zabbix para ler.\n\n")
+                     . "(Mensagem automática do módulo Plantonistas — nota #" . $noteId . ".)";
+
+            $r = ZbxAlertSender::notifyUser($db, $uid, $subject, $message);
+
+            // 'fora-da-janela' é comportamento esperado (a pessoa configurou
+            // horário comercial e são 3h da manhã), não defeito — e
+            // 'token-ausente' é o estado de quem não ligou o recurso. Os
+            // outros motivos têm o que investigar.
+            if ($r['sent'] === 0
+                    && !in_array($r['reason'], ['token-ausente', 'fora-da-janela'], true)) {
+                error_log('[plantonistas] menção não notificada (userid=' . $uid . '): '
+                    . ($r['reason'] ?? 'motivo desconhecido'));
+            }
+        } catch (\Throwable $e) {
+            // Nunca derruba o save da nota — mesma decisão da menção inválida.
+            error_log('[plantonistas] notifyMention() falhou (userid=' . $uid . '): ' . $e->getMessage());
         }
     }
 
