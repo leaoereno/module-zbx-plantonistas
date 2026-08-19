@@ -1,11 +1,16 @@
 -- ============================================================
 -- Relatório de Repasse de Plantão — Queries de Diagnóstico
+-- Dialeto: MySQL / MariaDB.  (Versão PostgreSQL: queries.pgsql.sql)
+--
 -- Referência e troubleshooting. Não executar em produção
 -- sem revisar os filtros de data/host.
 --
 -- Substitua @ts_start / @ts_end por timestamps Unix, ex:
 --   SET @ts_start = UNIX_TIMESTAMP('2026-06-15 00:00:00');
 --   SET @ts_end   = UNIX_TIMESTAMP('2026-06-15 23:59:59');
+--
+-- Os dois arquivos devem ser mantidos em par: ao mudar uma consulta
+-- aqui, mudar a equivalente no arquivo do PostgreSQL.
 -- ============================================================
 
 -- ── Diagnóstico geral ───────────────────────────────────────
