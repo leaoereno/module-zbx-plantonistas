@@ -12,7 +12,7 @@ Escrito em 2026-08-19.
 | [#1](https://github.com/leaoereno/module-zbx-plantonistas/issues/1) | Suporte a PostgreSQL (v5.0) | Portabilidade | G | 1 e 3 |
 | ~~[#3](https://github.com/leaoereno/module-zbx-plantonistas/issues/3)~~ | ~~CSRF desativado nas actions de escrita~~ — **feito** (2026-08-19) | Segurança | M | 2 |
 | ~~[#4](https://github.com/leaoereno/module-zbx-plantonistas/issues/4)~~ | ~~Cron de presença: eliminar a API do Zabbix~~ — **feito** (2026-08-19) | Segurança + dívida | M | 2 |
-| [#5](https://github.com/leaoereno/module-zbx-plantonistas/issues/5) | Sincronizar escala com escalonamento do Zabbix | Funcionalidade | M/G | 4 |
+| ~~[#5](https://github.com/leaoereno/module-zbx-plantonistas/issues/5)~~ | ~~Sincronizar escala com escalonamento do Zabbix~~ — **feito** (2026-08-19) | Funcionalidade | M/G | 4 |
 | [#2](https://github.com/leaoereno/module-zbx-plantonistas/issues/2) | "Fechar turno" (`shift_reports` é tabela morta) | Funcionalidade | M/G | 5 |
 | [#6](https://github.com/leaoereno/module-zbx-plantonistas/issues/6) | Menção só notifica dentro da tela do Repasse | Funcionalidade | M | 5 |
 
@@ -186,22 +186,28 @@ antigas testada nos dois bancos. Só então bump para `5.0.0` no manifest e READ
 
 ---
 
-## Fase 4 — Escala vira operacional (issue #5)
+## Fase 4 — Escala vira operacional (issue #5) — **CONCLUÍDA em 2026-08-19**
 
-`cron_sync_oncall.php`, no padrão já validado pelo presence tracker (e sem API,
-porque a Fase 2 já removeu essa dependência).
+`scripts/cron_sync_oncall.php`, no padrão já validado pelo presence tracker (e
+sem API, porque a Fase 2 removeu essa dependência).
 
-Decisões a bater antes de codar:
+Decisões batidas com o Rafael:
 
-- [ ] Um grupo de usuários por equipe, ou um grupo único com todos os plantonistas?
-- [ ] Frequência: a virada de turno precisa ser rápida (5 min?).
-- [ ] Dia **sem cobertura**: manter o último plantonista, cair para um grupo de
-      fallback, ou esvaziar? *Esvaziar = alerta sem destinatário — evitar.*
-- [ ] Rodar em **um** frontend só, como o presence tracker (o CLAUDE.md registra
-      que o cron do front02 ainda não foi conferido — resolver junto).
+- [x] **Um grupo por equipe** (`Plantonista de Hoje - NOC`) — cada equipe cuida
+      de hosts diferentes e precisa de Ação própria.
+- [x] **5 minutos.**
+- [x] **Dia sem cobertura mantém quem está no grupo** — esvaziar deixaria alerta
+      sem destinatário de madrugada.
+- [x] Um frontend só.
 
-É a issue de maior valor operacional da lista: transforma a escala de tela de
-consulta em fonte da verdade do escalonamento.
+Decisões técnicas tomadas no caminho (detalhe no `CLAUDE.md`): só o titular
+entra; o script nunca cria grupo; `users_groups.id` é reservado pela tabela
+`ids` como o Zabbix faz; INSERT antes do DELETE para o grupo nunca ficar vazio
+na virada; grupo de destino desabilitado é recusado, porque incluir o
+plantonista ali desabilitaria a conta dele no Zabbix inteiro.
+
+Pendente de campo: criar os grupos na UI, agendar o cron e rodar com
+`DRY_RUN=1` antes de valer. Passo a passo no README.
 
 ---
 

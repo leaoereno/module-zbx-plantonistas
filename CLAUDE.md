@@ -889,6 +889,73 @@ O que **não** mudou: o SQL continua MySQL-only (`DATE_FORMAT`,
 UPDATE`, e o `LAST_INSERT_ID()` do `insert_id`). O adaptador tira o bloqueio da
 conexão paralela, não o do dialeto — esse é o passo 3 da issue #1.
 
+### Escala alimenta o escalonamento do Zabbix (2026-08-19, issue #5)
+
+`scripts/cron_sync_oncall.php` resolve o turno corrente de cada equipe, acha o
+titular na escala e sincroniza um grupo de usuários do Zabbix com essa única
+pessoa. A partir daí a **Ação nativa** escala para o grupo — o módulo não
+reimplementa media type, mensagem nem escalonamento. É o que tira a Escala da
+condição de tela de consulta.
+
+Decisões do Rafael, todas com a alternativa oferecida e recusada:
+
+- **Um grupo por equipe** (`Plantonista de Hoje - NOC`), não um grupo único:
+  cada equipe cuida de hosts diferentes e precisa de Ação própria.
+- **Dia sem cobertura mantém quem está no grupo.** Esvaziar deixaria alerta
+  sem destinatário de madrugada; fallback exigiria manter mais um grupo. O
+  preço é a pessoa receber alerta fora do turno dela — por isso sai `INFO:` no
+  log toda vez que isso acontece.
+- **5 minutos.** A virada de turno leva até um ciclo para refletir.
+
+Decisões técnicas que não foram perguntadas:
+
+- **Só o titular entra no grupo.** Reserva não está de plantão, está
+  disponível.
+- **O script não cria grupo de usuário.** Criar exigiria reservar `usrgrpid`
+  na tabela `ids`, e o incidente do `role_rule`/`fcorr` (seção acima) mostra o
+  estrago de escrever ID na mão em tabela do core. Grupo ausente → WARN e a
+  equipe é pulada.
+- **`users_groups.id` NÃO é auto-increment** — `reserveIds()` replica o
+  `DB::reserveIds()` do Zabbix (SELECT ... FOR UPDATE em `ids`, UPDATE do
+  contador, transação). `MAX(id)+1` aqui repetiria exatamente a colisão que
+  impediu de salvar papel de usuário em produção.
+- **Turno que vira o dia pertence à data em que começou**: às 02h, quem está
+  de plantão é o escalado de *ontem*. `currentShiftDate()` espelha o
+  `computeCustomShiftBounds()` do trait — duplicação proposital, o cron roda em
+  CLI sem carregar o módulo. Errar isso escala a pessoa errada exatamente na
+  madrugada.
+- **Turnos que não cobrem 24h deixam buraco** (ex.: só diurno cadastrado). No
+  intervalo descoberto não há turno corrente e o grupo fica como está — mexer
+  seria chute.
+- **INSERT antes do DELETE**, de propósito. Na virada de turno o caminho é
+  sempre "sai o antigo, entra o novo"; com o DELETE primeiro o grupo fica sem
+  ninguém entre as duas escritas — e, se o INSERT falhasse, ficaria vazio até
+  o ciclo seguinte: 5 minutos de Ação sem destinatário, exatamente o que a
+  decisão de "não esvaziar" existe para evitar. Invertido, o pior caso é o
+  grupo ficar com duas pessoas por um ciclo. Não há transação em volta porque
+  `reserveIds()` abre a sua própria, e em MySQL `START TRANSACTION` comita
+  implicitamente a que estiver aberta — envolver tudo numa transação externa
+  comitaria o DELETE em silêncio.
+- **Grupo de destino com Status = Desabilitado é recusado.** O status de um
+  usuário no Zabbix é `MAX(usrgrp.users_status)` sobre todos os grupos dele:
+  pôr o plantonista num grupo desabilitado desabilitaria a conta — ele pararia
+  de logar, sumiria das telas do próprio módulo (`enabledUserClause()`) e
+  deixaria de ser notificado, que é o oposto do objetivo. Erro plausível, já
+  que é um grupo "técnico" que ninguém pretende usar para login, e o sintoma
+  apareceria longe da causa.
+- **Falha ao ler os turnos pula a equipe, não cai no modo legado.** Turno não é
+  dado acessório: é o que decide quem está de plantão. Com `$shifts = []` o
+  script sincronizaria a entrada `shift_id = 0` — que existe mesmo em grupo com
+  turnos, porque o import CSV grava sempre em modo legado — e escalaria a
+  pessoa errada, com um `OK:` no log dizendo que deu certo.
+- **Plantonista é validado antes** (existe + habilitado): `schedule.userid` não
+  tem FK para `users`, mas `users_groups.userid` tem.
+- Guarda contra o grupo de destino ser o próprio grupo da equipe (prefixo mal
+  configurado esvaziaria a equipe inteira) e aviso quando dois turnos se
+  sobrepõem — sem ele, um plantonista seria ignorado todo dia sem rastro.
+- `DRY_RUN=1` mostra o que faria sem gravar. Falha numa equipe não impede as
+  outras, mas o script sai com código 1 se houve erro — dá o que monitorar.
+
 ### Backlog conhecido
 
 - Salvar vínculo analista→turno em massa (hoje é um clique por analista) —
