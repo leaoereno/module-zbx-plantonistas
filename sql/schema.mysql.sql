@@ -98,9 +98,11 @@ CREATE TABLE IF NOT EXISTS module_plantonistas_mentions (
   is_read SMALLINT NOT NULL DEFAULT 0,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   read_at DATETIME,
+  notified_at DATETIME COMMENT 'Quando o cron avisou pelo media type; NULL = ainda na fila',
   PRIMARY KEY (id),
   INDEX idx_mention_user_unread (mentioned_userid, is_read),
-  INDEX idx_mention_note (note_id)
+  INDEX idx_mention_note (note_id),
+  INDEX idx_mention_fila (notified_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Menções @ do Diário de Bordo';
 
 -- ── module_plantonistas_shift_reports ───────────────────────────

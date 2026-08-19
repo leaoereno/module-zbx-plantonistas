@@ -528,6 +528,21 @@ class Module extends CModule {
         // VARCHAR(128) do DDL: encurtar coluna trunca dado silenciosamente, e
         // 255 acomoda 128 sem prejuízo nenhum.
 
+        // ── module_plantonistas_mentions ──
+        $t = 'module_plantonistas_mentions';
+        if (isset($cols[$t]) && !isset($cols[$t]['notified_at'])) {
+            $this->execAll($this->addColumnSql($t, 'notified_at',
+                'DATETIME NULL', 'TIMESTAMP(0)', 'read_at',
+                'Quando o cron avisou pelo media type; NULL = ainda na fila'));
+            \DBexecute($this->addIndexSql($t, 'idx_mention_fila', 'notified_at'));
+
+            // As menções que já existem NÃO entram na fila: marcar como já
+            // notificadas evita que a primeira execução do cron dispare um
+            // e-mail para cada menção do histórico inteiro.
+            \DBexecute("UPDATE $t SET notified_at = " . \Modules\Plantonistas\Actions\SqlFn::now()
+                . ' WHERE notified_at IS NULL');
+        }
+
         // ── module_plantonistas_shift_reports ──
         $t = 'module_plantonistas_shift_reports';
         if (isset($cols[$t])) {
