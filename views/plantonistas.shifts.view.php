@@ -10,25 +10,13 @@ $legacyShifts = $data['legacy_shifts'] ?? [];
 
 <link rel="stylesheet" href="modules/module-zbx-plantonistas/assets/fontawesome/css/all.min.css"/>
 
+<?php
+// Detecção de tema compartilhada — a mesma das demais telas do módulo. Era
+// uma terceira cópia do mesmo bloco; três heurísticas iguais é o tipo de
+// duplicação que só se percebe quando uma delas fica para trás.
+include __DIR__ . '/_theme.php';
+?>
 <div class="rp-native-container" id="rpShiftsContainer">
-<script>
-    let IS_DARK_THEME = false;
-    (function(){
-        try {
-            const bg = getComputedStyle(document.body).backgroundColor;
-            const rgb = bg.match(/\d+/g);
-            if (rgb && rgb.length >= 3) {
-                const [r, g, b] = rgb.map(Number);
-                const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-                IS_DARK_THEME = luminance < 0.5;
-            }
-        } catch (e) {}
-        if (IS_DARK_THEME) {
-            document.documentElement.setAttribute('data-theme', 'dark-theme');
-            document.body.classList.add('theme-dark-blue');
-        }
-    })();
-</script>
 
 <div class="rp-native-header">
     <div class="rp-nh-left">

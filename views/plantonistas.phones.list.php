@@ -3,15 +3,21 @@
  * @var array $data
  */
 ?>
+<?php
+// Paleta e detecção do tema ativo do Zabbix, compartilhadas pelas quatro
+// telas da família escala. Precisa vir ANTES do <style> desta view: é ele que
+// consome as variáveis --plt-*.
+include __DIR__ . '/_theme.php';
+?>
 <style>
-.phn-wrap    { padding:20px 0;color:#f2f2f2; }
-.phn-badge-ok { background:#162616;color:#59db8f;padding:2px 8px;border-radius:3px;
-    font-size:11px;font-weight:600;border:1px solid #2a5a2a; }
-.phn-badge-no { background:#252525;color:#666;padding:2px 8px;border-radius:3px;
-    font-size:11px;border:1px solid #3a3a3a; }
+.phn-wrap    { padding:20px 0;color:var(--plt-text); }
+.phn-badge-ok { background:var(--plt-ok-bg);color:var(--plt-ok);padding:2px 8px;border-radius:3px;
+    font-size:11px;font-weight:600;border:1px solid var(--plt-ok-border); }
+.phn-badge-no { background:var(--plt-panel-alt);color:var(--plt-text-soft);padding:2px 8px;border-radius:3px;
+    font-size:11px;border:1px solid var(--plt-border); }
 .phn-groups  { display:flex;gap:4px;flex-wrap:wrap; }
-.phn-tag     { background:#1a2a3a;color:#8faabc;padding:2px 7px;border-radius:3px;
-    font-size:10px;border:1px solid #2a4a6a;white-space:nowrap; }
+.phn-tag     { background:var(--plt-tag-bg);color:var(--plt-tag-text);padding:2px 7px;border-radius:3px;
+    font-size:10px;border:1px solid var(--plt-tag-border);white-space:nowrap; }
 .phn-form    { display:flex;gap:6px;align-items:center; }
 output .btn-overlay-close { position:absolute;top:6px;right:6px; }
 
@@ -64,14 +70,14 @@ a.phn-export-btn {
         <h4>Importar Telefones</h4>
         <button class="btn-overlay-close" onclick="phnCloseImport()"></button>
     </div>
-    <div class="overlay-dialogue-body" style="padding:18px 22px;background:#fff;">
-        <p style="color:#000;font-size:13px;margin:0 0 10px;">
+    <div class="overlay-dialogue-body" style="padding:18px 22px;background:var(--plt-panel);">
+        <p style="color:var(--plt-text);font-size:13px;margin:0 0 10px;">
             Arquivo <strong>CSV</strong> ou <strong>XLSX</strong> com uma coluna de usuário e uma de telefone:
         </p>
         <p style="font-size:13px;margin:0 0 10px;line-height:2;">
-            <span style="color:#3b9c3b;font-weight:600;">Usuario</span><span style="color:#000;"> (login do Zabbix, ex.: z148534) &nbsp;·&nbsp; </span><span style="color:#3b9c3b;font-weight:600;">Telefone</span><span style="color:#000;"> (com ou sem máscara)</span>
+            <span style="color:var(--plt-ok);font-weight:600;">Usuario</span><span style="color:var(--plt-text);"> (login do Zabbix, ex.: z148534) &nbsp;·&nbsp; </span><span style="color:var(--plt-ok);font-weight:600;">Telefone</span><span style="color:var(--plt-text);"> (com ou sem máscara)</span>
         </p>
-        <p style="font-size:12px;color:#666;margin:0 0 16px;line-height:1.6;">
+        <p style="font-size:12px;color:var(--plt-text-faint);margin:0 0 16px;line-height:1.6;">
             💡 Use <strong>↓ Exportar Usuários</strong> para baixar o modelo já preenchido,
             edite a coluna Telefone e reimporte — a coluna Nome é ignorada.<br>
             Linha com telefone <strong>vazio não apaga</strong> o cadastro: para remover,
@@ -79,8 +85,8 @@ a.phn-export-btn {
             Só são atualizados usuários que você já pode editar aqui.
         </p>
         <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
-            <label style="flex:1;min-width:220px;background:#fff;border:1px solid #aaa;border-radius:3px;
-                          padding:6px 10px;color:#000;font-size:13px;cursor:pointer;
+            <label style="flex:1;min-width:220px;background:var(--plt-bg);border:1px solid var(--plt-border-strong);border-radius:3px;
+                          padding:6px 10px;color:var(--plt-text);font-size:13px;cursor:pointer;
                           white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
                 <input type="file" id="phn-import-file" accept=".csv,.tsv,.txt,.xlsx"
                        style="display:none;" onchange="phnImportFileChosen(this)">
@@ -121,7 +127,7 @@ function phnSubmitImport() {
     var btn  = document.getElementById('phn-import-btn');
     var hint = document.getElementById('phn-import-hint');
     btn.disabled = true;              // anti duplo clique
-    hint.style.color = '#666';
+    hint.style.color = 'var(--plt-text-faint)';
     hint.textContent = '⏳ Lendo arquivo…';
 
     var reader = new FileReader();
@@ -145,7 +151,7 @@ function phnSubmitImport() {
         form.submit();
     };
     reader.onerror = function() {
-        hint.style.color = '#dc3545';
+        hint.style.color = 'var(--plt-danger)';
         hint.textContent = 'Erro ao ler o arquivo.';
         btn.disabled = false;
     };
@@ -154,7 +160,7 @@ function phnSubmitImport() {
 </script>
 
 <?php if (empty($data['users'])): ?>
-    <div style="padding:20px;color:#666;font-style:italic;">Nenhum usuário encontrado.</div>
+    <div style="padding:20px;color:var(--plt-text-faint);font-style:italic;">Nenhum usuário encontrado.</div>
 <?php else: ?>
 
 <!-- Filtros -->
@@ -181,7 +187,7 @@ function phnSubmitImport() {
         <option value="<?= (int)$gid ?>"><?= htmlspecialchars($gname) ?></option>
         <?php endforeach; ?>
     </select>
-    <span id="phn-count" style="font-size:12px;color:#666;"></span>
+    <span id="phn-count" style="font-size:12px;color:var(--plt-text-faint);"></span>
 </div>
 
 <table class="list-table" id="phn-table">
@@ -208,7 +214,7 @@ function phnSubmitImport() {
             <?php if ($np !== ''): ?>
                 <?= htmlspecialchars($np) ?>
             <?php else: ?>
-                <span style="color:#666;font-style:italic">— sem nome —</span>
+                <span style="color:var(--plt-text-faint);font-style:italic">— sem nome —</span>
             <?php endif; ?>
         </td>
         <td>
@@ -226,7 +232,8 @@ function phnSubmitImport() {
             <?php endif; ?>
         </td>
         <td>
-            <form method="post" action="zabbix.php?action=plantonistas.phones.save" class="phn-form">
+            <form method="post" action="zabbix.php?action=plantonistas.phones.save" class="phn-form"
+                  onsubmit="return phnPost(this)">
                 <input type="hidden" name="_csrf_token" value="<?= htmlspecialchars($data['csrf_save'] ?? '') ?>">
                 <input type="hidden" name="userid" value="<?= (int)$u['userid'] ?>">
                 <input type="text" name="phone" id="phn-inp-<?= (int)$u['userid'] ?>"
@@ -243,6 +250,41 @@ function phnSubmitImport() {
 </table>
 
 <script>
+// ── Envio resiliente a sessão expirada ──────────────────────
+//
+// O POST nativo perde o número digitado quando o token CSRF não vale mais: o
+// Zabbix devolve a página "Acesso negado" e a tela inteira some. Com fetch, a
+// página fica onde está e o campo continua preenchido.
+//
+// A action responde **redirect** nos dois desfechos normais (salvou / erro de
+// permissão), então `r.redirected` distingue sucesso de recusa por CSRF, que
+// devolve HTML sem redirecionar. Mesma abordagem da tela de Escala.
+function phnPost(form) {
+    const btn = form.querySelector('button[type=submit]');
+    const inp = form.querySelector('input[name=phone]');
+    const antes = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = '…';
+
+    fetch(form.action, { method: 'POST', body: new FormData(form), redirect: 'follow' })
+        .then(function (r) {
+            if (r.redirected) { location.href = r.url; return; }
+            btn.disabled = false;
+            btn.textContent = antes;
+            inp.style.borderColor = 'var(--plt-danger)';
+            inp.title = 'Sessão expirada ou acesso negado. Recarregue a página (F5) e salve de novo.';
+            alert('Sessão expirada ou acesso negado.\n\nRecarregue a página (F5) e salve de novo — '
+                + 'o número que você digitou continua no campo.');
+        })
+        .catch(function () {
+            btn.disabled = false;
+            btn.textContent = antes;
+            alert('Erro de conexão. Nada foi salvo; tente de novo.');
+        });
+
+    return false;   // impede o POST nativo
+}
+
 // Máscara espelhando PhonesFormat::formatPhoneBr() do PHP — as duas regras
 // TÊM que concordar, senão a linha muda de formato ao recarregar a página.
 //

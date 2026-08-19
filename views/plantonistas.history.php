@@ -24,42 +24,48 @@ $action_labels = [
 ];
 
 ob_start(); ?>
+<?php
+// Paleta e detecção do tema ativo do Zabbix, compartilhadas pelas quatro
+// telas da família escala. Precisa vir ANTES do <style> desta view: é ele que
+// consome as variáveis --plt-*.
+include __DIR__ . '/_theme.php';
+?>
 <style>
 .hist-wrap  { padding: 4px 0 20px; }
 .hist-tabs  {
     display: flex; gap: 4px; margin-bottom: 18px;
-    flex-wrap: wrap; border-bottom: 1px solid #3a3a3a; padding-bottom: 2px;
+    flex-wrap: wrap; border-bottom: 1px solid var(--plt-border); padding-bottom: 2px;
 }
 .hist-tab {
     padding: 6px 16px; border-radius: 3px 3px 0 0;
     font-size: 13px; font-weight: 600; text-decoration: none;
-    background: #262626; color: #7a9ab4;
-    border: 1px solid #3a3a3a; border-bottom: none;
+    background: var(--plt-panel-alt); color: var(--plt-text-soft);
+    border: 1px solid var(--plt-border); border-bottom: none;
     position: relative; bottom: -1px;
 }
-.hist-tab:hover  { background: #323232; color: #c8d8e4; }
-.hist-tab.active { background: #1e1e1e; color: #59db8f; border-bottom: 1px solid #1e1e1e; }
+.hist-tab:hover  { background: var(--plt-bg-hover); color: var(--plt-text-soft); }
+.hist-tab.active { background: var(--plt-panel-alt); color: var(--plt-ok); border-bottom: 1px solid var(--plt-panel-alt); }
 
 .hist-badge {
     display: inline-block; padding: 2px 8px; border-radius: 3px;
     font-size: 11px; font-weight: 700;
 }
-.hist-create { background: #162616; color: #59db8f; border: 1px solid #2a5a2a; }
-.hist-update { background: #1a2a3a; color: #4a9fcf; border: 1px solid #2a4a6a; }
-.hist-delete { background: #2a1010; color: #e45959; border: 1px solid #5a2a2a; }
+.hist-create { background: var(--plt-ok-bg); color: var(--plt-ok); border: 1px solid var(--plt-ok-border); }
+.hist-update { background: var(--plt-tag-bg); color: var(--plt-accent); border: 1px solid var(--plt-tag-border); }
+.hist-delete { background: var(--plt-danger-bg); color: var(--plt-danger); border: 1px solid var(--plt-danger-border); }
 
-.hist-diff { font-size: 12px; color: #8faabc; }
-.hist-diff .old { color: #e45959; text-decoration: line-through; }
-.hist-diff .arr { color: #666; margin: 0 4px; }
-.hist-diff .new { color: #59db8f; }
+.hist-diff { font-size: 12px; color: var(--plt-text-muted); }
+.hist-diff .old { color: var(--plt-danger); text-decoration: line-through; }
+.hist-diff .arr { color: var(--plt-text-faint); margin: 0 4px; }
+.hist-diff .new { color: var(--plt-ok); }
 
 .hist-pagination { display: flex; gap: 4px; margin-top: 16px; flex-wrap: wrap; align-items: center; }
 .hist-pagination a, .hist-pagination span {
     padding: 4px 10px; border-radius: 3px; font-size: 12px;
-    border: 1px solid #4f4f4f; text-decoration: none; color: #8faabc;
+    border: 1px solid var(--plt-border); text-decoration: none; color: var(--plt-text-muted);
 }
-.hist-pagination a:hover { background: #383838; color: #f0f0f0; }
-.hist-pagination .current { background: #2a4a6a; color: #fff; border-color: #4a7aaa; }
+.hist-pagination a:hover { background: var(--plt-bg-hover); color: var(--plt-text); }
+.hist-pagination .current { background: var(--plt-accent); color: #fff; border-color: var(--plt-accent); }
 .hist-pagination .disabled { opacity: .4; pointer-events: none; }
 </style>
 
@@ -80,11 +86,11 @@ ob_start(); ?>
     <button class="btn btn-alt" onclick="location.href='zabbix.php?action=plantonistas.list&usrgrpid=<?= $usrgrpid ?>'">
         ← Voltar à Escala
     </button>
-    <span style="font-size:12px;color:#666;"><?= $total ?> registro(s)</span>
+    <span style="font-size:12px;color:var(--plt-text-faint);"><?= $total ?> registro(s)</span>
 </div>
 
 <?php if (empty($rows)): ?>
-    <div style="padding:20px;color:#666;font-style:italic;">Nenhum histórico registrado.</div>
+    <div style="padding:20px;color:var(--plt-text-faint);font-style:italic;">Nenhum histórico registrado.</div>
 <?php else: ?>
 
 <table class="list-table">
@@ -118,7 +124,7 @@ ob_start(); ?>
     <tr>
         <td><?= $date_fmt ?></td>
         <td><?= htmlspecialchars($r['group_name'] ?? '') ?></td>
-        <td><?= !empty($r['shift_name']) ? htmlspecialchars($r['shift_name']) : '<span style="color:#555">—</span>' ?></td>
+        <td><?= !empty($r['shift_name']) ? htmlspecialchars($r['shift_name']) : '<span style="color:var(--plt-text-faint)">—</span>' ?></td>
         <td><span class="hist-badge <?= $al['cls'] ?>"><?= $al['label'] ?></span></td>
         <td class="hist-diff">
             <?php if ($r['action'] === 'update' && $tech_old !== $tech_new): ?>
@@ -134,15 +140,15 @@ ob_start(); ?>
         <td class="hist-diff">
             <?php if ($r['action'] === 'update' && $res_old !== $res_new): ?>
                 <?php if ($res_old): ?><span class="old"><?= $res_old ?></span><span class="arr">→</span><?php endif; ?>
-                <?= $res_new ?? '<span style="color:#555">—</span>' ?>
+                <?= $res_new ?? '<span style="color:var(--plt-text-faint)">—</span>' ?>
             <?php elseif ($r['action'] === 'delete' && $res_old): ?>
                 <span class="old"><?= $res_old ?></span>
             <?php else: ?>
-                <?= $res_new ?? '<span style="color:#555">—</span>' ?>
+                <?= $res_new ?? '<span style="color:var(--plt-text-faint)">—</span>' ?>
             <?php endif; ?>
         </td>
         <td><?= $by_name ?></td>
-        <td style="color:#8faabc;white-space:nowrap;"><?= $when_fmt ?></td>
+        <td style="color:var(--plt-text-muted);white-space:nowrap;"><?= $when_fmt ?></td>
     </tr>
     <?php endforeach; ?>
     </tbody>
@@ -164,7 +170,7 @@ ob_start(); ?>
        href="zabbix.php?action=plantonistas.history&usrgrpid=<?= $usrgrpid ?>&page=<?= $page+1 ?>">
        Próximo ›
     </a>
-    <span style="color:#666;">Página <?= $page ?> de <?= $pages ?></span>
+    <span style="color:var(--plt-text-faint);">Página <?= $page ?> de <?= $pages ?></span>
 </div>
 <?php endif; ?>
 
