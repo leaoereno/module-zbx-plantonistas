@@ -69,31 +69,19 @@ $calendar_json = json_encode($data['calendar']);
 <script src="modules/module-zbx-plantonistas/assets/js/chart.min.js"></script>
 <link rel="stylesheet" href="modules/module-zbx-plantonistas/assets/fontawesome/css/all.min.css"/>
 
+<?php
+// Mesma detecção de tema e mesma paleta das telas da família escala. Aqui ela
+// entra por dois motivos: o Chart.js abaixo precisa saber se o tema é escuro
+// (IS_DARK_THEME), e a unificação visual só vale se as duas famílias
+// decidirem "claro ou escuro" pelo MESMO critério — duas heurísticas
+// parecidas divergiriam num tema customizado, e o menu Plantão voltaria a
+// ficar metade claro, metade escuro.
+include __DIR__ . '/_theme.php';
+?>
 <div class="rp-native-container" id="rpContainer">
 <script>
-    let IS_DARK_THEME = false;
-    (function(){
-        // FIX: a detecção antiga procurava um <link> com "dark-theme"/"hc-dark"
-        // no href — mas o Zabbix pode referenciar esses arquivos no HTML mesmo
-        // com outro tema ativo (ex.: preload de temas alternativos), gerando
-        // falso positivo. Em vez de adivinhar pelo nome do arquivo, lê a cor de
-        // fundo REAL já renderizada pelo tema ativo do Zabbix e calcula se é
-        // clara ou escura — funciona com qualquer tema (Blue, Dark, HC, ou tema
-        // customizado da empresa), sem depender de convenção de nome.
-        try {
-            const bg = getComputedStyle(document.body).backgroundColor;
-            const rgb = bg.match(/\d+/g);
-            if (rgb && rgb.length >= 3) {
-                const [r, g, b] = rgb.map(Number);
-                const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-                IS_DARK_THEME = luminance < 0.5;
-            }
-        } catch (e) {}
-        if (IS_DARK_THEME) {
-            document.documentElement.setAttribute('data-theme', 'dark-theme');
-            document.body.classList.add('theme-dark-blue');
-        }
-    })();
+    // Lida do atributo que o _theme.php já gravou, em vez de recalcular.
+    const IS_DARK_THEME = document.documentElement.getAttribute('data-plt-theme') === 'dark';
 </script>
 
 <!-- HEADER BAR -->
@@ -125,9 +113,23 @@ $calendar_json = json_encode($data['calendar']);
             </select>
         </form>
         <div class="rp-nh-time"><i class="far fa-clock"></i> Gerado às <?= date('H:i') ?></div>
-        <?php if (!empty($data['pending_mentions'])): ?>
-        <a href="javascript:void(0)" onclick="document.getElementById('mentionBanner').scrollIntoView({behavior:'smooth'})" class="rp-nh-btn" style="background:#e65100;" title="Você tem menções pendentes">
-            <i class="fas fa-at"></i> <?= count($data['pending_mentions']) ?>
+        <?php
+        // O botão aparece com menção pendente (laranja, chamando atenção) OU
+        // com histórico (neutro, só para consultar). Antes ele só existia com
+        // pendência, então o histórico não teria por onde ser aberto.
+        // Condição IDÊNTICA à do painel, não uma parecida: se
+        // queryMentionHistory() falhar ela devolve [] (o histórico é
+        // acessório e não derruba o relatório), e um botão preso a
+        // `pending_mentions` continuaria na tela sem nada para abrir — o
+        // clique não faria absolutamente nada.
+        $mh_total = count($data['mention_history'] ?? []);
+        $mh_pend  = count($data['pending_mentions'] ?? []);
+        if ($mh_total > 0):
+        ?>
+        <a href="javascript:void(0)" onclick="rpToggleMentions()" class="rp-nh-btn"
+           <?= $mh_pend > 0 ? 'style="background:#e65100;"' : '' ?>
+           title="<?= $mh_pend > 0 ? 'Você tem menções pendentes' : 'Menções recebidas' ?>">
+            <i class="fas fa-at"></i> <?= $mh_pend > 0 ? (int)$mh_pend : (int)$mh_total ?>
         </a>
         <?php endif; ?>
         <?php if (!empty($data['can_manage_shifts'])): ?>
@@ -206,6 +208,37 @@ $pview_base = "zabbix.php?action=problem.view&filter_set=1&filter_show=3&from=".
         <button type="button" class="rp-mention-dismiss" data-mention-id="<?= (int)$pm['id'] ?>" title="Marcar como lida">&times;</button>
     </div>
     <?php endforeach; ?>
+</div>
+<?php endif; ?>
+
+<?php if (!empty($data['mention_history'])): ?>
+<!-- HISTÓRICO DE MENÇÕES (pendentes e lidas) -->
+<div class="rp-mention-history" id="mentionHistory" hidden>
+    <div class="rp-mh-head">
+        <span><i class="fas fa-at"></i> Menções recebidas</span>
+        <span class="rp-muted"><?= count($data['mention_history']) ?> (últimas 100)</span>
+        <button type="button" class="rp-mh-close" onclick="rpToggleMentions()" title="Fechar">&times;</button>
+    </div>
+    <div class="rp-mh-list">
+        <?php foreach ($data['mention_history'] as $mh):
+            // Mesma resolução do banner: turno cadastrado vai pelo id; turno
+            // legado (24h/manha/...) vai pelo nome.
+            $mh_shift = !empty($mh['shift_id']) ? $mh['shift_id'] : ($mh['shift_name'] ?: '24h');
+            $mh_lida  = (int)$mh['is_read'] === 1;
+        ?>
+        <div class="rp-mh-item<?= $mh_lida ? '' : ' rp-mh-unread' ?>">
+            <span class="rp-mh-dot" title="<?= $mh_lida ? 'Lida' : 'Não lida' ?>"></span>
+            <span class="rp-mh-txt">
+                <strong><?= htmlspecialchars($mh['analyst_name']) ?></strong>
+                — <?= htmlspecialchars($mh['created_at']) ?>,
+                turno <?= htmlspecialchars($mh['shift_name']) ?>
+                (<?= date('d/m/Y', strtotime($mh['shift_date'])) ?>)
+            </span>
+            <a href="zabbix.php?action=plantonistas.report.view&date=<?= htmlspecialchars($mh['shift_date']) ?>&shift=<?= htmlspecialchars((string)$mh_shift) ?>#table-notes"
+               class="rp-mention-view-link" data-mention-id="<?= (int)$mh['id'] ?>">Ver nota</a>
+        </div>
+        <?php endforeach; ?>
+    </div>
 </div>
 <?php endif; ?>
 
@@ -891,6 +924,74 @@ if (editor) {
         if (dropdown && dropdown.style.display !== 'none') positionDropdown();
     });
 
+    // ── Imagem e anexo: bloqueio explícito ──────────────────────────────
+    //
+    // Decisão: o Diário de Bordo é texto formatado + menções, sem anexo. Sem
+    // este bloqueio o comportamento fica INDEFINIDO em vez de proibido: colar
+    // um print insere um <img src="data:image/png;base64,..."> de centenas de
+    // KB no contenteditable, o usuário vê a imagem na tela, salva — e a
+    // sanitização do servidor descarta a tag (img não está na allowlist).
+    // A nota volta sem a imagem, sem nenhuma mensagem, com cara de bug.
+    //
+    // Colar texto formatado de outro lugar continua funcionando; o que é
+    // barrado é só arquivo e imagem.
+    function avisarSemAnexo() {
+        const st = document.getElementById('noteSaveStatus');
+        if (!st) return;
+        st.style.color = 'var(--sev-disaster)';
+        st.textContent = 'O Diário de Bordo aceita só texto e menções — imagem e anexo não são gravados.';
+        setTimeout(function () {
+            if (st.textContent.indexOf('imagem e anexo') !== -1) {
+                st.textContent = '';
+                st.style.color = '';   // senão a próxima mensagem herda o vermelho
+            }
+        }, 6000);
+    }
+
+    // Só é anexo o que NÃO traz representação de texto junto.
+    //
+    // Esta guarda de texto é a parte que importa: copiar um trecho de planilha
+    // (Excel, Google Sheets, tabela do próprio Zabbix) coloca no clipboard
+    // text/plain, text/html E um bitmap image/png ao mesmo tempo. Olhando só
+    // para "tem item image/*", a colagem de TEXTO seria descartada — que é
+    // justamente o uso mais comum num repasse de NOC.
+    function temArquivo(dt) {
+        if (!dt) return false;
+
+        var tipos = Array.prototype.slice.call(dt.types || []);
+        if (tipos.indexOf('text/plain') !== -1 || tipos.indexOf('text/html') !== -1) {
+            return false;
+        }
+        // 'Files' em `types` é o sinal confiável no dragover, onde `files`
+        // ainda está vazio por decisão de segurança do navegador.
+        if (tipos.indexOf('Files') !== -1) return true;
+        if (dt.files && dt.files.length) return true;
+
+        return Array.prototype.some.call(dt.items || [], function (it) {
+            return it.kind === 'file';
+        });
+    }
+
+    editor.addEventListener('paste', function (e) {
+        if (temArquivo(e.clipboardData)) {
+            e.preventDefault();
+            avisarSemAnexo();
+        }
+    });
+
+    // `dragover` precisa do preventDefault também: sem ele o navegador não
+    // considera o editor um alvo válido e abre o arquivo solto na aba,
+    // perdendo a nota que estava sendo escrita.
+    editor.addEventListener('dragover', function (e) {
+        if (temArquivo(e.dataTransfer)) e.preventDefault();
+    });
+    editor.addEventListener('drop', function (e) {
+        if (temArquivo(e.dataTransfer)) {
+            e.preventDefault();
+            avisarSemAnexo();
+        }
+    });
+
     document.querySelectorAll('.rp-editor-btn').forEach(function (btn) {
         btn.addEventListener('mousedown', function (e) { e.preventDefault(); }); // mantém a seleção do editor
         btn.addEventListener('click', function () {
@@ -1023,4 +1124,15 @@ document.querySelectorAll('.rp-mention-view-link').forEach(function (a) {
         // sem preventDefault — deixa o link navegar normalmente pra tela da nota
     });
 });
+
+// ── Histórico de menções ──
+//
+// Painel, não tela nova: quem está lendo o repasse não deveria sair dele para
+// achar uma menção. O botão do cabeçalho abre e fecha.
+function rpToggleMentions() {
+    const painel = document.getElementById('mentionHistory');
+    if (!painel) return;
+    painel.hidden = !painel.hidden;
+    if (!painel.hidden) painel.scrollIntoView({behavior: 'smooth', block: 'nearest'});
+}
 </script>
