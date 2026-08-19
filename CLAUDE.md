@@ -1085,6 +1085,56 @@ uma menção não tem severidade.
   parâmetros dele em outro formato (lista plana, sem sendto/subject), e mandar
   errado falharia só no log.
 
+### PostgreSQL: as armadilhas semânticas primeiro (2026-08-19, issue #1)
+
+O levantamento completo do que é MySQL-only está no `ROADMAP.md` (Fase 3). O
+que foi feito nesta primeira passada é o subconjunto que **também conserta ou
+protege o MySQL de hoje** — nenhuma dessas mudanças espera por PostgreSQL para
+valer a pena, e todas continuam corretas no MySQL.
+
+O critério: erro de sintaxe o PG acusa na hora e a gente descobre no primeiro
+teste. Perigoso é o que roda nos dois bancos e devolve resultado **diferente**.
+
+- **Chaves do `INFORMATION_SCHEMA` em maiúsculo** era a pior de todas. O MySQL
+  devolve `TABLE_NAME`, o PostgreSQL devolve `table_name`. Lendo em maiúsculo,
+  no PG `existingTables()` devolveria `[]` e `migrateColumns()` cairia no
+  `isset()` falso: **o RENAME das tabelas antigas nunca aconteceria e nenhuma
+  migração de coluna rodaria** — sem erro, sem log, com as telas abrindo
+  normalmente. Agora tudo passa por `array_change_key_case($row, CASE_LOWER)`
+  antes de ser usado.
+- **Expressão booleana crua em SELECT** (`(NOT EXISTS (...) AND ...) AS
+  habilitado`, no `cron_sync_oncall`): MySQL devolve `1`/`0`, PostgreSQL
+  devolve `t`/`f`, e `(int)'t'` é `0`. Todo plantonista viraria "desabilitado",
+  toda equipe seria pulada e o log mandaria investigar um cadastro correto.
+  Virou `CASE WHEN ... THEN 1 ELSE 0 END`.
+- **Comparação de texto**: o MySQL com collation `_ci` ignora caixa; o PG não.
+  Afetava a busca de menção (`@rafael` deixaria de achar `Rafael` — a feature
+  ficaria inútil, com cara de bug intermitente), as exclusões de `guest` e
+  `api_`, e o `usrgrp.name = ?` do cron de escalonamento, que passaria a dizer
+  que um grupo visível na tela "não existe". Tudo com `LOWER()` dos dois lados
+  agora — e no cron também `TRIM()`, porque nome de grupo é digitado à mão.
+- **`SELECT DISTINCT` com `ORDER BY` de expressão fora da lista de seleção**: o
+  MySQL aceita, o PG recusa. A expressão virou a coluna `sort_label`.
+- **`IFNULL(bigint, '')`** não é troca mecânica por `COALESCE`: o PG recusa
+  misturar `BIGINT` com `''`. Virou `COALESCE(..., 0)`, que mantém o contrato
+  com a view (que testa por truthiness, e `'0'` é falsy em PHP) e alinha com o
+  `PlantaoOverview`, que já usava `0`.
+- `IF()` → `CASE WHEN`, e `DATABASE()` → `current_schema()` no ramo PG.
+- `INFORMATION_SCHEMA.STATISTICS` não existe no PG: a leitura de índices passou
+  a escolher entre ela e `pg_indexes`. E a coluna de tipo passou a ser
+  `COLUMN_TYPE` (MySQL, traz o `unsigned`) ou `DATA_TYPE` (padrão), conforme o
+  banco — no PG `unsigned` não existe, então aquele ramo de correção
+  simplesmente não tem o que fazer.
+
+**Regra para daqui em diante**: `Module::isPgsql()` (lê `$DB['TYPE']`) é o
+único lugar que decide dialeto. Consulta nova não usa `IF()`, `IFNULL`,
+`DATE_FORMAT`, `FROM_UNIXTIME`, `TIMESTAMPDIFF` nem devolve booleano cru — e
+comparação de texto com valor digitado por gente leva `LOWER()`.
+
+O que **falta** para rodar em PG está no ROADMAP: o DDL das 9 tabelas (que hoje
+vive duplicado no `Module.php` e no `sql/schema.sql`), as funções de data/hora,
+`ON CONFLICT`, `lastval()` e os dois crons em PDO.
+
 ### Backlog conhecido
 
 - Salvar vínculo analista→turno em massa (hoje é um clique por analista) —

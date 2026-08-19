@@ -138,6 +138,37 @@ escrever nota em cada uma.
 
 ## Fase 3 — PostgreSQL de fato: v5.0 (issue #1, passos 2 a 7)
 
+**Passo 3 (armadilhas semânticas) — FEITO em 2026-08-19.** Antes de traduzir
+sintaxe, foram corrigidos os pontos que rodariam nos dois bancos devolvendo
+resultado **diferente** — os únicos que não seriam pegos por um teste no lab
+PG, porque não geram erro. Todos continuam corretos no MySQL, então já valem
+em produção hoje. Detalhe no `CLAUDE.md`, seção "PostgreSQL: as armadilhas
+semânticas primeiro". Junto foram feitos o passo 0 (`Module::isPgsql()`) e o
+passo 4 da introspecção (`STATISTICS` → `pg_indexes`, `DATABASE()` →
+`current_schema()`, `COLUMN_TYPE` → `DATA_TYPE`).
+
+**O que falta**, na ordem sugerida pelo levantamento:
+
+| Passo | Trabalho | Observação |
+|---|---|---|
+| 1 | DDL das 9 tabelas | Hoje **duplicado** em `Module::tableDdl()` e `sql/schema.sql`. O certo é gerar os dois de uma descrição única, senão a divergência MySQL/PG vira permanente. Decisões a travar: `TINYINT(1)`→`SMALLINT` (não `BOOLEAN`, que quebraria 10 comparações `= 1`), `BIGINT UNSIGNED`→`BIGINT`, `AUTO_INCREMENT`→identity, `KEY` inline→`CREATE INDEX`, `ON UPDATE CURRENT_TIMESTAMP`→trigger |
+| 2 | `migrateColumns()` | `AFTER`, `MODIFY COLUMN`, `ADD/DROP INDEX`. Metade das guardas existe para consertar o que o antigo CREATE TABLE do cron deixou — artefato histórico só de MySQL, vale isolar atrás de `if (!isPgsql())` em vez de traduzir |
+| 4 | Data/hora | `DATE_FORMAT` (14×), `FROM_UNIXTIME` (5×), `TIMESTAMPDIFF` (3×), `CURDATE`, `INTERVAL`. **Decidir o fuso junto**: `to_timestamp()` usa o TimeZone da sessão PG, e fuso já causou erro de um dia três vezes neste módulo |
+| 5 | Escrita | `ON DUPLICATE KEY UPDATE` → `ON CONFLICT` (2×) e `LAST_INSERT_ID()` → `lastval()` no `ZbxDb` |
+| 7 | Os 2 crons | Driver novo (PDO), mais o `install.sh`. Ficam por último: não afetam a UI |
+| 8 | `sql/queries.sql` | Documentação de diagnóstico, sem caller |
+
+Duas armadilhas registradas que ainda não morderam: o parser de `?` do
+`ZbxDbStmt` trata `\` como escape dentro de literal, o que não vale no PG com
+`standard_conforming_strings` (nenhuma consulta atual tem `\` em literal, mas
+uma futura desalinharia todos os placeholders); e o `ZbxDbStmt::execute()`
+roteia por `^(SELECT|SHOW|...)`, então um `INSERT ... RETURNING` — a saída
+natural para o `insert_id` no PG — cairia no `DBexecute` e perderia o
+resultado.
+
+<details>
+<summary>Plano original</summary>
+
 Só começa com a Fase 1 fechada.
 
 | Passo | Trabalho |
@@ -177,6 +208,8 @@ a coluna auxiliar de ordenação com o valor cru (auditoria de 2026-08-14).
 Um helper único no trait (ex.: `sqlDateFormat()`, `sqlIfNull()`, `sqlUpsert()`)
 que decide por `$DB['TYPE']`, em vez de `if` espalhado pelas queries. Facilita a
 próxima auditoria e evita que uma query nova nasça só-MySQL.
+
+</details>
 
 ### Critério de saída da v5.0
 

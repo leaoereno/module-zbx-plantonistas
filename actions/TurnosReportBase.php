@@ -394,7 +394,7 @@ trait TurnosReportBase {
                     INNER JOIN hosts h     ON h.hostid    = i.hostid
                     WHERE ev.source = 0 AND ev.object = 0
                       AND ev.clock BETWEEN ? AND ?
-                      AND LEFT(u.username, 4) <> 'api_'
+                      AND LOWER(LEFT(u.username, 4)) <> 'api_'
                       AND a.acknowledgeid = (
                           SELECT MIN(a2.acknowledgeid)
                           FROM acknowledges a2
@@ -1202,9 +1202,20 @@ trait TurnosReportBase {
         // ORDER BY pelo nome efetivo (username quando não há nome cadastrado):
         // ordenar pelo CONCAT cru jogava todos os labels vazios pro topo da
         // lista, que era exatamente o que aparecia como "itens em branco".
-        $orderBy = "ORDER BY IF(TRIM(CONCAT(COALESCE(u.name,''), ' ', COALESCE(u.surname,''))) = '',
-                                u.username,
-                                TRIM(CONCAT(COALESCE(u.name,''), ' ', COALESCE(u.surname,'')))) ASC";
+        //
+        // Duas mudanças com o PostgreSQL em vista (issue #1), ambas corretas
+        // no MySQL também:
+        //
+        // - CASE WHEN em vez de IF(): IF() é MySQL-only.
+        // - A expressão vira COLUNA do SELECT (sort_label) e o ORDER BY passa
+        //   a citar o alias. Num `SELECT DISTINCT`, o PostgreSQL exige que a
+        //   expressão do ORDER BY esteja na lista de seleção — do jeito
+        //   anterior a consulta simplesmente não roda lá.
+        $sortLabel = "CASE WHEN TRIM(CONCAT(COALESCE(u.name,''), ' ', COALESCE(u.surname,''))) = ''
+                           THEN u.username
+                           ELSE TRIM(CONCAT(COALESCE(u.name,''), ' ', COALESCE(u.surname,'')))
+                      END";
+        $orderBy   = 'ORDER BY sort_label ASC';
         // Busca por termos: cada palavra digitada tem que aparecer em ALGUM dos
         // campos (username, name, surname ou o nome completo montado). É isso
         // que faz "Rafael Leao" achar name='Rafael' + surname='Leao Ereno' — o
@@ -1215,12 +1226,18 @@ trait TurnosReportBase {
         $terms    = preg_split('/\s+/', $q, -1, PREG_SPLIT_NO_EMPTY) ?: [];
         $terms    = array_slice($terms, 0, 5); // teto de termos: query previsível
 
+        // LOWER() nos dois lados do LIKE em vez de LIKE direto: o MySQL com
+        // collation _ci ignora a caixa sozinho, o PostgreSQL não. Sem isso,
+        // digitar "rafael" deixaria de achar "Rafael" no PG — e a busca do @
+        // ficaria praticamente inútil, com cara de bug intermitente (funciona
+        // se você acertar a caixa exata). LOWER() vale nos dois bancos.
         $termSql    = '';
         $bindTypes  = '';
         $bindValues = [];
         foreach ($terms as $t) {
-            $termSql .= " AND (u.username LIKE ? OR u.name LIKE ? OR u.surname LIKE ? OR $fullName LIKE ?)";
-            $like     = '%' . $t . '%';
+            $termSql .= " AND (LOWER(u.username) LIKE ? OR LOWER(u.name) LIKE ?"
+                      . " OR LOWER(u.surname) LIKE ? OR LOWER($fullName) LIKE ?)";
+            $like     = '%' . mb_strtolower($t) . '%';
             $bindTypes .= 'ssss';
             array_push($bindValues, $like, $like, $like, $like);
         }
@@ -1228,16 +1245,18 @@ trait TurnosReportBase {
         try {
             if (!empty($ctx['is_superadmin'])) {
                 $stmt = $db->prepare(
-                    "SELECT u.userid AS id, u.username, u.name, u.surname
+                    "SELECT u.userid AS id, u.username, u.name, u.surname,
+                            $sortLabel AS sort_label
                      FROM users u
-                     WHERE u.username != 'guest' AND $activeClause
+                     WHERE LOWER(u.username) <> 'guest' AND $activeClause
                        $termSql
                      $orderBy LIMIT 20"
                 );
             } else {
                 $sameGroup = $this->sameGroupExists((int)$ctx['userid'], 'u.userid');
                 $stmt = $db->prepare(
-                    "SELECT DISTINCT u.userid AS id, u.username, u.name, u.surname
+                    "SELECT DISTINCT u.userid AS id, u.username, u.name, u.surname,
+                            $sortLabel AS sort_label
                      FROM users u
                      WHERE $sameGroup AND $activeClause
                        $termSql

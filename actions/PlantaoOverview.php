@@ -65,7 +65,7 @@ class PlantaoOverview extends CController {
                 'SELECT s.usrgrpid, s.shift_id,' .
                 '  s.userid, u.name, u.surname, u.username,' .
                 '  COALESCE(pm.phone,\'\') AS phone,' .
-                '  IFNULL(s.userid_reserva,0) AS userid_reserva,' .
+                '  COALESCE(s.userid_reserva,0) AS userid_reserva,' .
                 '  COALESCE(ur.name,\'\') AS r_name,' .
                 '  COALESCE(ur.surname,\'\') AS r_surname,' .
                 '  COALESCE(ur.username,\'\') AS r_username,' .
