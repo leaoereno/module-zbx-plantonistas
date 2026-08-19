@@ -66,7 +66,7 @@ a.phn-export-btn {
     </div>
     <div class="overlay-dialogue-body" style="padding:18px 22px;background:#fff;">
         <p style="color:#000;font-size:13px;margin:0 0 10px;">
-            Arquivo <strong>CSV</strong> com uma coluna de usuário e uma de telefone:
+            Arquivo <strong>CSV</strong> ou <strong>XLSX</strong> com uma coluna de usuário e uma de telefone:
         </p>
         <p style="font-size:13px;margin:0 0 10px;line-height:2;">
             <span style="color:#3b9c3b;font-weight:600;">Usuario</span><span style="color:#000;"> (login do Zabbix, ex.: z148534) &nbsp;·&nbsp; </span><span style="color:#3b9c3b;font-weight:600;">Telefone</span><span style="color:#000;"> (com ou sem máscara)</span>
@@ -82,7 +82,7 @@ a.phn-export-btn {
             <label style="flex:1;min-width:220px;background:#fff;border:1px solid #aaa;border-radius:3px;
                           padding:6px 10px;color:#000;font-size:13px;cursor:pointer;
                           white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
-                <input type="file" id="phn-import-file" accept=".csv,.tsv,.txt"
+                <input type="file" id="phn-import-file" accept=".csv,.tsv,.txt,.xlsx"
                        style="display:none;" onchange="phnImportFileChosen(this)">
                 <span id="phn-import-filename">Escolher arquivo…</span>
             </label>
@@ -196,7 +196,7 @@ function phnSubmitImport() {
     </thead>
     <tbody>
     <?php foreach ($data['users'] as $u):
-        $np = trim($u['name'].' '.$u['surname']);
+        $np = $u['label'] ?? trim($u['name'].' '.$u['surname']);
         $group_ids_str = implode(',', array_keys($u['groups']));
         $has_phone = !empty($u['phone']) ? 'yes' : 'no';
     ?>

@@ -6,11 +6,12 @@ use CController, CWebUser;
 
 /**
  * Exporta CSV com Usuário | Nome | Telefone dos membros visíveis ao usuário logado.
- * Respeita as mesmas regras de grupo e role do PhonesList.
+ * Respeita a mesma regra de grupo do PhonesList.
  */
 class PhonesExport extends CController {
 
     use PhonesFormat;
+    use UserLabel;
 
     public function init(): void { $this->disableCsrfValidation(); }
 
@@ -60,12 +61,9 @@ class PhonesExport extends CController {
                 exit;
             }
 
-            $roleid_row = DBfetch(DBselect('SELECT roleid FROM users WHERE userid=' . $current_userid));
-            $roleid     = $roleid_row ? (int)$roleid_row['roleid'] : 0;
 
             $sql = $select .
                 ' WHERE ug.usrgrpid IN (' . implode(',', $group_ids) . ')' .
-                '   AND u.roleid = ' . $roleid .
                 '   AND ' . $active_filter .
                 ' ORDER BY u.name, u.surname';
         }
@@ -86,7 +84,7 @@ class PhonesExport extends CController {
         fputcsv($out, ['Usuario', 'Nome', 'Telefone'], ';');
 
         foreach ($users as $u) {
-            $nome = trim($u['name'] . ' ' . $u['surname']);
+            $nome = $this->userLabel($u['name'], $u['surname'], '');
             fputcsv($out, [
                 $u['username'],
                 $nome !== '' ? $nome : '—',

@@ -9,6 +9,7 @@ use CController,
 class PhonesList extends CController {
 
     use PhonesFormat;
+    use UserLabel;
 
     public function init(): void {
         $this->disableCsrfValidation();
@@ -31,7 +32,6 @@ class PhonesList extends CController {
     protected function doAction(): void {
         $current_userid  = (int) CWebUser::$data['userid'];
         $is_super_admin  = (CWebUser::$data['type'] >= USER_TYPE_SUPER_ADMIN);
-        $current_roleid  = $this->getCurrentRoleid($current_userid);
 
         // ── Base da query ─────────────────────────────────────────────────
         $select =
@@ -61,7 +61,16 @@ class PhonesList extends CController {
             // Super admin: vê TODOS os usuários ativos do sistema
             $sql = $select . ' WHERE ' . $active_filter . ' ORDER BY u.name, u.surname, g.name';
         } else {
-            // Admin / Usuário: vê apenas quem compartilha grupo E mesmo papel (role)
+            // Admin: vê quem compartilha grupo com ele.
+            //
+            // O filtro por PAPEL que existia aqui saiu (2026-08-19). Ele fazia
+            // sentido enquanto Telefones era visível a todos; virou defeito
+            // quando a tela passou a ser Admin+ (commit 9959722): a partir dali
+            // "mesmo papel" significava que um Admin só via OUTROS ADMINS — e
+            // quem ele precisa ligar às 3h da manhã é o analista, que é User.
+            // Uma lista de contato de plantão que esconde justamente os
+            // plantonistas não serve para nada. O resto do módulo (Escala,
+            // Repasse, notas, presença, menções) sempre segmentou só por grupo.
             $group_ids = $this->getUserGroupIds($current_userid);
 
             if (empty($group_ids)) {
@@ -76,7 +85,6 @@ class PhonesList extends CController {
             $ids_str = implode(',', $group_ids);
             $sql = $select .
                 ' WHERE ug.usrgrpid IN (' . $ids_str . ')' .
-                '   AND u.roleid = ' . $current_roleid .
                 '   AND ' . $active_filter .
                 ' ORDER BY u.name, u.surname, g.name';
         }
@@ -97,6 +105,10 @@ class PhonesList extends CController {
                     // formatar aqui evita a view ter regra de negócio própria.
                     'phone'     => $row['phone'],
                     'phone_fmt' => $this->formatPhoneBr($row['phone']),
+                    // Rótulo montado aqui, não na view: concatenar name+surname
+                    // às cegas duplica o nome de quem tem o nome completo no
+                    // campo surname (ver UserLabel).
+                    'label'     => $this->userLabel($row['name'], $row['surname'], $row['username']),
                     'groups'   => [],
                 ];
             }
@@ -117,10 +129,6 @@ class PhonesList extends CController {
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────
-    private function getCurrentRoleid(int $userid): int {
-        $row = DBfetch(DBselect('SELECT roleid FROM users WHERE userid = ' . $userid));
-        return $row ? (int) $row['roleid'] : 0;
-    }
 
     private function getUserGroupIds(int $userid): array {
         $ids = [];

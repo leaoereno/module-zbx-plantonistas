@@ -33,26 +33,42 @@ class PhonesSave extends CController {
 
         $redirect = (new CUrl('zabbix.php'))->setArgument('action', 'plantonistas.phones.list');
 
-        // ── Permissão: super admin tudo; demais precisam de grupo + papel igual ──
+        // ── Permissão: super admin tudo; demais precisam de grupo em comum ──
         if (!$is_super_admin) {
-            $current_roleid = $this->getCurrentRoleid($current_userid);
-
-            // O alvo deve compartilhar ao menos um grupo E ter o mesmo papel
             $ok = DBfetch(DBselect(
                 'SELECT ug1.usrgrpid' .
                 ' FROM users_groups ug1' .
                 ' JOIN users_groups ug2 ON ug2.usrgrpid = ug1.usrgrpid' .
-                ' JOIN users u ON u.userid = ug1.userid' .
                 ' WHERE ug1.userid = ' . $userid .
                 '   AND ug2.userid = ' . $current_userid .
-                '   AND u.roleid   = ' . $current_roleid .
                 ' LIMIT 1'
             ));
 
             if (!$ok) {
                 $this->setResponse(new CControllerResponseRedirect(
                     $redirect->setArgument('error',
-                        'Permissão negada: o usuário não pertence à sua estrutura (grupo + papel).')
+                        'Permissão negada: o usuário não pertence a nenhum grupo seu.')
+                ));
+                return;
+            }
+
+            // ── Não editar quem tem papel mais alto ──────────────────────
+            //
+            // Ver o telefone de todo mundo do grupo é o objetivo da tela (a
+            // pessoa que se liga às 3h é o analista, papel User). ESCREVER é
+            // outra coisa: sem esta guarda, um Admin passaria a alterar o
+            // cadastro de um Super Admin, o que o filtro por papel — retirado
+            // por ser errado na leitura — impedia por acidente.
+            $alvo = DBfetch(DBselect(
+                'SELECT r.type' .
+                ' FROM users u JOIN role r ON r.roleid = u.roleid' .
+                ' WHERE u.userid = ' . $userid
+            ));
+
+            if ($alvo && (int) $alvo['type'] > (int) CWebUser::$data['type']) {
+                $this->setResponse(new CControllerResponseRedirect(
+                    $redirect->setArgument('error',
+                        'Permissão negada: este usuário tem papel mais alto que o seu.')
                 ));
                 return;
             }
@@ -78,8 +94,4 @@ class PhonesSave extends CController {
         $this->setResponse(new CControllerResponseRedirect($redirect));
     }
 
-    private function getCurrentRoleid(int $userid): int {
-        $row = DBfetch(DBselect('SELECT roleid FROM users WHERE userid = ' . $userid));
-        return $row ? (int) $row['roleid'] : 0;
-    }
 }
