@@ -226,7 +226,7 @@ trait TurnosReportBase {
                     CONCAT(COALESCE(u.name,''), ' ', COALESCE(u.surname,'')) AS fullname,
                     online.last_seen,
                     CASE WHEN online.last_seen IS NOT NULL
-                              AND online.last_seen >= (NOW() - INTERVAL 15 MINUTE)
+                              AND online.last_seen >= " . SqlFn::nowMinusMinutes(15) . "
                          THEN 1 ELSE 0 END AS is_online
                 FROM module_plantonistas_user_shift cush
                 INNER JOIN users u ON u.userid = cush.userid
@@ -558,7 +558,7 @@ trait TurnosReportBase {
 
     private function queryMttaTimeline(ZbxDb $db, int $s, int $e, string $hostFilter = ''): array {
         $tzOffset = (int)date('Z');
-        $sql = "SELECT FROM_UNIXTIME(ev.clock + ?, '%H') AS hora,
+        $sql = "SELECT " . SqlFn::hourFromEpoch('ev.clock + ?') . " AS hora,
                     ROUND(AVG(a.clock - ev.clock), 0) AS avg_mtta
                 FROM acknowledges a
                 INNER JOIN events ev   ON ev.eventid  = a.eventid
@@ -612,7 +612,7 @@ trait TurnosReportBase {
         $tsNow    = (int)time();
         $tzOffset = (int)date('Z');
 
-        $sql = "SELECT DATE(FROM_UNIXTIME(ev.clock + ?)) AS dia,
+        $sql = "SELECT " . SqlFn::dateFromEpoch('ev.clock + ?') . " AS dia,
                     COUNT(DISTINCT ev.eventid) AS cnt,
                     SUM(CASE WHEN ev.severity >= 4 THEN 1 ELSE 0 END) AS critical
                 FROM events ev
@@ -654,7 +654,7 @@ trait TurnosReportBase {
         // léxica não é o mesmo que ordem cronológica).
         if ($isSuperadmin) {
             $sql  = "SELECT id, analyst_userid, analyst_name, notes, notes_format,
-                        DATE_FORMAT(created_at, '%d/%m/%Y %H:%i') AS created_at,
+                        " . SqlFn::dateTimeBr('created_at') . " AS created_at,
                         created_at AS created_sort
                      FROM module_plantonistas_shift_notes
                      WHERE shift_date = ? AND $shiftCol = ?
@@ -667,7 +667,7 @@ trait TurnosReportBase {
             $sameGroup = $this->sameGroupExists($userid, 'csn.analyst_userid');
             $sql = "SELECT DISTINCT csn.id, csn.analyst_userid, csn.analyst_name,
                         csn.notes, csn.notes_format,
-                        DATE_FORMAT(csn.created_at, '%d/%m/%Y %H:%i') AS created_at,
+                        " . SqlFn::dateTimeBr('csn.created_at') . " AS created_at,
                         csn.created_at AS created_sort
                     FROM module_plantonistas_shift_notes csn
                     WHERE csn.shift_date = ? AND csn.$shiftCol = ?
@@ -698,10 +698,10 @@ trait TurnosReportBase {
         // principal. Turno é enfeite; vem depois, em query própria.
         if ($isSuperadmin) {
             $sql = "SELECT cus.userid, cus.username, cus.name AS fullname,
-                        DATE_FORMAT(MIN(cus.session_start), '%d/%m/%Y %H:%i') AS first_seen,
-                        DATE_FORMAT(MAX(cus.lastaccess), '%d/%m/%Y %H:%i')    AS last_seen,
+                        " . SqlFn::dateTimeBr('MIN(cus.session_start)') . " AS first_seen,
+                        " . SqlFn::dateTimeBr('MAX(cus.lastaccess)') . "    AS last_seen,
                         MIN(cus.session_start) AS first_seen_sort,
-                        TIMESTAMPDIFF(MINUTE, MIN(cus.session_start), MAX(cus.lastaccess)) AS online_minutes
+                        " . SqlFn::minutesBetween('MIN(cus.session_start)', 'MAX(cus.lastaccess)') . " AS online_minutes
                     FROM module_plantonistas_user_sessions cus
                     WHERE cus.lastaccess BETWEEN ? AND ?
                     GROUP BY cus.userid, cus.username, cus.name
@@ -709,10 +709,10 @@ trait TurnosReportBase {
         } else {
             $sameGroup = $this->sameGroupExists($userid, 'cus.userid');
             $sql = "SELECT cus.userid, cus.username, cus.name AS fullname,
-                        DATE_FORMAT(MIN(cus.session_start), '%d/%m/%Y %H:%i') AS first_seen,
-                        DATE_FORMAT(MAX(cus.lastaccess), '%d/%m/%Y %H:%i')    AS last_seen,
+                        " . SqlFn::dateTimeBr('MIN(cus.session_start)') . " AS first_seen,
+                        " . SqlFn::dateTimeBr('MAX(cus.lastaccess)') . "    AS last_seen,
                         MIN(cus.session_start) AS first_seen_sort,
-                        TIMESTAMPDIFF(MINUTE, MIN(cus.session_start), MAX(cus.lastaccess)) AS online_minutes
+                        " . SqlFn::minutesBetween('MIN(cus.session_start)', 'MAX(cus.lastaccess)') . " AS online_minutes
                     FROM module_plantonistas_user_sessions cus
                     WHERE cus.lastaccess BETWEEN ? AND ?
                       AND $sameGroup
@@ -1013,8 +1013,8 @@ trait TurnosReportBase {
             }
 
             $stmt = $db->prepare(
-                "INSERT INTO module_plantonistas_user_shift (userid, shift_id) VALUES (?, ?)
-                 ON DUPLICATE KEY UPDATE shift_id = VALUES(shift_id)"
+                "INSERT INTO module_plantonistas_user_shift (userid, shift_id) VALUES (?, ?)"
+                . SqlFn::upsert('userid', ['shift_id'])
             );
             $stmt->bind_param('ii', $userid, $shiftId);
             $stmt->execute();
@@ -1531,7 +1531,7 @@ trait TurnosReportBase {
         try {
             $stmt = $db->prepare(
                 "SELECT m.id, m.note_id, n.shift_date, n.shift_id, n.shift_name, n.analyst_name,
-                        DATE_FORMAT(m.created_at, '%d/%m/%Y %H:%i') AS created_at
+                        " . SqlFn::dateTimeBr('m.created_at') . " AS created_at
                  FROM module_plantonistas_mentions m
                  INNER JOIN module_plantonistas_shift_notes n ON n.id = m.note_id
                  WHERE m.mentioned_userid = ? AND m.is_read = 0
@@ -1738,7 +1738,7 @@ trait TurnosReportBase {
             // conjunto de candidatos.
             $stmt = $db->prepare(
                 "SELECT r.id, r.generated_by, r.noc_context, r.report_json,
-                        DATE_FORMAT(r.generated_at, '%d/%m/%Y %H:%i') AS generated_at,
+                        " . SqlFn::dateTimeBr('r.generated_at') . " AS generated_at,
                         u.username, u.name, u.surname
                    FROM module_plantonistas_shift_reports r
                    LEFT JOIN users u ON u.userid = r.generated_by
@@ -1793,7 +1793,7 @@ trait TurnosReportBase {
         try {
             $stmt = $db->prepare(
                 "SELECT r.id, r.shift_date, r.shift_name, r.generated_by, r.noc_context,
-                        DATE_FORMAT(r.generated_at, '%d/%m/%Y %H:%i') AS generated_at,
+                        " . SqlFn::dateTimeBr('r.generated_at') . " AS generated_at,
                         r.report_json, u.username, u.name, u.surname
                    FROM module_plantonistas_shift_reports r
                    LEFT JOIN users u ON u.userid = r.generated_by
