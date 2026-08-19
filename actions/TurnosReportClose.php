@@ -54,6 +54,14 @@ class TurnosReportClose extends CController {
 
         $userid = (int) (CWebUser::$data['userid'] ?? 0);
 
+        // A resposta é montada numa variável e só sai no fim. Antes cada
+        // caminho fazia `echo ... ; die()` na hora — e `die()` NÃO executa
+        // bloco `finally`, o que deixaria a trava do fechamento pendurada na
+        // sessão do PHP-FPM em todo caminho de erro.
+        $resposta = null;
+        $travado  = false;
+        $shift    = null;
+
         try {
             $ctx          = $this->resolveUserContext($db, $userid);
             $hostFilter   = $ctx['host_filter'];
@@ -63,27 +71,35 @@ class TurnosReportClose extends CController {
             $shiftOptions = $this->queryShiftOptions($db, $ctx)['options'];
             $shift        = $this->normalizeShift($shiftRaw, $shiftOptions);
 
+            // ── Trava: conferir e gravar têm que ser indivisíveis ────────
+            //
+            // Sem ela, dois usuários clicando ao mesmo tempo passavam ambos
+            // pela checagem de "já foi fechado?" e gravavam dois documentos,
+            // driblando a regra de que refechar exige Admin+.
+            $travado = $this->acquireCloseLock($db, $date, $shift);
+
+            if (!$travado) {
+                throw new CloseBusy(
+                    'Outra pessoa está fechando este turno agora. Aguarde alguns'
+                    . ' segundos e tente de novo.'
+                );
+            }
+
             // Refechar exige Admin+ — ver o cabeçalho da classe.
             $jaFechados = $this->countClosedReports($db, $date, $shift);
 
             if ($jaFechados < 0) {
-                echo json_encode([
-                    'success' => false,
-                    'message' => 'Não foi possível verificar fechamentos anteriores deste'
-                               . ' turno. Confira o log do PHP-FPM.',
-                ]);
-                $db->close();
-                die();
+                throw new CloseBusy(
+                    'Não foi possível verificar fechamentos anteriores deste'
+                    . ' turno. Confira o log do PHP-FPM.'
+                );
             }
 
             if ($jaFechados > 0 && $this->getUserType() < USER_TYPE_ZABBIX_ADMIN) {
-                echo json_encode([
-                    'success' => false,
-                    'message' => 'Este turno já foi fechado. Refazer o fechamento é'
-                               . ' restrito a Admin/Super Admin.',
-                ]);
-                $db->close();
-                die();
+                throw new CloseBusy(
+                    'Este turno já foi fechado. Refazer o fechamento é'
+                    . ' restrito a Admin/Super Admin.'
+                );
             }
 
             [$ts_start, $ts_end] = $this->getShiftBounds($db, $date, $shift);
@@ -132,34 +148,45 @@ class TurnosReportClose extends CController {
             $nocContext = !empty($ctx['display_groups']) ? $ctx['display_groups'][0] : null;
             $id = $this->saveClosedReport($db, $date, $shift, $snapshot, $userid, $nocContext);
 
-            $db->close();
-
-            if ($id === null) {
-                echo json_encode([
+            $resposta = $id === null
+                ? [
                     'success' => false,
                     'message' => 'Falha ao gravar o fechamento. Confira o log do PHP-FPM.',
-                ]);
-                die();
-            }
-
-            echo json_encode([
-                'success'   => true,
-                'id'        => $id,
-                'refeito'   => $jaFechados > 0,
-                'message'   => $jaFechados > 0
-                                ? 'Turno fechado de novo. O fechamento anterior foi mantido.'
-                                : 'Turno fechado. O repasse deste turno está congelado.',
-            ]);
+                  ]
+                : [
+                    'success' => true,
+                    'id'      => $id,
+                    'refeito' => $jaFechados > 0,
+                    'message' => $jaFechados > 0
+                                    ? 'Turno fechado de novo. O fechamento anterior foi mantido.'
+                                    : 'Turno fechado. O repasse deste turno está congelado.',
+                  ];
+        } catch (CloseBusy $e) {
+            // Recusa esperada (turno ocupado, já fechado, checagem falhou): a
+            // mensagem é escrita para o usuário e pode ir para a tela.
+            $resposta = ['success' => false, 'message' => $e->getMessage()];
         } catch (\Throwable $e) {
             error_log('[plantonistas] report.close falhou: ' . $e->getMessage());
             // Mensagem fixa: o RuntimeException do ZbxDb carrega o SQL
             // inteiro (com o JSON do snapshot dentro), e SQL não vai para a UI.
-            echo json_encode([
+            $resposta = [
                 'success' => false,
                 'message' => 'Erro ao fechar o turno. Confira o log do PHP-FPM.',
-            ]);
+            ];
+        } finally {
+            // Devolver a trava é obrigatório mesmo em caminho de erro. Hoje o
+            // Zabbix abre a conexão sem persistência, então ela cairia sozinha
+            // no fim do request — mas depender disso é frágil (basta alguém
+            // ligar conexão persistente) e liberar explicitamente é o contrato
+            // de qualquer advisory lock.
+            if ($travado && $shift !== null) {
+                $this->releaseCloseLock($db, $date, $shift);
+            }
+            $db->close();
         }
 
+        echo json_encode($resposta);
         die();
     }
 }
+

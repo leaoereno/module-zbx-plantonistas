@@ -153,4 +153,76 @@ class SqlFn {
         $sets = array_map(fn($c) => "$c = VALUES($c)", $atualizar);
         return ' ON DUPLICATE KEY UPDATE ' . implode(', ', $sets);
     }
+
+    // ── Trava consultiva (advisory lock) ─────────────────────────────────
+    //
+    // Serve para serializar uma operação que o banco não tem como serializar
+    // sozinho — o caso concreto é "conferir se este turno já foi fechado e,
+    // se não foi, fechar", em que os dois passos precisam ser indivisíveis.
+    //
+    // **Por que não `SELECT ... FOR UPDATE`**: no MySQL ele funcionaria, pelo
+    // gap lock do InnoDB, que bloqueia INSERT na faixa lida mesmo quando a
+    // faixa está vazia. O PostgreSQL **não tem gap lock** — ali um SELECT que
+    // não devolve linha nenhuma não trava nada, e as duas transações passariam
+    // pela checagem. Escrever `FOR UPDATE` daria a impressão de estar resolvido
+    // e continuaria quebrado num dos dois bancos.
+    //
+    // A trava é **por tentativa, sem espera**: quem não conseguir recebe uma
+    // mensagem clara ("outra pessoa está fechando agora") em vez de ficar com
+    // a requisição pendurada. Numa ação de um clique, isso é melhor UX e evita
+    // segurar um worker do PHP-FPM.
+
+    /**
+     * SQL que tenta pegar a trava sem esperar. Devolve a coluna `travou`
+     * com 1 (conseguiu) ou 0 (outra sessão está com ela).
+     *
+     * O `CASE WHEN` no ramo PostgreSQL não é enfeite: `pg_try_advisory_lock()`
+     * devolve booleano, que vem como `t`/`f` — e `(int)'t'` é 0, ou seja, a
+     * trava obtida seria lida como negada.
+     */
+    public static function tryLock(string $nome): string {
+        if (self::isPgsql()) {
+            return 'SELECT CASE WHEN pg_try_advisory_lock(' . self::lockKey($nome)
+                 . ') THEN 1 ELSE 0 END AS travou';
+        }
+
+        return 'SELECT GET_LOCK(' . \zbx_dbstr(self::lockName($nome)) . ', 0) AS travou';
+    }
+
+    /** SQL que devolve a trava. Sempre chamar, inclusive em caminho de erro. */
+    public static function releaseLock(string $nome): string {
+        if (self::isPgsql()) {
+            return 'SELECT pg_advisory_unlock(' . self::lockKey($nome) . ') AS liberou';
+        }
+
+        return 'SELECT RELEASE_LOCK(' . \zbx_dbstr(self::lockName($nome)) . ') AS liberou';
+    }
+
+    /**
+     * Nome da trava no MySQL. O limite é 64 caracteres a partir do MySQL 5.7 —
+     * acima disso o `GET_LOCK` dá erro, então o nome é encurtado por hash em
+     * vez de truncado (truncar juntaria travas de turnos diferentes).
+     */
+    private static function lockName(string $nome): string {
+        $completo = 'plt:' . $nome;
+
+        return strlen($completo) <= 64 ? $completo : 'plt:' . md5($nome);
+    }
+
+    /**
+     * Chave da trava no PostgreSQL, que aceita inteiro e não texto.
+     *
+     * `crc32()` devolve unsigned de 32 bits, dentro do bigint do PG, e é
+     * estável entre processos — `hash()` do PHP não seria, com randomização
+     * de hash ligada.
+     *
+     * Advisory lock no PostgreSQL é global ao BANCO, não à aplicação: uma
+     * colisão de CRC32 com outro consumidor de advisory lock no mesmo banco
+     * Zabbix serializaria duas operações sem relação. Aceito — o efeito seria
+     * uma espera, não um dado errado, e o espaço de 32 bits é folgado para o
+     * punhado de travas que o módulo usa.
+     */
+    private static function lockKey(string $nome): string {
+        return (string) crc32('plt:' . $nome);
+    }
 }
