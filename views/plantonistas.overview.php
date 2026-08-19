@@ -20,61 +20,67 @@ function ovName(array $e, string $campo, string $fallback_user): string {
 }
 
 ob_start(); ?>
+<?php
+// Paleta e detecção do tema ativo do Zabbix, compartilhadas pelas quatro
+// telas da família escala. Precisa vir ANTES do <style> desta view: é ele que
+// consome as variáveis --plt-*.
+include __DIR__ . '/_theme.php';
+?>
 <style>
 .ov-wrap  { padding: 4px 0 20px; }
-.ov-date  { font-size: 13px; color: #8faabc; margin-bottom: 22px; }
+.ov-date  { font-size: 13px; color: var(--plt-text-muted); margin-bottom: 22px; }
 .ov-grid  {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(310px, 1fr));
     gap: 16px;
 }
 .ov-card  {
-    background: #2b2b2b; border: 1px solid #4f4f4f;
+    background: var(--plt-bg); border: 1px solid var(--plt-border);
     border-radius: 6px; padding: 18px 20px;
     position: relative; overflow: hidden;
 }
-.ov-card.covered      { border-left: 4px solid #59db8f; }
-.ov-card.not-covered  { border-left: 4px solid #e45959; opacity: .75; }
-.ov-card.partial-cover{ border-left: 4px solid #e99003; }
+.ov-card.covered      { border-left: 4px solid var(--plt-ok); }
+.ov-card.not-covered  { border-left: 4px solid var(--plt-danger); opacity: .75; }
+.ov-card.partial-cover{ border-left: 4px solid var(--plt-warn); }
 
-.ov-group { font-size: 11px; font-weight: 700; color: #6a8a9a;
+.ov-group { font-size: 11px; font-weight: 700; color: var(--plt-text-muted);
             text-transform: uppercase; letter-spacing: .6px; margin-bottom: 8px; }
 .ov-status-badge {
     position: absolute; top: 14px; right: 14px;
     font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 10px;
 }
-.ov-status-badge.ok      { background: #162616; color: #59db8f; border: 1px solid #2a5a2a; }
-.ov-status-badge.nok     { background: #2a1010; color: #e45959; border: 1px solid #5a2a2a; }
-.ov-status-badge.partial { background: #2a1a00; color: #e99003; border: 1px solid #7a4400; }
+.ov-status-badge.ok      { background: var(--plt-ok-bg); color: var(--plt-ok); border: 1px solid var(--plt-ok-border); }
+.ov-status-badge.nok     { background: var(--plt-danger-bg); color: var(--plt-danger); border: 1px solid var(--plt-danger-border); }
+.ov-status-badge.partial { background: var(--plt-warn-bg); color: var(--plt-warn); border: 1px solid var(--plt-warn-border); }
 
-.ov-tech-name  { font-size: 18px; font-weight: 700; color: #f0f0f0; margin-bottom: 4px; }
+.ov-tech-name  { font-size: 18px; font-weight: 700; color: var(--plt-text); margin-bottom: 4px; }
 .ov-tech-name.small { font-size: 14px; margin-bottom: 2px; }
-.ov-tech-phone { font-size: 13px; color: #8faabc; margin-bottom: 12px; }
-.ov-tech-phone a { color: #59db8f; text-decoration: none; }
+.ov-tech-phone { font-size: 13px; color: var(--plt-text-muted); margin-bottom: 12px; }
+.ov-tech-phone a { color: var(--plt-ok); text-decoration: none; }
 .ov-tech-phone a:hover { text-decoration: underline; }
 
-.ov-reserva-section { border-top: 1px solid #3a3a3a; padding-top: 10px; }
-.ov-reserva-label { font-size: 10px; color: #666; text-transform: uppercase;
+.ov-reserva-section { border-top: 1px solid var(--plt-border); padding-top: 10px; }
+.ov-reserva-label { font-size: 10px; color: var(--plt-text-faint); text-transform: uppercase;
                     letter-spacing: .5px; margin-bottom: 4px; }
-.ov-reserva-name  { font-size: 14px; font-weight: 600; color: #c8d8e4; }
-.ov-reserva-phone { font-size: 12px; color: #8faabc; }
-.ov-reserva-phone a { color: #59db8f; text-decoration: none; }
+.ov-reserva-name  { font-size: 14px; font-weight: 600; color: var(--plt-text-soft); }
+.ov-reserva-phone { font-size: 12px; color: var(--plt-text-muted); }
+.ov-reserva-phone a { color: var(--plt-ok); text-decoration: none; }
 
-.ov-empty-msg { font-size: 14px; color: #e45959; font-style: italic; margin-top: 4px; }
+.ov-empty-msg { font-size: 14px; color: var(--plt-danger); font-style: italic; margin-top: 4px; }
 .ov-empty-msg.small { font-size: 12px; margin-top: 0; margin-bottom: 12px; }
-.ov-no-phone  { font-size: 12px; color: #555; font-style: italic; }
+.ov-no-phone  { font-size: 12px; color: var(--plt-text-faint); font-style: italic; }
 
 .ov-actions { margin-top: 16px; display: flex; gap: 8px; flex-wrap: wrap; }
 
 /* Grupos com turnos: lista de turnos dentro do card */
 .ov-shift-list { display: flex; flex-direction: column; gap: 10px; margin-top: 4px; }
-.ov-shift-row  { border-top: 1px solid #3a3a3a; padding-top: 8px; }
+.ov-shift-row  { border-top: 1px solid var(--plt-border); padding-top: 8px; }
 .ov-shift-row:first-child { border-top: none; padding-top: 0; }
 .ov-shift-name {
-    font-size: 11px; font-weight: 700; color: #7a9ab4;
+    font-size: 11px; font-weight: 700; color: var(--plt-text-muted);
     text-transform: uppercase; letter-spacing: .4px; margin-bottom: 4px;
 }
-.ov-shift-time { font-weight: 400; color: #666; margin-left: 4px; text-transform: none; letter-spacing: 0; }
+.ov-shift-time { font-weight: 400; color: var(--plt-text-faint); margin-left: 4px; text-transform: none; letter-spacing: 0; }
 </style>
 
 <div class="ov-wrap">
@@ -83,7 +89,7 @@ ob_start(); ?>
     </div>
 
     <?php if (empty($groups)): ?>
-        <div style="color:#666;font-style:italic;">Nenhum grupo disponível.</div>
+        <div style="color:var(--plt-text-faint);font-style:italic;">Nenhum grupo disponível.</div>
     <?php else: ?>
 
     <?php if (!empty($data['can_manage'])): ?>

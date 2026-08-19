@@ -51,109 +51,115 @@ for ($d=1;$d<=$days_in_month;$d++) {
 }
 
 ob_start(); ?>
+<?php
+// Paleta e detecção do tema ativo do Zabbix, compartilhadas pelas quatro
+// telas da família escala. Precisa vir ANTES do <style> desta view: é ele que
+// consome as variáveis --plt-*.
+include __DIR__ . '/_theme.php';
+?>
 <style>
 /* ── Abas ─────────────────────────────────── */
 .plt-tabs { display:flex;gap:4px;margin-bottom:18px;flex-wrap:wrap;
-    border-bottom:1px solid #3a3a3a;padding-bottom:2px; }
+    border-bottom:1px solid var(--plt-border);padding-bottom:2px; }
 .plt-tab  { padding:6px 16px;border-radius:3px 3px 0 0;cursor:pointer;
     font-size:13px;font-weight:600;text-decoration:none;
-    background:#262626;color:#7a9ab4;
-    border:1px solid #3a3a3a;border-bottom:none;
+    background:var(--plt-panel-alt);color:var(--plt-text-soft);
+    border:1px solid var(--plt-border);border-bottom:none;
     position:relative;bottom:-1px;transition:background .12s; }
-.plt-tab:hover  { background:#323232;color:#c8d8e4; }
-.plt-tab.active { background:#1e1e1e;color:#59db8f;border-bottom:1px solid #1e1e1e; }
+.plt-tab:hover  { background:var(--plt-bg-hover);color:var(--plt-text-soft); }
+.plt-tab.active { background:var(--plt-panel-alt);color:var(--plt-ok);border-bottom:1px solid var(--plt-panel-alt); }
 
 /* ── Nav ──────────────────────────────────── */
-.plt-wrap { padding:0 0 20px;color:#f2f2f2; }
+.plt-wrap { padding:0 0 20px;color:var(--plt-text); }
 .plt-wrap output { margin:0 0 14px; }
 .plt-nav  { display:flex;align-items:center;gap:8px;margin-bottom:12px;flex-wrap:wrap; }
-.plt-nav .plt-month-label { font-size:15px;font-weight:600;flex:1;color:#c8d8e4; }
+.plt-nav .plt-month-label { font-size:15px;font-weight:600;flex:1;color:var(--plt-text-soft); }
 .plt-uncov-warning {
     display:inline-flex;align-items:center;gap:6px;
-    background:#2a1a00;border:1px solid #7a4400;border-radius:3px;
-    padding:5px 12px;font-size:12px;color:#e99003;
+    background:var(--plt-warn-bg);border:1px solid var(--plt-warn-border);border-radius:3px;
+    padding:5px 12px;font-size:12px;color:var(--plt-warn);
 }
 
 /* ── Calendário ───────────────────────────── */
 .plt-cal { width:100%;border-collapse:collapse;table-layout:fixed; }
-.plt-cal th { background:#303030;color:#b0c4d4;text-align:center;
-    padding:8px 4px;font-size:12px;font-weight:600;border:1px solid #4f4f4f; }
-.plt-cal td { border:1px solid #4f4f4f;vertical-align:top;padding:0;
-    cursor:pointer;background:#2b2b2b;position:relative;
+.plt-cal th { background:var(--plt-panel);color:var(--plt-text-soft);text-align:center;
+    padding:8px 4px;font-size:12px;font-weight:600;border:1px solid var(--plt-border); }
+.plt-cal td { border:1px solid var(--plt-border);vertical-align:top;padding:0;
+    cursor:pointer;background:var(--plt-bg);position:relative;
     min-height:110px;outline:none;transition:background .1s,border-color .1s;
     user-select:none; }
 .plt-cell-inner { padding:7px 8px; }
-.plt-cal td:hover     { background:#383838; }
-.plt-cal td.empty     { background:#222;cursor:default; }
-.plt-cal td.today     { background:#2e2200;border-color:#e99003; }
-.plt-cal td.today:hover { background:#3a2b00; }
-.plt-cal td.has-tech  { background:#162616; }
-.plt-cal td.has-tech:hover { background:#1e3a1e; }
+.plt-cal td:hover     { background:var(--plt-bg-hover); }
+.plt-cal td.empty     { background:var(--plt-bg-alt);cursor:default; }
+.plt-cal td.today     { background:var(--plt-warn-bg);border-color:var(--plt-warn); }
+.plt-cal td.today:hover { background:var(--plt-warn-bg); }
+.plt-cal td.has-tech  { background:var(--plt-ok-bg); }
+.plt-cal td.has-tech:hover { background:var(--plt-ok-bg); }
 .plt-cal td.past      { opacity:.6; }
 /* Sem cobertura (passado/hoje sem técnico) */
-.plt-cal td.no-cover  { background:#241410 !important; }
-.plt-cal td.no-cover:hover { background:#2e1a14 !important; }
-.plt-no-cov-icon { position:absolute;top:5px;right:6px;font-size:13px;color:#7a4400; }
+.plt-cal td.no-cover  { background:var(--plt-danger-bg) !important; }
+.plt-cal td.no-cover:hover { background:var(--plt-danger-bg) !important; }
+.plt-no-cov-icon { position:absolute;top:5px;right:6px;font-size:13px;color:var(--plt-warn-border); }
 /* Selecionado */
-.plt-cal td.selected  { background:#1a2d4a !important;border-color:#4a82c4 !important; }
-.plt-cal td.selected:hover { background:#213660 !important; }
+.plt-cal td.selected  { background:var(--plt-accent-bg) !important;border-color:var(--plt-accent) !important; }
+.plt-cal td.selected:hover { background:var(--plt-accent-bg) !important; }
 .plt-sel-check { position:absolute;top:4px;right:6px;
-    font-size:14px;color:#4a82c4;display:none;line-height:1; }
+    font-size:14px;color:var(--plt-accent);display:none;line-height:1; }
 .plt-cal td.selected .plt-sel-check { display:block; }
 .plt-cal td.selected .plt-no-cov-icon { display:none; }
 
 /* Conteúdo célula */
-.plt-day-num   { font-size:13px;font-weight:700;color:#c8d8e4;padding-right:18px; }
-.plt-today-badge { background:#e99003;color:#1a1000;border-radius:3px;
+.plt-day-num   { font-size:13px;font-weight:700;color:var(--plt-text-soft);padding-right:18px; }
+.plt-today-badge { background:var(--plt-warn);color:var(--plt-warn-bg);border-radius:3px;
     padding:0 5px;font-size:10px;margin-left:5px;font-weight:700;vertical-align:middle; }
 .plt-entry     { margin-top:6px;padding-top:6px; }
 .plt-entry:first-child { margin-top:4px;padding-top:0;border-top:none; }
-.plt-entry + .plt-entry { border-top:1px dashed #3f3f3f; }
-.plt-shift-label { font-size:9px;color:#7a9ab4;font-weight:700;
+.plt-entry + .plt-entry { border-top:1px dashed var(--plt-border); }
+.plt-shift-label { font-size:9px;color:var(--plt-text-muted);font-weight:700;
     text-transform:uppercase;letter-spacing:.4px;margin-bottom:1px; }
-.plt-tech      { font-size:11px;color:#59db8f;font-weight:600;margin-top:2px; }
-.plt-phone     { font-size:10px;color:#8faabc;margin-top:2px; }
-.plt-no-phone  { font-size:10px;color:#555;font-style:italic;margin-top:2px; }
-.plt-res-label { font-size:9px;color:#666;margin-top:5px;
+.plt-tech      { font-size:11px;color:var(--plt-ok);font-weight:600;margin-top:2px; }
+.plt-phone     { font-size:10px;color:var(--plt-text-muted);margin-top:2px; }
+.plt-no-phone  { font-size:10px;color:var(--plt-text-faint);font-style:italic;margin-top:2px; }
+.plt-res-label { font-size:9px;color:var(--plt-text-faint);margin-top:5px;
     text-transform:uppercase;letter-spacing:.4px; }
-.plt-res-name  { font-size:11px;color:#59db8f;font-weight:600;margin-top:1px; }
-.plt-res-phone { font-size:10px;color:#8faabc;margin-top:1px; }
+.plt-res-name  { font-size:11px;color:var(--plt-ok);font-weight:600;margin-top:1px; }
+.plt-res-phone { font-size:10px;color:var(--plt-text-muted);margin-top:1px; }
 .plt-del { display:inline-block;margin-top:4px;font-size:10px;
-    color:#e45959;text-decoration:none; }
-.plt-del:hover { text-decoration:underline;color:#ff7070; }
+    color:var(--plt-danger);text-decoration:none; }
+.plt-del:hover { text-decoration:underline;color:var(--plt-danger); }
 
 /* ── Tooltip ──────────────────────────────── */
 #plt-tooltip {
     display:none;position:fixed;z-index:2000;
-    background:#1e1e1e;border:1px solid #5a5a5a;border-radius:4px;
-    padding:10px 14px;font-size:12px;color:#f0f0f0;
-    max-width:260px;pointer-events:none;box-shadow:0 4px 16px rgba(0,0,0,.5);
+    background:var(--plt-panel-alt);border:1px solid var(--plt-border-strong);border-radius:4px;
+    padding:10px 14px;font-size:12px;color:var(--plt-text);
+    max-width:260px;pointer-events:none;box-shadow:0 4px 16px rgba(0,0,0,.22);
     line-height:1.6;
 }
-#plt-tooltip .tt-name  { font-size:14px;font-weight:700;color:#59db8f;margin-bottom:3px; }
-#plt-tooltip .tt-phone { color:#8faabc; }
-#plt-tooltip .tt-sep   { border-top:1px solid #3a3a3a;margin:7px 0; }
-#plt-tooltip .tt-label { font-size:10px;color:#666;text-transform:uppercase;
+#plt-tooltip .tt-name  { font-size:14px;font-weight:700;color:var(--plt-ok);margin-bottom:3px; }
+#plt-tooltip .tt-phone { color:var(--plt-text-muted); }
+#plt-tooltip .tt-sep   { border-top:1px solid var(--plt-border);margin:7px 0; }
+#plt-tooltip .tt-label { font-size:10px;color:var(--plt-text-faint);text-transform:uppercase;
     letter-spacing:.4px;margin-bottom:2px; }
-#plt-tooltip .tt-by    { font-size:11px;color:#666;margin-top:5px; }
-#plt-tooltip .tt-warn  { color:#e99003;font-style:italic; }
+#plt-tooltip .tt-by    { font-size:11px;color:var(--plt-text-faint);margin-top:5px; }
+#plt-tooltip .tt-warn  { color:var(--plt-warn);font-style:italic; }
 
 /* ── Formulário ───────────────────────────── */
-.plt-form-panel { margin-top:18px;background:#303030;
-    border:1px solid #4f4f4f;border-radius:4px;padding:18px 22px; }
-.plt-form-panel h3 { margin:0 0 14px;font-size:14px;font-weight:600;color:#f2f2f2; }
+.plt-form-panel { margin-top:18px;background:var(--plt-panel);
+    border:1px solid var(--plt-border);border-radius:4px;padding:18px 22px; }
+.plt-form-panel h3 { margin:0 0 14px;font-size:14px;font-weight:600;color:var(--plt-text); }
 .plt-sel-bar {
     display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px;
-    padding:10px 14px;border-radius:3px;background:#252525;border:1px solid #404040;
+    padding:10px 14px;border-radius:3px;background:var(--plt-panel-alt);border:1px solid var(--plt-border);
 }
-.plt-sel-count { font-size:13px;font-weight:600;color:#c8d8e4; }
-.plt-sel-count.active { color:#4a82c4; }
-.plt-sel-dates { font-size:12px;color:#8faabc;flex:1; }
-.plt-sel-clear { font-size:11px;color:#e45959;cursor:pointer;border:none;
+.plt-sel-count { font-size:13px;font-weight:600;color:var(--plt-text-soft); }
+.plt-sel-count.active { color:var(--plt-accent); }
+.plt-sel-dates { font-size:12px;color:var(--plt-text-muted);flex:1; }
+.plt-sel-clear { font-size:11px;color:var(--plt-danger);cursor:pointer;border:none;
     background:none;padding:2px 6px;border-radius:2px; }
-.plt-sel-clear:hover { background:#3a2020; }
+.plt-sel-clear:hover { background:var(--plt-danger-bg); }
 .plt-form-row { display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px; }
-.plt-form-row label { font-weight:600;font-size:13px;color:#9ab;white-space:nowrap; }
+.plt-form-row label { font-weight:600;font-size:13px;color:var(--plt-text-muted);white-space:nowrap; }
 .plt-select-row { display:flex;align-items:stretch;flex:0 1 300px;min-width:220px; }
 .plt-select-row .multiselect { flex:1;min-width:0;margin-right:0 !important;
     border-right:0 !important;border-top-right-radius:0 !important;border-bottom-right-radius:0 !important; }
@@ -161,23 +167,23 @@ ob_start(); ?>
     white-space:nowrap;flex-shrink:0;align-self:stretch; }
 .plt-mswrap { flex:1;min-width:0;position:relative;margin-right:0 !important; }
 .plt-ac-dd { display:none;position:absolute;z-index:1100;top:100%;left:0;right:0;
-    background:#2b2b2b;border:1px solid #4f4f4f;border-top:none;
+    background:var(--plt-bg);border:1px solid var(--plt-border);border-top:none;
     max-height:220px;overflow-y:auto; }
 .plt-ac-dd.open { display:block; }
-.plt-ac-item { padding:7px 10px;font-size:13px;color:#f2f2f2;cursor:pointer;
-    border-bottom:1px solid #383838; }
+.plt-ac-item { padding:7px 10px;font-size:13px;color:var(--plt-text);cursor:pointer;
+    border-bottom:1px solid var(--plt-bg-hover); }
 .plt-ac-item:last-child { border-bottom:none; }
-.plt-ac-item:hover { background:#505050; }
-.plt-ac-item mark { background:none;color:#e99003;font-weight:700; }
+.plt-ac-item:hover { background:var(--plt-bg-hover); }
+.plt-ac-item mark { background:none;color:var(--plt-warn);font-weight:700; }
 output .btn-overlay-close { position:absolute;top:6px;right:6px; }
 #plt-modal { z-index:1001 !important; }
 
 /* Campos de turno (um por turno cadastrado no grupo) */
 .plt-shift-fields { display:flex;flex-wrap:wrap;gap:14px 18px;align-items:flex-end;margin-bottom:4px; }
 .plt-shift-field  { display:flex;flex-direction:column;gap:5px; }
-.plt-shift-field label { font-weight:600;font-size:13px;color:#9ab;white-space:nowrap; }
-.plt-shift-time    { font-weight:400;color:#666;font-size:11px;margin-left:3px; }
-.plt-shift-empty-hint { font-size:12px;color:#8faabc;margin-bottom:10px; }
+.plt-shift-field label { font-weight:600;font-size:13px;color:var(--plt-text-muted);white-space:nowrap; }
+.plt-shift-time    { font-weight:400;color:var(--plt-text-faint);font-size:11px;margin-left:3px; }
+.plt-shift-empty-hint { font-size:12px;color:var(--plt-text-muted);margin-bottom:10px; }
 /* .plt-select-row usa "flex:0 1 300px" pensado pra dentro de um flex ROW
    (.plt-form-row, modo legado) — ali o 300px vira largura. Dentro de
    .plt-shift-field, que é flex COLUMN, o mesmo valor vira ALTURA e o campo
@@ -185,28 +191,31 @@ output .btn-overlay-close { position:absolute;top:6px;right:6px; }
    width, sem flex-basis herdado. */
 .plt-shift-field .plt-select-row { flex:0 0 auto;width:300px; }
 
-/* Mensagens sucesso e erro — texto sempre preto, fundo contrastante */
+/* Mensagens de sucesso e erro.
+   Estas regras existiam com cor fixa (fundo claro, texto preto) porque a tela
+   era escura por fora e a caixa nativa do Zabbix ficava ilegível sobre ela.
+   Agora seguem a paleta: no tema claro o texto é escuro, no escuro é claro. */
 output.msg-good {
-    background: #d4edda !important;
-    border-left: 4px solid #28a745 !important;
-    color: #000000 !important;
+    background: var(--plt-ok-bg) !important;
+    border-left: 4px solid var(--plt-ok) !important;
+    color: var(--plt-text) !important;
 }
 output.msg-good span,
-output.msg-good * { color: #000000 !important; }
+output.msg-good * { color: var(--plt-text) !important; }
 
 output.msg-bad {
-    background: #f8d7da !important;
-    border-left: 4px solid #dc3545 !important;
-    color: #000000 !important;
+    background: var(--plt-danger-bg) !important;
+    border-left: 4px solid var(--plt-danger) !important;
+    color: var(--plt-text) !important;
 }
 output.msg-bad span,
-output.msg-bad * { color: #000000 !important; }
+output.msg-bad * { color: var(--plt-text) !important; }
 
 /* Botão CSV — mesma cor dos demais btn-alt */
 .plt-nav a.btn.btn-alt {
-    color: #0275b8 !important;
+    color: var(--plt-accent) !important;
     background-color: transparent !important;
-    border-color: #0275b8 !important;
+    border-color: var(--plt-accent) !important;
 }
 .plt-nav a.btn.btn-alt:hover {
     background-color: rgba(2, 117, 184, 0.08) !important;
@@ -247,16 +256,16 @@ output.msg-bad * { color: #000000 !important; }
                        onclick="pltPickUser(<?=(int)$u['userid']?>,<?=htmlspecialchars(json_encode($disp))?>)">
                         <?= htmlspecialchars($lbl) ?>
                         <?php if ($np===''): ?>
-                            <span style="color:#666;font-size:10px;"> (sem nome)</span>
+                            <span style="color:var(--plt-text-faint);font-size:10px;"> (sem nome)</span>
                         <?php endif; ?>
                     </a>
                 </td>
-                <td style="color:#8faabc;"><?= htmlspecialchars($u['username']) ?></td>
+                <td style="color:var(--plt-text-muted);"><?= htmlspecialchars($u['username']) ?></td>
                 <td>
                     <?php if ($u['phone']): ?>
                         <?= htmlspecialchars($u['phone']) ?>
                     <?php else: ?>
-                        <span style="color:#666;font-style:italic">—</span>
+                        <span style="color:var(--plt-text-faint);font-style:italic">—</span>
                     <?php endif; ?>
                 </td>
             </tr>
@@ -276,27 +285,28 @@ output.msg-bad * { color: #000000 !important; }
         <h4>Importar Escala</h4>
         <button class="btn-overlay-close" onclick="pltCloseImport()"></button>
     </div>
-    <div class="overlay-dialogue-body" style="padding:18px 22px;background:#fff;">
-        <p style="background:#f0f4f8;border:1px solid #c8d8e4;border-radius:3px;
-                  padding:7px 12px;font-size:13px;color:#000;margin:0 0 12px;">
+    <div class="overlay-dialogue-body" style="padding:18px 22px;background:var(--plt-panel);">
+        <p style="background:var(--plt-accent-bg);border:1px solid var(--plt-border);border-radius:3px;
+                  padding:7px 12px;font-size:13px;color:var(--plt-text);margin:0 0 12px;">
             📋 Importando para o grupo: <strong><?=htmlspecialchars($groups[$usrgrpid]??'')?></strong>
         </p>
-        <p style="color:#000;font-size:13px;margin:0 0 10px;">
+        <p style="color:var(--plt-text);font-size:13px;margin:0 0 10px;">
             Selecione um arquivo <strong>CSV</strong> ou <strong>XLSX</strong> com as colunas:
         </p>
         <p style="font-size:13px;margin:0 0 10px;line-height:2;">
-            <span style="color:#3b9c3b;font-weight:600;">data</span><span style="color:#000;"> (dd/mm/aaaa) &nbsp;·&nbsp; </span><span style="color:#3b9c3b;font-weight:600;">plantonista</span><span style="color:#000;"> (username ou nome completo) &nbsp;·&nbsp; </span><span style="color:#3b9c3b;font-weight:600;">reserva</span><span style="color:#000;"> (opcional)</span>
+            <span style="color:var(--plt-ok);font-weight:600;">data</span><span style="color:var(--plt-text);"> (dd/mm/aaaa) &nbsp;·&nbsp; </span><span style="color:var(--plt-ok);font-weight:600;">plantonista</span><span style="color:var(--plt-text);"> (username ou nome completo) &nbsp;·&nbsp; </span><span style="color:var(--plt-ok);font-weight:600;">turno</span><span style="color:var(--plt-text);"> (opcional) &nbsp;·&nbsp; </span><span style="color:var(--plt-ok);font-weight:600;">reserva</span><span style="color:var(--plt-text);"> (opcional)</span>
         </p>
-        <p style="font-size:12px;color:#888;margin:0 0 16px;">
+        <p style="font-size:12px;color:var(--plt-text-faint);margin:0 0 16px;">
             💡 Use o botão ↓ CSV para baixar o modelo do mês atual, edite e reimporte.
             <?php if ($has_shifts): ?>
-                A importação grava sem vínculo de turno (modo legado) mesmo para
-                este grupo — cadastre os turnos manualmente pela tela abaixo.
+                Este grupo tem turnos: preencha a coluna <strong>turno</strong> com o
+                nome cadastrado. Linha sem turno é importada assim mesmo, em modo
+                legado — e aparece no calendário sem rótulo.
             <?php endif; ?>
         </p>
         <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
-            <label style="flex:1;min-width:220px;background:#fff;border:1px solid #aaa;border-radius:3px;
-                          padding:6px 10px;color:#000;font-size:13px;cursor:pointer;
+            <label style="flex:1;min-width:220px;background:var(--plt-bg);border:1px solid var(--plt-border-strong);border-radius:3px;
+                          padding:6px 10px;color:var(--plt-text);font-size:13px;cursor:pointer;
                           white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"
                    id="plt-import-label">
                 <input type="file" id="plt-import-file" accept=".csv,.xlsx,.tsv"
@@ -329,7 +339,7 @@ output.msg-bad * { color: #000000 !important; }
 <?php endif; ?>
 
 <?php if (empty($groups)): ?>
-    <div style="padding:20px;color:#666;font-style:italic;">Você não pertence a nenhum grupo.</div>
+    <div style="padding:20px;color:var(--plt-text-faint);font-style:italic;">Você não pertence a nenhum grupo.</div>
 <?php else: ?>
 
 <?php if (count($groups)>1): ?>
@@ -342,7 +352,7 @@ output.msg-bad * { color: #000000 !important; }
     <?php endforeach; ?>
 </div>
 <?php else: ?>
-<div style="margin-bottom:14px;font-size:13px;font-weight:600;color:#c8d8e4;">
+<div style="margin-bottom:14px;font-size:13px;font-weight:600;color:var(--plt-text-soft);">
     Grupo: <?= htmlspecialchars(reset($groups)) ?>
 </div>
 <?php endif; ?>
@@ -363,7 +373,7 @@ output.msg-bad * { color: #000000 !important; }
     <button class="btn btn-alt" onclick="pltOpenImport()" title="Importar escala via CSV ou XLSX">↑ Importar</button>
     <button class="btn btn-alt" onclick="location.href='zabbix.php?action=plantonistas.phones.list'">Telefones</button>
     <button class="btn btn-alt" onclick="location.href='zabbix.php?action=plantonistas.overview'">Visão Geral</button>
-    <span style="font-size:11px;color:#555;">Clique para selecionar dias</span>
+    <span style="font-size:11px;color:var(--plt-text-faint);">Clique para selecionar dias</span>
 </div>
 
 <!-- Calendário -->
@@ -457,7 +467,7 @@ while ($day<=$days_in_month) {
         }
         $is_today_entry = ($ds === $today_str);
         if ($is_today_entry) {
-            echo '<span class="plt-del" style="color:#666;cursor:not-allowed;" '
+            echo '<span class="plt-del" style="color:var(--plt-text-faint);cursor:not-allowed;" '
                . 'title="Não é possível remover o plantão do dia atual">remover</span>';
         } else {
             // Remover é POST, não link GET. Dois motivos: a validação CSRF do
@@ -492,7 +502,7 @@ echo '</tr>';
 <!-- Formulário -->
 <div class="plt-form-panel">
     <h3>Escalar Técnico &mdash;
-        <span style="color:#8faabc;font-weight:400"><?=htmlspecialchars($groups[$usrgrpid]??'')?></span>
+        <span style="color:var(--plt-text-muted);font-weight:400"><?=htmlspecialchars($groups[$usrgrpid]??'')?></span>
     </h3>
     <div class="plt-sel-bar">
         <span class="plt-sel-count" id="plt-sel-count">Nenhum dia selecionado</span>
@@ -574,6 +584,7 @@ echo '</tr>';
             <button type="submit" class="btn">Salvar Plantão</button>
         </div>
         <?php endif; ?>
+        <div id="plt-post-hint" style="margin-top:10px;font-size:12px;min-height:16px;"></div>
     </form>
 </div>
 
@@ -599,7 +610,16 @@ function pltDelete(scheduleid, label) {
     if (!confirm('Remover plantão de ' + label + ' deste dia?')) return;
     pltDeleting = true;
     document.getElementById('plt-del-id').value = scheduleid;
-    document.getElementById('plt-del-form').submit();
+    // Também por fetch: aqui não há texto digitado a perder, mas a recusa por
+    // CSRF é a mesma, e a mensagem de "recarregue a página" é muito mais útil
+    // que a página "Acesso negado" do Zabbix.
+    //
+    // `alerta: true` porque o clique parte de uma célula do calendário, e o
+    // #plt-post-hint fica lá embaixo, dentro do formulário de escalar — fora
+    // da viewport. Sem o alert, a falha seria invisível: a página não muda,
+    // o usuário clica de novo e nada acontece.
+    pltPost(document.getElementById('plt-del-form'), null, true);
+    setTimeout(function () { pltDeleting = false; }, 4000);
 }
 
 // Listener na fase de CAPTURA: o link de remover fica dentro de um <td> com
@@ -640,7 +660,7 @@ function pltShowTip(e, td) {
             if (it.res_phone) html += '<div class="tt-phone">📞 '+esc(it.res_phone)+'</div>';
         }
     });
-    html += '<div class="tt-by" style="margin-top:5px;color:#555;">'+esc(d.date)+'</div>';
+    html += '<div class="tt-by" style="margin-top:5px;color:var(--plt-text-faint);">'+esc(d.date)+'</div>';
     ttEl.innerHTML = html;
     ttEl.style.display = 'block';
     moveTip(e);
@@ -732,7 +752,58 @@ function pltValidate() {
     } else {
         if (!document.getElementById('userid').value) { alert('Selecione um técnico.'); return false; }
     }
-    return true;
+
+    // Envio por fetch em vez de POST nativo — ver pltPost().
+    pltPost(document.getElementById('plt-form'));
+    return false;
+}
+
+// ── Envio resiliente a sessão expirada ──────────────────────
+//
+// O POST nativo do formulário perde tudo que foi digitado quando o token CSRF
+// não vale mais: o Zabbix responde a página "Acesso negado" e a escala
+// selecionada, o técnico escolhido e os turnos preenchidos vão junto. Nesta
+// tela isso não é raro — a aba costuma ficar aberta o turno inteiro, e o token
+// deriva do secret da sessão.
+//
+// Com fetch, a página não sai do lugar: em caso de falha aparece um aviso e
+// tudo continua ali para reenviar depois do F5.
+//
+// Como distinguir sucesso de recusa sem mudar o PHP: a action responde
+// **redirect** nos dois desfechos normais (salvou / erro de validação), então
+// `r.redirected` é verdadeiro e basta seguir para `r.url`. A recusa por CSRF
+// não redireciona — devolve HTML de "Acesso negado" com status 200 ou 403.
+//
+// CUSTO CONHECIDO E ACEITO: com `redirect: 'follow'` o fetch BAIXA a página de
+// destino inteira e a descarta, e o `location.href` seguinte a baixa de novo —
+// dois renders por salvamento. `redirect: 'manual'` evitaria isso, mas devolve
+// uma resposta opaca, sem a URL de destino, e é nela que viajam as mensagens
+// de sucesso/erro (vão por argumento de URL, não por sessão). Resolver de vez
+// exige as actions responderem JSON quando o request for AJAX.
+function pltPost(form, hintId, alerta) {
+    var hint = document.getElementById(hintId || 'plt-post-hint');
+    var btns = form.querySelectorAll('button[type=submit]');
+    btns.forEach(function (b) { b.disabled = true; });   // anti duplo clique
+
+    if (hint) { hint.style.color = 'var(--plt-text-muted)'; hint.textContent = 'Salvando…'; }
+
+    function falhou(msg) {
+        btns.forEach(function (b) { b.disabled = false; });
+        if (hint) { hint.style.color = 'var(--plt-danger)'; hint.textContent = msg; }
+        // O hint pode estar fora da viewport (é o caso do remover, disparado
+        // de uma célula do calendário): aí a mensagem precisa se impor.
+        if (alerta) alert(msg);
+    }
+
+    fetch(form.action, { method: 'POST', body: new FormData(form), redirect: 'follow' })
+        .then(function (r) {
+            if (r.redirected) { location.href = r.url; return; }
+            falhou('Sessão expirada ou acesso negado. Recarregue a página (F5) '
+                 + 'e salve de novo — nada do que você preencheu foi perdido.');
+        })
+        .catch(function () {
+            falhou('Erro de conexão. Nada foi salvo; tente de novo.');
+        });
 }
 
 // ── Modal ─────────────────────────────────────────────────
@@ -842,11 +913,11 @@ function pltImportFileChosen(inp) {
     var ext = f.name.split('.').pop().toLowerCase();
     lbl.textContent = f.name;
     if (['csv','xlsx','tsv'].indexOf(ext) === -1) {
-        hint.style.color = '#e45959';
+        hint.style.color = 'var(--plt-danger)';
         hint.textContent = 'Formato não suportado. Use .csv ou .xlsx';
         btn.disabled = true;
     } else {
-        hint.style.color = '#59db8f';
+        hint.style.color = 'var(--plt-ok)';
         hint.textContent = '✓ ' + f.name + ' (' + Math.round(f.size / 1024) + ' KB)';
         btn.disabled = false;
     }
@@ -857,7 +928,7 @@ function pltSubmitImport() {
     var btn  = document.getElementById('plt-import-btn');
     var hint = document.getElementById('plt-import-hint');
     btn.disabled = true;
-    hint.style.color = '#8faabc';
+    hint.style.color = 'var(--plt-text-muted)';
     hint.textContent = '⏳ Lendo arquivo…';
 
     var reader = new FileReader();
@@ -884,7 +955,7 @@ function pltSubmitImport() {
         form.submit();
     };
     reader.onerror = function() {
-        hint.style.color = '#e45959';
+        hint.style.color = 'var(--plt-danger)';
         hint.textContent = 'Erro ao ler o arquivo.';
         btn.disabled = false;
     };
