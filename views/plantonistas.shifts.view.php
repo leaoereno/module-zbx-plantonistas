@@ -135,11 +135,44 @@ $legacyShifts = $data['legacy_shifts'] ?? [];
         <?php elseif (empty($g['users'])): ?>
             <div class="rp-empty">Nenhum usuário Zabbix neste grupo.</div>
         <?php else: ?>
+        <!-- Vínculo em massa: sem isso é um clique por analista, e é por isso
+             que a coluna Turno da tela de Presença mostra "Sem turno" para
+             quase todo mundo — ninguém cadastra 16 vínculos um a um.
+             Renderizada SEMPRE (escondida enquanto a equipe não tem turno),
+             para aparecer assim que o primeiro turno é criado — antes ela só
+             existia no HTML inicial e exigia recarregar a página. -->
+        <div class="rp-bulk-bar"<?= empty($g['shifts']) ? ' hidden' : '' ?>>
+            <label class="rp-bulk-check">
+                <input type="checkbox" class="rp-bulk-all" title="Marcar/desmarcar todos">
+                <span>Selecionar todos</span>
+            </label>
+            <span class="rp-bulk-count rp-muted">nenhum analista selecionado</span>
+            <select class="rp-input rp-bulk-shift">
+                <option value="">— Sem turno —</option>
+                <?php foreach ($g['shifts'] as $s): ?>
+                    <option value="<?= (int)$s['id'] ?>">
+                        <?= htmlspecialchars($s['name']) ?> (<?= substr($s['start_time'],0,5) ?>–<?= substr($s['end_time'],0,5) ?>)
+                    </option>
+                <?php endforeach; ?>
+            </select>
+            <button type="button" class="rp-btn rp-btn-primary rp-bulk-apply" disabled>
+                <i class="fas fa-layer-group"></i> Aplicar aos selecionados
+            </button>
+        </div>
+
         <table class="rp-table">
-            <thead><tr><th>Analista</th><th>Username</th><th>Turno</th><th></th></tr></thead>
+            <thead><tr>
+                <th class="td-center rp-bulk-col"<?= empty($g['shifts']) ? ' hidden' : '' ?>>
+                    <input type="checkbox" class="rp-bulk-all" title="Marcar/desmarcar todos">
+                </th>
+                <th>Analista</th><th>Username</th><th>Turno</th><th></th>
+            </tr></thead>
             <tbody>
                 <?php foreach ($g['users'] as $u): ?>
                 <tr data-userid="<?= (int)$u['userid'] ?>">
+                    <td class="td-center rp-bulk-col"<?= empty($g['shifts']) ? ' hidden' : '' ?>>
+                        <input type="checkbox" class="rp-bulk-pick">
+                    </td>
                     <td class="td-bold"><?= htmlspecialchars(trim($u['fullname']) ?: $u['username']) ?></td>
                     <td><?= htmlspecialchars($u['username']) ?></td>
                     <td>
@@ -357,29 +390,152 @@ $legacyShifts = $data['legacy_shifts'] ?? [];
         }
         group.querySelectorAll('.rp-user-shift-save').forEach(bindUserShiftSave);
 
+        // ── Vínculo em massa ────────────────────────────────────────────
+        //
+        // Os envios são em SÉRIE, um analista por vez, e não em paralelo de
+        // propósito: a action grava um upsert por chamada, e disparar 16
+        // requisições simultâneas contra o mesmo frontend só serve para
+        // aumentar a chance de uma falhar por timeout. Em série dá para
+        // mostrar progresso e dizer exatamente quem falhou.
+        const bulkApply = group.querySelector('.rp-bulk-apply');
+        const bulkShift = group.querySelector('.rp-bulk-shift');
+        const bulkCount = group.querySelector('.rp-bulk-count');
+
+        function picks() {
+            return Array.from(group.querySelectorAll('.rp-bulk-pick:checked'))
+                .map(cb => cb.closest('tr'));
+        }
+
+        function refreshBulk() {
+            const n = picks().length;
+            if (bulkCount) {
+                bulkCount.textContent = n === 0
+                    ? 'nenhum analista selecionado'
+                    : (n === 1 ? '1 analista selecionado' : n + ' analistas selecionados');
+            }
+            if (bulkApply) bulkApply.disabled = (n === 0);
+        }
+
+        group.querySelectorAll('.rp-bulk-pick').forEach(function (cb) {
+            cb.addEventListener('change', refreshBulk);
+        });
+
+        group.querySelectorAll('.rp-bulk-all').forEach(function (all) {
+            all.addEventListener('change', function () {
+                group.querySelectorAll('.rp-bulk-pick').forEach(function (cb) {
+                    cb.checked = all.checked;
+                });
+                // As duas caixas de "todos" (barra e cabeçalho) andam juntas.
+                group.querySelectorAll('.rp-bulk-all').forEach(function (o) {
+                    o.checked = all.checked;
+                });
+                refreshBulk();
+            });
+        });
+
+        if (bulkApply) {
+            bulkApply.addEventListener('click', function () {
+                const rows    = picks();
+                const shiftId = bulkShift ? bulkShift.value : '';
+                if (!rows.length) return;
+
+                const rotulo = shiftId === ''
+                    ? 'REMOVER o turno de'
+                    : 'aplicar "' + bulkShift.options[bulkShift.selectedIndex].text.trim() + '" a';
+                if (!confirm('Confirma ' + rotulo + ' ' + rows.length + ' analista(s)?')) return;
+
+                const original = bulkApply.innerHTML;
+                bulkApply.disabled = true;
+
+                let ok = 0;
+                const falhas = [];
+
+                // Encadeia as promessas em série.
+                rows.reduce(function (fila, row) {
+                    return fila.then(function () {
+                        bulkApply.innerHTML = '<i class="fas fa-spinner fa-spin"></i> '
+                            + (ok + falhas.length + 1) + '/' + rows.length;
+
+                        return post('plantonistas.usershift.save', {
+                            userid: row.dataset.userid, shift_id: shiftId
+                        }).then(function (j) {
+                            if (j.success) {
+                                ok++;
+                                // Reflete no <select> da linha, para a tela não
+                                // ficar mostrando o valor antigo.
+                                const sel = row.querySelector('.rp-user-shift');
+                                if (sel) sel.value = shiftId;
+                                row.querySelector('.rp-bulk-pick').checked = false;
+                            }
+                            else {
+                                falhas.push(row.querySelector('.td-bold').textContent.trim());
+                            }
+                        }).catch(function () {
+                            falhas.push(row.querySelector('.td-bold').textContent.trim());
+                        });
+                    });
+                }, Promise.resolve()).then(function () {
+                    bulkApply.innerHTML = original;
+                    refreshBulk();
+
+                    if (uStatus) {
+                        uStatus.textContent = falhas.length === 0
+                            ? ok + ' vínculo(s) salvo(s).'
+                            : ok + ' salvo(s); falhou em: ' + falhas.join(', ');
+                        uStatus.style.color = falhas.length === 0 ? '#2e7d32' : '#c62828';
+                        // Sem timeout quando houve falha: a lista de quem não
+                        // salvou é justamente o que a pessoa precisa ler.
+                        if (falhas.length === 0) {
+                            setTimeout(function () { uStatus.textContent = ''; }, 5000);
+                        }
+                    }
+                });
+            });
+        }
+
+        refreshBulk();
+
         // ── Sincroniza o <select> de turno de cada analista quando um turno
         // é criado, editado ou removido, sem precisar recarregar a página.
         function updateUserShiftOption(gid, shiftId, label) {
             if (String(gid) !== String(usrgrpid)) return;
-            group.querySelectorAll('.rp-user-shift option[value="' + shiftId + '"]').forEach(function(opt){
+            group.querySelectorAll('.rp-user-shift option[value="' + shiftId + '"],'
+                                 + '.rp-bulk-shift option[value="' + shiftId + '"]').forEach(function(opt){
                 opt.textContent = label;
             });
         }
         function addUserShiftOption(gid, shiftId, label) {
             if (String(gid) !== String(usrgrpid)) return;
-            group.querySelectorAll('.rp-user-shift').forEach(function(sel){
+            // O seletor da barra em massa entra na lista: sem ele, criar um
+            // turno e aplicá-lo em massa na mesma visita não funcionaria.
+            group.querySelectorAll('.rp-user-shift, .rp-bulk-shift').forEach(function(sel){
                 const opt = document.createElement('option');
                 opt.value = shiftId;
                 opt.textContent = label;
                 sel.appendChild(opt);
             });
+            refreshBulkVisibility();
         }
         function removeUserShiftOption(gid, shiftId) {
             if (String(gid) !== String(usrgrpid)) return;
-            group.querySelectorAll('.rp-user-shift').forEach(function(sel){
+            group.querySelectorAll('.rp-user-shift, .rp-bulk-shift').forEach(function(sel){
                 if (sel.value === String(shiftId)) sel.value = '';
                 const opt = sel.querySelector('option[value="' + shiftId + '"]');
                 if (opt) opt.remove();
+            });
+            refreshBulkVisibility();
+        }
+
+        // Barra e coluna de seleção só fazem sentido com pelo menos 1 turno
+        // cadastrado (a opção "— Sem turno —" não conta).
+        function refreshBulkVisibility() {
+            const bar = group.querySelector('.rp-bulk-bar');
+            const sel = group.querySelector('.rp-bulk-shift');
+            if (!bar || !sel) return;
+            const temTurno = sel.options.length > 1;
+            bar.hidden = !temTurno;
+            group.querySelectorAll('.rp-bulk-col').forEach(function (c) {
+                c.hidden = !temTurno;
             });
         }
     });

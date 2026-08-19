@@ -1429,3 +1429,38 @@ body[class*="dark"] .rp-mention-opt:hover {
 .rp-closed-body > span { flex: 1 1 auto; }
 .rp-closed-body .fa-lock { color: var(--rp-green, #2e7d32); }
 .rp-closed-body .rp-nh-btn { flex: 0 0 auto; }
+
+/* ── Vínculo analista→turno em massa ────────────────────────────────────
+   Antes era um clique por analista, o que na prática deixava quase todo
+   mundo sem turno vinculado — e a coluna Turno da Presença mostrando
+   "Sem turno" para a equipe inteira. */
+.rp-bulk-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    padding: 10px 12px;
+    margin-bottom: 12px;
+    border: 1px solid var(--rp-border, #e0e0e0);
+    border-radius: 6px;
+    background: var(--rp-bg-soft, #fafafa);
+}
+/* O atributo `hidden` do HTML vale `display:none` na folha do navegador, mas
+   perde para o `display:flex` da regra acima (mesma especificidade, e a nossa
+   vem depois). Sem estas duas linhas a barra continuaria visível em equipe sem
+   turno cadastrado. */
+.rp-bulk-bar[hidden],
+.rp-bulk-col[hidden] { display: none; }
+
+.rp-bulk-check { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.rp-bulk-count { flex: 1 1 auto; font-size: 12px; }
+.rp-bulk-shift { max-width: 260px; }
+.rp-bulk-apply:disabled { opacity: .5; cursor: not-allowed; }
+.rp-bulk-pick { cursor: pointer; }
+
+[data-theme="dark-theme"] .rp-bulk-bar,
+.theme-dark-blue .rp-bulk-bar,
+body[class*="dark"] .rp-bulk-bar {
+    background: rgba(255, 255, 255, 0.04) !important;
+    border-color: rgba(255, 255, 255, 0.12) !important;
+}
