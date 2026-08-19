@@ -86,7 +86,7 @@ Admin (2)+ — commit `9959722`, ver abaixo.
 |---|---|---|---|
 | Visão Geral | Vê só os próprios grupos | idem User | Todos os grupos |
 | Escala / Histórico | **Sem acesso** (menu não aparece; `checkPermissions()` recusa) | Vê e edita só os próprios grupos | Todos os grupos |
-| Telefones | **Sem acesso** (idem) | Vê só quem tem o **mesmo grupo E o mesmo role** | Todos os usuários habilitados do sistema |
+| Telefones | **Sem acesso** (idem) | Vê quem compartilha **pelo menos um grupo** (edita quem não tem papel mais alto) | Todos os usuários habilitados do sistema |
 | Repasse Plantão (relatório) | Eventos seguem `rights` do Zabbix; MTTA só o próprio; Notas/Presença só do(s) próprio(s) grupo(s) | MTTA de todos; Notas/Presença do(s) próprio(s) grupo(s) | Sem filtro nenhum |
 | Diário de Bordo (escrever) | Pode escrever nota | idem | idem |
 | Gerenciar Turnos | **Sem acesso** (idem) | Só as próprias equipes | Todas as equipes com ≥1 membro |
@@ -105,9 +105,9 @@ action continua acessível pela URL**. Por isso o `checkPermissions()` de
 gravava turno por POST direto — e agora exigem Admin também.
 
 Pontos fora do padrão "grupo = visibilidade":
-- **Telefones** exige grupo **e** role idênticos — um Admin e um User no
-  mesmo grupo não se veem na lista de telefones um do outro. Não confirmado
-  se é intencional.
+- **Telefones** exigia grupo **e** role idênticos até 2026-08-19 — era bug,
+  ver "Telefones: o filtro por papel era bug". Hoje a leitura é só por grupo;
+  o papel só restringe a **escrita**.
 - **Diário de Bordo / Presença** (família repasse) segmentam por
   `users_groups` compartilhado — segmentação própria do módulo, independente
   da tabela `rights` do Zabbix.
@@ -746,8 +746,8 @@ exportar → editar no Excel → reimportar. Detalhes decididos com o Rafael:
   maioria sem telefone, e um round-trip parcial limparia a base. Conta as
   linhas ignoradas no resultado. Para remover, limpa-se o campo na tela.
 - Permissão: a mesma regra da edição individual (Super Admin altera qualquer
-  um; os demais só quem compartilha grupo **e** tem o mesmo papel). Linha fora
-  do alcance é recusada e reportada, nunca aplicada em silêncio.
+  um; os demais só quem compartilha pelo menos um grupo). Linha fora do
+  alcance é recusada e reportada, nunca aplicada em silêncio.
 - `INSERT ... ON DUPLICATE KEY UPDATE` (userid é PK) — nasceu sem a janela de
   corrida do SELECT-then-INSERT que o `PhonesSave` ainda tem (ver Backlog).
 - Limites: 4 a 15 dígitos. O piso de 4 aceita ramal curto; o teto barra lixo.
@@ -1044,8 +1044,10 @@ Conferido no fonte do Zabbix 7.0, está errado nas duas metades:
 Não há task de "enviar mensagem" (`ZBX_TM_TASK_*` não tem nada disso) e a API
 JSON-RPC só expõe `alert.get`.
 
-**As duas contrapartidas, e como estão tratadas** (`actions/ZbxAlertSender.php`,
-isolado nos moldes do `ZbxDb` — a rota é interna do Zabbix e pode mudar):
+**As duas contrapartidas, e como estão tratadas** (hoje em
+`scripts/ZbxServerClient.php`, isolado nos moldes do `ZbxDb` — a rota é interna
+do Zabbix e pode mudar; a primeira versão vivia em `actions/ZbxAlertSender.php`,
+removido quando o envio virou fila, ver a seção seguinte):
 
 - **Exige Super Admin**, validado no server. Como quem escreve a nota é
   analista, a sessão dele não serve: é um token de API na env
@@ -1074,9 +1076,9 @@ uma menção não tem severidade.
 - **O envio síncrono podia travar o save da nota por minutos.** Cada envio é um
   socket novo, e o timeout default do teste de media type é **65s** — pensado
   para quem clicou em "Test" e sabe que vai esperar. Uma nota mencionando 10
-  pessoas com 2 mídias seriam 20 sockets em série. Agora são timeouts próprios
-  (2s/5s) e teto de 5 envios por save; o que passar fica só no banner. A fila
-  por cron seria melhor ainda — está no backlog.
+  pessoas com 2 mídias seriam 20 sockets em série. A primeira correção foi
+  timeout próprio (2s/5s) e teto de 5 envios por save; depois o envio saiu do
+  save de vez e virou fila (seção seguinte).
 - **Link do e-mail montado com `$_SERVER['HTTP_HOST']` era vetor de phishing**:
   o Host é controlado por quem faz a requisição, então quem escreve a nota
   poderia mandar um link para domínio próprio *pelo canal legítimo do Zabbix*.
@@ -1084,6 +1086,124 @@ uma menção não tem severidade.
 - Media type "Script" (type 1) ficou de fora: o `alert.send` espera os
   parâmetros dele em outro formato (lista plana, sem sendto/subject), e mandar
   errado falharia só no log.
+
+### Menção: o envio virou fila por cron (2026-08-19)
+
+O envio síncrono dentro do save da nota funcionava, mas era um socket por
+destinatário por mídia no caminho de quem só queria salvar um texto — daí o teto
+de 5 e os timeouts curtos, que são remendo, não solução. Agora
+`recordMentions()` só **grava a linha**: a tabela `module_plantonistas_mentions`
+É a fila, e quem envia é `scripts/cron_notify_mentions.php`, de minuto em minuto.
+Sem ninguém esperando, caíram o teto e a pressa.
+
+O `CZabbixServer` do frontend não existe em CLI, então o protocolo ZBXD foi
+reimplementado em `scripts/ZbxServerClient.php`: `"ZBXD" + 0x01` + 8 bytes
+little-endian (`pack('P')`) com o tamanho, cabeçalho de 13 bytes na resposta.
+`readExactly()` existe porque `fread()` em socket devolve menos do que se pediu
+o tempo todo — ler uma vez e assumir que veio tudo é o erro clássico aqui.
+
+Coluna nova `notified_at` (NULL = pendente), migrada idempotente no
+`Module::migrateColumns()`. **Ordem de deploy importa**: a coluna nasce no
+primeiro carregamento de página com o módulo habilitado, então agendar o cron
+antes disso o faz falhar a cada minuto. Está no README.
+
+**Os dois dedupes**, que era o outro pedido:
+
+1. **Por pessoa, não por menção**: o `GROUP BY mentioned_userid` da fila
+   transforma dez menções à mesma pessoa em um aviso ("você foi mencionado 10
+   vezes"), em vez de dez e-mails.
+2. **Quem está online não recebe e-mail**: `module_plantonistas_user_sessions`
+   (o presence tracker) já diz quem está com sessão viva; para essa pessoa o
+   banner da tela basta. A menção sai da fila marcada assim mesmo — não fica
+   pendente esperando a pessoa deslogar.
+
+Duas decisões que a revisão apontou e valem para o próximo cron:
+
+- **O `UPDATE` que marca a fila tem teto por `id`** (`id <= MAX(id) lido no
+  SELECT`), não só por data. Sem o teto, uma menção gravada entre o SELECT e o
+  UPDATE seria marcada como notificada **sem ter sido enviada** — sumia do
+  e-mail e sobrava só o banner. Teto por `id`, e não por data, porque data
+  esbarra no problema de fuso abaixo.
+- **`created_at` passou a ser gerado em PHP** no `recordMentions()`, em vez do
+  `DEFAULT CURRENT_TIMESTAMP` do banco: o MariaDB roda em outro host e pode
+  estar em UTC, enquanto o corte de idade do cron é calculado em
+  `America/Sao_Paulo`. Quinto lugar do módulo em que fuso ia morder.
+
+Continua no backlog: menção não tem histórico de lidas (só as pendentes
+aparecem no banner) e o editor não aceita imagem/anexo.
+
+### Telefones: o filtro por papel era bug (2026-08-19)
+
+`PhonesList`/`PhonesSave`/`PhonesExport`/`PhonesImport` exigiam que o alvo
+tivesse o **mesmo `roleid`** do operador, além do grupo compartilhado. Nunca
+esteve claro se era regra ou herança; a checagem foi feita e é bug.
+
+O argumento decisivo é a data: o commit `9959722` (2026-08-17) tornou a tela
+Telefones **Admin (2)+**. A partir dali, "mesmo papel" passou a significar que
+um Admin só enxerga outros Admins — e a pessoa para quem se liga às 3h da manhã
+é o analista, que tem papel **User (1)**. Ou seja, a tela ficou exatamente sem
+quem ela existe para mostrar. A leitura agora é só por grupo compartilhado, como
+em todo o resto do módulo.
+
+**A escrita ganhou uma guarda que não existia antes.** Sem o filtro de papel, um
+Admin passaria a alterar o telefone de um Super Admin — coisa que o filtro
+antigo impedia por acidente. `PhonesSave` e `PhonesImport::buildAllowedMap()`
+recusam alvo com `role.type` maior que o do operador. Ver é o objetivo da tela;
+escrever no cadastro de quem tem mais privilégio, não.
+
+### Nome duplicado: fim dos CONCAT crus (2026-08-19)
+
+A regra de bordas (um campo só absorve o outro se o contiver no começo ou no
+fim, com espaço como limite de palavra) já existia em dois lugares:
+`formatUserLabel()` no `TurnosReportBase` (família repasse) e `buildFullName()`
+no `cron_presence_tracker.php` (CLI). Faltava a família escala, que montava o
+nome **na view**, com `trim($u['name'].' '.$u['surname'])` em sete pontos.
+
+Agora existe o trait `actions/UserLabel.php`, usado por `PlantaoList`,
+`PlantaoOverview`, `PlantaoHistory`, `PlantaoExport`, `PlantaoImport`,
+`PhonesList` e `PhonesExport`. O rótulo é montado no **controller** e entregue
+pronto à view (`label`, `reserva_label`, `r_label`, `n_label`, `o_label`,
+`rn_label`, `ro_label`, `cb_label`) — view não faz regra de negócio.
+
+São **três cópias** da mesma regra de propósito, e está escrito no cabeçalho de
+cada uma: o cron roda em CLI sem carregar o módulo, e as duas famílias de código
+são independentes. Ao mexer numa, mexer nas três.
+
+**Efeito colateral que precisou de conserto no mesmo commit**: o CSV da Escala
+passou a exportar o nome deduplicado, e o `buildUserMap()` do `PlantaoImport`
+indexava só o `CONCAT` cru — exportar e reimportar deixaria de casar justamente
+com quem tem o nome duplicado no cadastro. O mapa ganhou o rótulo como chave a
+mais (com e sem acento).
+
+**Bug de brinde no Histórico**: as células testavam `$r['o_name'] !== null` para
+decidir se havia alguém ali, mas o `\DBfetch()` do Zabbix converte NULL na
+string `'0'` por padrão — o teste nunca dava falso e a célula imprimia `0`.
+Passou a testar a coluna de id da própria tabela de histórico.
+
+O que **não** mudou: os `CONCAT` que sobraram em SQL (`queryShiftAnalysts()`,
+`queryMTTA()`, `listUsersByGroup()`) são só `ORDER BY` e busca — ordenar por um
+nome duplicado dá a mesma posição, e a duplicação não chega à tela.
+
+### Vínculo analista→turno em massa (2026-08-19)
+
+Gerenciar Turnos ganhou uma barra com "selecionar todos", contador e "aplicar
+aos selecionados": um turno para vários analistas de uma vez, em vez de um
+clique por pessoa. Era o gargalo real por trás da coluna Turno da Presença
+mostrando "Sem turno" para quase todo mundo — ninguém cadastra 16 vínculos um a
+um.
+
+Três detalhes que a revisão apontou e valem para qualquer UI parecida aqui:
+
+- Os POSTs saem **em série** (cadeia de promises), não em paralelo: 16 requests
+  simultâneos contra o mesmo endpoint de escrita não trazem ganho e enchem o
+  log de contenção.
+- A barra é renderizada **sempre**, escondida com `hidden` enquanto a equipe não
+  tem turno. Renderizada condicionalmente, ela não apareceria ao criar o
+  primeiro turno — só depois de recarregar a página.
+- `hidden` sozinho não basta: `.rp-bulk-bar` tem `display:flex`, que vence a
+  folha do navegador. Precisou de `.rp-bulk-bar[hidden] { display: none; }`.
+  O seletor de turno da barra também entrou na sincronização de opções, senão
+  criar um turno e aplicá-lo em massa na mesma visita não funcionaria.
 
 ### PostgreSQL: as armadilhas semânticas primeiro (2026-08-19, issue #1)
 
@@ -1225,9 +1345,9 @@ verdade.
 
 ### Backlog conhecido
 
-- Salvar vínculo analista→turno em massa (hoje é um clique por analista) —
-  ganhou urgência: a coluna Turno da Presença mostra "Sem turno" pra quase
-  todo mundo enquanto os vínculos não forem cadastrados.
+- ~~Salvar vínculo analista→turno em massa~~ — **resolvido em 2026-08-19**:
+  barra de seleção em Gerenciar Turnos aplica um turno a vários analistas de
+  uma vez.
 - ~~`install.sh` gerava `/etc/cron.d/plantonistas-presence` sem env nenhuma~~ —
   **corrigido em 2026-08-19**: os três blocos de cron do `scripts/install.sh`
   (docker, RHEL e Ubuntu) passaram a escrever `DB_HOST`/`DB_NAME`/`DB_USER`/
@@ -1245,33 +1365,25 @@ verdade.
 - ~~Conexão mysqli própria (`getDb()`) reconectando a cada request~~ —
   **resolvido em 2026-08-19** pelo `ZbxDb` (ver "Fim da conexão mysqli
   própria").
-- `getUserRoleType()`/`resolveUserContext()` duplicados entre `TurnosReportBase`
-  e `TurnosNotesGet`/`TurnosNotesSave` (cada um com sua própria cópia).
+- ~~`getUserRoleType()`/`resolveUserContext()` duplicados~~ — **resolvido em
+  2026-08-19**: `TurnosNotesGet` passou a usar o trait.
 - ~~`PhonesSave` faz SELECT-then-UPDATE-or-INSERT (janela de corrida)~~ —
   **resolvido em 2026-08-19**: virou upsert via `SqlFn::upsert()`, a mesma
   forma do `PhonesImport`.
-- `readCsv()` duplicado entre `PlantaoImport` e `PhonesImport` (~20 linhas,
-  detecção de separador e BOM). Extrair pra trait se aparecer um terceiro.
-- Importação de telefones aceita só CSV; o leitor de XLSX existe, mas está
-  privado no `PlantaoImport`. Extrair se pedirem planilha nativa.
-- Telefones: Admin/User só se veem dentro do mesmo `roleid` — confirmar se é
-  intencional (ver "Modelo de permissões" em Contexto).
-- Nome duplicado (`name` + `surname` concatenados às cegas) ainda existe nos
-  `CONCAT` feitos em SQL: `queryShiftAnalysts()`, `queryMTTA()` e
-  `listUsersByGroup()` no trait, e em toda a família escala (`PlantaoList`,
-  `PlantaoExport`, `PhonesList`, `PhonesExport`, `PlantaoOverview`,
-  `PlantaoHistory`). Corrigir exige trazer `name`/`surname` separados e
-  montar o label em PHP com `formatUserLabel()` — feito só onde o defeito
-  estava visível/persistido; o resto ficou pra quando incomodar.
-- Notificação de menção é síncrona, dentro do save da nota (teto de 5 envios,
-  timeouts de 2s/5s). O certo seria fila + cron, como o presence tracker: o
-  CLI não tem ninguém esperando, e aí caem o teto e os timeouts curtos. Exige
-  reimplementar o socket do `alert.send` sem `CZabbixServer` (classe de
-  frontend, indisponível em CLI) e uma coluna `notified_at` em
-  `module_plantonistas_mentions`.
-- Notificação de menção sem dedupe: 10 menções à mesma pessoa = 10 avisos. Dá
-  para suprimir quem está online usando `module_plantonistas_user_sessions`,
-  que já existe.
+- ~~`readCsv()` duplicado entre `PlantaoImport` e `PhonesImport`~~ —
+  **resolvido em 2026-08-19**: trait `SpreadsheetReader`.
+- ~~Importação de telefones aceita só CSV~~ — **resolvido em 2026-08-19**: o
+  leitor saiu do `PlantaoImport` para o trait `SpreadsheetReader` e as duas
+  telas aceitam CSV e XLSX.
+- ~~Telefones: Admin/User só se veem dentro do mesmo `roleid`~~ — **era bug,
+  corrigido em 2026-08-19**; ver "Telefones: o filtro por papel era bug".
+- ~~Nome duplicado (`name` + `surname` concatenados às cegas)~~ — **resolvido
+  em 2026-08-19** nas duas famílias; ver "Nome duplicado: fim dos CONCAT crus".
+  O que sobrou de `CONCAT` em SQL é só `ORDER BY`/busca, onde a duplicação não
+  aparece na tela.
+- ~~Notificação de menção síncrona dentro do save da nota~~ e ~~sem dedupe~~ —
+  **resolvidos em 2026-08-19** pela fila (`scripts/cron_notify_mentions.php`);
+  ver "Menção: o envio virou fila por cron".
 - Editor rico do Diário de Bordo: sem suporte a colar imagem/anexo (só texto
   formatado + menções). Sem histórico de menções lidas (só as pendentes
   aparecem — decisão consciente, ver seção acima).
@@ -1310,6 +1422,9 @@ verdade.
   agora é o `execute()` (ver "Fim da conexão mysqli própria").
 - Consulta nova na família repasse passa pelo `ZbxDb` (`$db->prepare(...)` com
   `?` + `bind_param`), nunca por conexão própria nem por SQL interpolado à mão.
+- Nome de usuário para exibir nunca é `CONCAT(name,' ',surname)`: usa o trait
+  `UserLabel` (família escala) ou `formatUserLabel()` (família repasse), sempre
+  montado no controller, nunca na view.
 - Informação acessória (turno, rótulo, enfeite) não entra por JOIN na query
   do dado principal: se a tabela do enfeite não existir naquele ambiente, o
   dado principal desaparece inteiro. Query separada + fallback na UI.

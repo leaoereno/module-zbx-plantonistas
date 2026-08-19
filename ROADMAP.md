@@ -156,7 +156,7 @@ passo 4 da introspecção (`STATISTICS` → `pg_indexes`, `DATABASE()` →
 | 4 | Data/hora | `DATE_FORMAT` (14×), `FROM_UNIXTIME` (5×), `TIMESTAMPDIFF` (3×), `CURDATE`, `INTERVAL`. **Decidir o fuso junto**: `to_timestamp()` usa o TimeZone da sessão PG, e fuso já causou erro de um dia três vezes neste módulo |
 | 5 | Escrita | `ON DUPLICATE KEY UPDATE` → `ON CONFLICT` (2×) e `LAST_INSERT_ID()` → `lastval()` no `ZbxDb` |
 | ~~7~~ | ~~Os 2 crons~~ — **feito**: `scripts/CliDb.php` (PDO), dialeto pela env `DB_TYPE` | |
-| 8 | `sql/queries.sql` | Documentação de diagnóstico, sem caller |
+| 8 | `sql/queries.sql` | ✅ Dividido em `queries.mysql.sql` e `queries.pgsql.sql` |
 
 Duas armadilhas registradas que ainda não morderam: o parser de `?` do
 `ZbxDbStmt` trata `\` como escape dentro de literal, o que não vale no PG com
@@ -302,14 +302,19 @@ Decidir isso antes de codar — refazer depois significa migrar dados já gravad
 
 ### #6 — Menção via media type ✅ **feito em 2026-08-19**
 
-Implementado por `alert.send` (`actions/ZbxAlertSender.php`), com token de
-Super Admin na env `PLANTONISTAS_ALERT_TOKEN` e a janela de notificação
-replicada em PHP, avaliada no fuso do destinatário. Sem token, não notifica e
-nada quebra. Detalhe e as armadilhas de webhook no `CLAUDE.md`.
+Implementado por `alert.send`, com token de Super Admin na env
+`PLANTONISTAS_ALERT_TOKEN` e a janela de notificação replicada em PHP,
+avaliada no fuso do destinatário. Sem token, não notifica e nada quebra.
+Detalhe e as armadilhas de webhook no `CLAUDE.md`.
 
-Pendente de campo: gerar o token, colocá-lo no pool do PHP-FPM dos dois
-frontends e configurar a URL do frontend em Administração → Geral (sem ela o
-link do e-mail vai relativo, de propósito).
+O envio saiu do save da nota e virou **fila por cron**
+(`scripts/cron_notify_mentions.php` + `scripts/ZbxServerClient.php`); o
+`actions/ZbxAlertSender.php` da primeira versão foi removido.
+
+Pendente de campo: gerar o token, agendar o cron em UM frontend (com o módulo
+já aberto uma vez, para a coluna `notified_at` existir) e configurar a URL do
+frontend em Administração → Geral (sem ela o link do e-mail vai relativo, de
+propósito).
 
 <details>
 <summary>Plano original e levantamento</summary>

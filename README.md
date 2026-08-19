@@ -306,41 +306,73 @@ DELETE FROM role_rule WHERE value_str LIKE 'plantao.%'
 
 Quando alguém é mencionado com `@` numa nota, o módulo pode avisar pelo media
 type que a pessoa já tem no Zabbix (e-mail, Telegram, webhook), além do banner
-na tela. **É opcional**: sem a configuração abaixo, nada muda e nada quebra —
+na tela. **É opcional**: sem a configuração abaixo nada muda e nada quebra —
 o banner continua funcionando.
+
+O aviso sai por um **cron** (`scripts/cron_notify_mentions.php`), não durante o
+save da nota: a menção é gravada na hora e o envio acontece no próximo ciclo,
+sem ninguém esperando a tela responder.
 
 A via usada é o request `alert.send` do Zabbix server, a mesma do botão "Test"
 em Alertas → Tipos de mídia. Ela **exige Super Admin**, então precisa de um
-token de API:
+token de API.
 
 **1. Gerar o token** — Usuários → Tokens de API → Criar, com um usuário Super
 Admin. Guarde o valor: ele só aparece uma vez.
 
-**2. Colocar no pool do PHP-FPM**, nos dois frontends
-(`/etc/php-fpm.d/zabbix.conf`):
+**2. Abrir o módulo uma vez no navegador antes de agendar.** A coluna
+`notified_at` (a fila) é criada pela migração que roda no `Module::init()`, ou
+seja, no primeiro carregamento de página com o módulo habilitado. Agendado
+antes disso, o cron falha a cada minuto com `CRITICAL: Falha ao ler a fila`.
 
-```ini
-env[PLANTONISTAS_ALERT_TOKEN] = "<token de 64 caracteres>"
+**3. Agendar o cron**, no mesmo frontend dos outros dois:
+
+```bash
+cat > /etc/cron.d/plantonistas-mentions <<'EOF'
+DB_TYPE=mysql
+DB_HOST=172.18.190.21
+DB_NAME=zabbix
+DB_USER=zabbix
+DB_PASS=<senha>
+PLANTONISTAS_ALERT_TOKEN=<token de 64 caracteres>
+ZBX_SERVER=127.0.0.1
+ZBX_SERVER_PORT=10051
+ZBX_FRONTEND_URL=https://monitoracao.claroempresas.com.br/zabbix
+* * * * * apache php /usr/share/zabbix/modules/module-zbx-plantonistas/scripts/cron_notify_mentions.php >> /var/log/plantonistas-mentions.log 2>&1
+EOF
+chmod 600 /etc/cron.d/plantonistas-mentions
 ```
 
-Depois `systemctl restart php-fpm`. O arquivo tem credencial — confira as
-permissões. Prefira `env[...]` no pool a `fastcgi_param`: como `fastcgi_param`,
-o token aparece em `$_SERVER` e pode sair em dump de debug.
+`chmod 600` porque o arquivo tem a senha do banco **e** o token de Super Admin.
+**Um frontend só**: o script marca as menções como notificadas no banco
+compartilhado, e em dois nós a mesma menção sairia duas vezes.
 
-**3. Configurar a URL do frontend** em Administração → Geral → GUI. Sem ela o
-link no corpo do e-mail vai **relativo**, de propósito: montar a URL a partir
-do cabeçalho `Host` da requisição deixaria quem escreve a nota apontar o link
-para um domínio próprio, e o colega receberia esse link pelo canal legítimo do
-Zabbix.
+**4. Conferir antes de valer**, sem enviar nem marcar nada:
 
-O que o módulo respeita, por conta própria, porque o `alert.send` não respeita:
-a mídia precisa estar **habilitada** e dentro do **período** configurado no
-cadastro do usuário — avaliado no fuso horário **do destinatário**. A
-severidade da mídia é ignorada (menção não tem severidade).
+```bash
+set -a; source <(grep -E "^(DB_|ZBX_|PLANTONISTAS_)" /etc/cron.d/plantonistas-mentions); set +a
+DRY_RUN=1 php /usr/share/zabbix/modules/module-zbx-plantonistas/scripts/cron_notify_mentions.php
+```
 
-Limites conhecidos: o envio acontece durante o save da nota, com timeout curto
-(2s/5s) e **teto de 5 envios por nota** — o que passar disso fica só no banner.
-Media type do tipo "Script" não é suportado.
+O que o módulo faz por conta própria, porque o `alert.send` não faz:
+
+- **Respeita a janela** de notificação configurada no cadastro do usuário
+  (mídia habilitada + período), avaliada no fuso horário **do destinatário**.
+  A severidade da mídia é ignorada — menção não tem severidade.
+- **Não repete**: dez menções à mesma pessoa viram um aviso dizendo "10
+  menções", não dez e-mails.
+- **Não avisa quem está online.** Se a pessoa está com o Zabbix aberto, ela vê
+  o banner do Repasse; mandar e-mail seria redundante. Usa a tabela de
+  presença, populada pelo cron de presença.
+- **Não avisa de menção velha.** Se o cron ficar parado, menção com mais de
+  24 h sai da fila sem aviso — receber o acúmulo de uma semana não ajuda
+  ninguém.
+
+Limites conhecidos: media type do tipo "Script" não é suportado (o `alert.send`
+espera os parâmetros dele em outro formato). Sem `ZBX_FRONTEND_URL` o corpo da
+mensagem vai sem link — de propósito: montar a URL a partir do cabeçalho `Host`
+da requisição deixaria quem escreve a nota apontar o link para um domínio
+próprio, e o colega receberia esse link pelo canal legítimo do Zabbix.
 
 ## Rollback
 
