@@ -99,18 +99,63 @@ class PlantaoImport extends CController {
 
         $usermap  = $this->buildUserMap($usrgrpid, $is_super);
         $accepted = array_unique(array_keys($usermap));
+        $shiftmap = $this->buildShiftMap($usrgrpid);
 
         $saved   = 0;
         $skipped = [];
+        // Quantas linhas caíram em modo legado (shift_id = 0) num grupo que
+        // TEM turnos cadastrados. Não é erro — planilha antiga continua
+        // importando —, mas o resultado precisa dizer, senão a entrada aparece
+        // no calendário sem rótulo e ninguém entende de onde veio.
+        $sem_turno = 0;
+        // Linhas sem plantonista. No arquivo exportado são os buracos de
+        // cobertura (normal); numa planilha preenchida à mão são esquecimento.
+        // Contadas e reportadas — descartar em silêncio faria "30 linhas
+        // importadas" esconder as 3 que ficaram de fora.
+        $vazias = 0;
 
         for ($i = 1; $i < count($rows); $i++) {
             $row = $rows[$i];
 
-            $raw_date = trim((string)($row[$col['data']]        ?? ''));
-            $raw_tech = trim((string)($row[$col['plantonista']] ?? ''));
-            $raw_res  = $col['reserva'] !== -1 ? trim((string)($row[$col['reserva']] ?? '')) : '';
+            $raw_date  = trim((string)($row[$col['data']]        ?? ''));
+            $raw_tech  = trim((string)($row[$col['plantonista']] ?? ''));
+            $raw_res   = $col['reserva'] !== -1 ? trim((string)($row[$col['reserva']] ?? '')) : '';
+            $raw_shift = $col['turno']   !== -1 ? trim((string)($row[$col['turno']]   ?? '')) : '';
 
             if ($raw_date === '' && $raw_tech === '') continue;
+
+            // Linha de turno vazio na exportação (buraco de cobertura): não há
+            // ninguém para importar, e tratá-la como erro encheria o resultado
+            // de aviso para um arquivo correto. Contada, não silenciada.
+            if ($raw_tech === '') { $vazias++; continue; }
+
+            // ── Turno ────────────────────────────────────────────────────
+            $shift_id   = 0;
+            $shift_name = null;
+            $legado     = false;
+
+            if ($raw_shift !== '') {
+                $chave = mb_strtolower($raw_shift);
+                $achou = $shiftmap[$chave] ?? $shiftmap[$this->removeAccents($chave)] ?? null;
+
+                if ($achou === null) {
+                    $conhecidos = implode(', ', array_slice(array_unique(
+                        array_column($shiftmap, 'name')
+                    ), 0, 6));
+                    $skipped[] = "Linha " . ($i + 1) . ": turno \"$raw_shift\" não existe neste grupo"
+                               . ($conhecidos !== '' ? " (cadastrados: $conhecidos)" : '');
+                    continue;
+                }
+
+                $shift_id   = $achou['id'];
+                $shift_name = $achou['name'];
+            }
+            elseif ($shiftmap) {
+                // Marca; só vira contagem quando a linha for gravada de fato
+                // (uma linha com data inválida não deve aparecer nos dois
+                // avisos ao mesmo tempo).
+                $legado = true;
+            }
 
             $date = $this->parseDate($raw_date);
             if (!$date) {
@@ -142,10 +187,17 @@ class PlantaoImport extends CController {
                 ? ', userid_reserva=' . $userid_reserva
                 : ', userid_reserva=NULL';
 
+            // A unique key é (usrgrpid, schedule_date, shift_id): o shift_id
+            // TEM que entrar no WHERE, senão importar o turno da tarde
+            // sobrescreveria o da manhã do mesmo dia.
+            $where_dia = ' WHERE usrgrpid=' . $usrgrpid .
+                         ' AND schedule_date=' . zbx_dbstr($date) .
+                         ' AND shift_id=' . $shift_id;
+
             try {
                 $existing = DBfetch(DBselect(
-                    'SELECT scheduleid, userid, userid_reserva FROM module_plantonistas_schedule' .
-                    ' WHERE usrgrpid=' . $usrgrpid . ' AND schedule_date=' . zbx_dbstr($date)
+                    'SELECT scheduleid, userid, userid_reserva FROM module_plantonistas_schedule'
+                    . $where_dia
                 ));
 
                 if ($existing) {
@@ -159,33 +211,51 @@ class PlantaoImport extends CController {
                         (int)$existing['userid'], $userid,
                         $existing['userid_reserva'] ? (int)$existing['userid_reserva'] : null,
                         $userid_reserva > 0 ? $userid_reserva : null,
-                        $current_userid
+                        $current_userid, $shift_id, $shift_name
                     );
                 } else {
                     DBexecute(
                         'INSERT INTO module_plantonistas_schedule' .
-                        ' (usrgrpid,userid,userid_reserva,schedule_date,created_by,created_at)' .
+                        ' (usrgrpid,userid,userid_reserva,schedule_date,shift_id,created_by,created_at)' .
                         ' VALUES (' . $usrgrpid . ',' . $userid . ',' . $r_sql . ',' .
-                        zbx_dbstr($date) . ',' . $current_userid . ',' . time() . ')'
+                        zbx_dbstr($date) . ',' . $shift_id . ',' .
+                        $current_userid . ',' . time() . ')'
                     );
                     $new_id = DBfetch(DBselect(
-                        'SELECT scheduleid FROM module_plantonistas_schedule' .
-                        ' WHERE usrgrpid=' . $usrgrpid . ' AND schedule_date=' . zbx_dbstr($date)
+                        'SELECT scheduleid FROM module_plantonistas_schedule' . $where_dia
                     ));
                     $this->logHistory(
                         $new_id ? (int)$new_id['scheduleid'] : 0, $usrgrpid, $date, 'create',
                         null, $userid, null,
                         $userid_reserva > 0 ? $userid_reserva : null,
-                        $current_userid
+                        $current_userid, $shift_id, $shift_name
                     );
                 }
                 $saved++;
+                if ($legado) $sem_turno++;
             } catch (\Exception $e) {
                 $skipped[] = "Linha " . ($i + 1) . " ($date): " . $e->getMessage();
             }
         }
 
-        $msg = $saved . ' ' . ($saved === 1 ? 'dia importado' : 'dias importados') . '.';
+        // "linhas", não "dias": com turnos, um dia gera várias linhas.
+        $msg = $saved . ' ' . ($saved === 1 ? 'linha importada' : 'linhas importadas') . '.';
+
+        if ($vazias > 0) {
+            $msg .= ' ' . $vazias . ' ' .
+                    ($vazias === 1 ? 'linha sem plantonista foi ignorada'
+                                   : 'linhas sem plantonista foram ignoradas') .
+                    ' (turno sem cobertura, ou nome em branco na planilha).';
+        }
+
+        if ($sem_turno > 0) {
+            $msg .= ' Atenção: ' . $sem_turno . ' ' .
+                    ($sem_turno === 1 ? 'linha veio' : 'linhas vieram') .
+                    ' sem turno num grupo que tem turnos cadastrados —' .
+                    ' aparecem no calendário sem rótulo. Exporte a escala de novo' .
+                    ' para obter a planilha com a coluna Turno.';
+        }
+
         if ($skipped) {
             $detail = implode(' | ', array_slice($skipped, 0, 5));
             if (count($skipped) > 5) $detail .= ' … e mais ' . (count($skipped) - 5) . ' avisos.';
@@ -204,11 +274,12 @@ class PlantaoImport extends CController {
     // ── Helpers ───────────────────────────────────────────────────────────
 
     private function detectColumns(array $header): array {
-        $col = ['data' => -1, 'plantonista' => -1, 'reserva' => -1];
+        $col = ['data' => -1, 'plantonista' => -1, 'reserva' => -1, 'turno' => -1];
         $map = [
             'data'        => ['data', 'date', 'dia', 'day'],
             'plantonista' => ['plantonista', 'técnico', 'tecnico', 'tech', 'nome', 'name', 'usuario', 'usuário', 'username'],
             'reserva'     => ['reserva', 'backup', 'técnico reserva', 'tecnico reserva'],
+            'turno'       => ['turno', 'shift', 'escala'],
         ];
         foreach ($header as $i => $h) {
             foreach ($map as $key => $candidates) {
@@ -217,10 +288,42 @@ class PlantaoImport extends CController {
                 }
             }
         }
+        // Arquivo sem cabeçalho reconhecível: assume `Data;Plantonista;Reserva`
+        // nas três primeiras colunas. Não é nenhum dos layouts que o módulo
+        // exporta — é uma rede para planilha digitada do zero, e é herança.
+        // A coluna Turno fica de fora de propósito: chutar posição para ela
+        // leria a segunda coluna como nome de turno e recusaria tudo.
         if ($col['data'] === -1 && $col['plantonista'] === -1) {
             $col['data'] = 0; $col['plantonista'] = 1; $col['reserva'] = 2;
         }
         return $col;
+    }
+
+    /**
+     * Turnos ativos do grupo, indexados por nome minúsculo e sem acento, e
+     * também pelo id como texto.
+     *
+     * O id entra como chave porque uma planilha montada à mão pode trazer o
+     * número em vez do nome; o nome sem acento entra porque "Diurno" e
+     * "diurno" digitados no Excel têm que casar igual.
+     */
+    private function buildShiftMap(int $usrgrpid): array {
+        $map = [];
+        $res = DBselect(
+            'SELECT id, name FROM module_plantonistas_shifts' .
+            ' WHERE usrgrpid = ' . $usrgrpid . ' AND active = 1'
+        );
+        while ($r = DBfetch($res)) {
+            $id   = (int) $r['id'];
+            $nome = mb_strtolower(trim($r['name']));
+
+            $map[(string) $id] = ['id' => $id, 'name' => $r['name']];
+            foreach ([$nome, $this->removeAccents($nome)] as $k) {
+                if ($k !== '') $map[$k] = ['id' => $id, 'name' => $r['name']];
+            }
+        }
+
+        return $map;
     }
 
     private function parseDate(string $raw): ?string {
@@ -299,14 +402,19 @@ class PlantaoImport extends CController {
         int $scheduleid, int $usrgrpid, string $date, string $action,
         ?int $userid_old, ?int $userid_new,
         ?int $reserva_old, ?int $reserva_new,
-        int $changed_by
+        int $changed_by, int $shift_id = 0, ?string $shift_name = null
     ): void {
         DBexecute(
             'INSERT INTO module_plantonistas_history' .
-            ' (scheduleid,usrgrpid,schedule_date,action,userid_old,userid_new,' .
-            '  reserva_old,reserva_new,changed_by,changed_at)' .
+            ' (scheduleid,usrgrpid,schedule_date,shift_id,shift_name,action,' .
+            '  userid_old,userid_new,reserva_old,reserva_new,changed_by,changed_at)' .
             ' VALUES (' .
                 $scheduleid . ',' . $usrgrpid . ',' . zbx_dbstr($date) . ',' .
+                $shift_id . ',' .
+                // shift_name é SNAPSHOT do nome no momento da alteração:
+                // sobrevive a renomear ou remover o turno depois. Mesma
+                // decisão do PlantaoSave.
+                ($shift_name !== null ? zbx_dbstr($shift_name) : 'NULL') . ',' .
                 zbx_dbstr($action) . ',' .
                 ($userid_old  !== null ? $userid_old  : 'NULL') . ',' .
                 ($userid_new  !== null ? $userid_new  : 'NULL') . ',' .
