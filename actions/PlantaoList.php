@@ -8,6 +8,8 @@ use CController,
 
 class PlantaoList extends CController {
 
+    use UserLabel;
+
     public function init(): void {
         $this->disableCsrfValidation();
     }
@@ -142,6 +144,10 @@ class PlantaoList extends CController {
                     'name'            => $row['name'],
                     'surname'         => $row['surname'],
                     'username'        => $row['username'],
+                    // Rótulos prontos: a view não precisa saber da regra de
+                    // nome duplicado (ver UserLabel).
+                    'label'           => $this->userLabel($row['name'], $row['surname'], $row['username']),
+                    'reserva_label'   => $this->userLabel($row['reserva_name'], $row['reserva_surname'], ''),
                     'phone'           => $row['phone'],
                     'userid_reserva'  => $row['userid_reserva'],
                     'reserva_name'    => $row['reserva_name'],
@@ -188,6 +194,9 @@ class PlantaoList extends CController {
                 );
             }
             while ($row = DBfetch($res_users)) {
+                // Rótulo pronto (UserLabel) para a view não concatenar
+                // name+surname às cegas e duplicar o nome.
+                $row['label'] = $this->userLabel($row['name'], $row['surname'], '');
                 $users[$row['userid']] = $row;
             }
         }

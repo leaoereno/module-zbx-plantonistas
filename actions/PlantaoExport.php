@@ -6,6 +6,8 @@ use CController, CControllerResponseData, CWebUser;
 
 class PlantaoExport extends CController {
 
+    use UserLabel;
+
     public function init(): void { $this->disableCsrfValidation(); }
 
     protected function checkInput(): bool {
@@ -92,8 +94,10 @@ class PlantaoExport extends CController {
             $dow      = $dt_obj->format('N');
             $e        = $entries[$date_str] ?? null;
 
-            $tech_name  = $e ? trim($e['name'] . ' ' . $e['surname']) ?: $e['username'] : '';
-            $res_name   = $e ? trim($e['r_name'] . ' ' . $e['r_surn']) ?: $e['r_user'] : '';
+            // UserLabel: concatenar name+surname às cegas duplica o nome de
+            // quem tem o nome completo no campo surname.
+            $tech_name  = $e ? $this->userLabel($e['name'], $e['surname'], $e['username']) : '';
+            $res_name   = $e ? $this->userLabel($e['r_name'], $e['r_surn'], $e['r_user']) : '';
             $covered    = $e ? 'Sim' : 'Não';
 
             fputcsv($out, [

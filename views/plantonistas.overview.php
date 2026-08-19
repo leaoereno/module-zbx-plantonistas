@@ -12,9 +12,11 @@ $weekday  = ['Mon'=>'Segunda','Tue'=>'Terça','Wed'=>'Quarta',
              'Thu'=>'Quinta','Fri'=>'Sexta','Sat'=>'Sábado','Sun'=>'Domingo'];
 $today_dow = $weekday[date('D', strtotime($today))] ?? date('D');
 
-function ovName(string $n, string $s, string $u): string {
-    $full = trim($n . ' ' . $s);
-    return $full !== '' ? htmlspecialchars($full) : htmlspecialchars($u);
+// Rótulo já vem montado do controller (UserLabel). Aqui só escapa, com
+// reserva para o caso de a chave faltar.
+function ovName(array $e, string $campo, string $fallback_user): string {
+    $lbl = (string) ($e[$campo] ?? '');
+    return htmlspecialchars($lbl !== '' ? $lbl : $fallback_user);
 }
 
 ob_start(); ?>
@@ -125,7 +127,7 @@ ob_start(); ?>
 
         <?php if (!$has_shifts_g): ?>
             <?php if ($covered): ?>
-                <div class="ov-tech-name"><?= ovName($e['name'],$e['surname'],$e['username']) ?></div>
+                <div class="ov-tech-name"><?= ovName($e,'label',$e['username']) ?></div>
                 <div class="ov-tech-phone">
                     <?php if ($e['phone']): ?>
                         <a href="tel:<?= htmlspecialchars($e['phone']) ?>"><?= htmlspecialchars($e['phone']) ?></a>
@@ -137,7 +139,7 @@ ob_start(); ?>
                 <?php if ($e['userid_reserva']): ?>
                 <div class="ov-reserva-section">
                     <div class="ov-reserva-label">Reserva</div>
-                    <div class="ov-reserva-name"><?= ovName($e['r_name'],$e['r_surname'],$e['r_username']) ?></div>
+                    <div class="ov-reserva-name"><?= ovName($e,'r_label',$e['r_username']) ?></div>
                     <div class="ov-reserva-phone">
                         <?php if ($e['r_phone']): ?>
                             <a href="tel:<?= htmlspecialchars($e['r_phone']) ?>"><?= htmlspecialchars($e['r_phone']) ?></a>
@@ -163,7 +165,7 @@ ob_start(); ?>
                         <span class="ov-shift-time"><?= substr($s['start_time'],0,5) ?>–<?= substr($s['end_time'],0,5) ?></span>
                     </div>
                     <?php if ($e): ?>
-                        <div class="ov-tech-name small"><?= ovName($e['name'],$e['surname'],$e['username']) ?></div>
+                        <div class="ov-tech-name small"><?= ovName($e,'label',$e['username']) ?></div>
                         <div class="ov-tech-phone" style="margin-bottom:0;">
                             <?php if ($e['phone']): ?>
                                 <a href="tel:<?= htmlspecialchars($e['phone']) ?>"><?= htmlspecialchars($e['phone']) ?></a>

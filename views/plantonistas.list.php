@@ -237,7 +237,7 @@ output.msg-bad * { color: #000000 !important; }
             <thead><tr><th>Nome</th><th>Usuário</th><th>Telefone</th></tr></thead>
             <tbody id="plt-modal-tbody">
             <?php foreach ($users as $u):
-                $np  = trim($u['name'].' '.$u['surname']);
+                $np  = $u['label'] ?? trim($u['name'].' '.$u['surname']);
                 $lbl = $np !== '' ? $np : $u['username'];
                 $disp = $lbl.($u['phone'] ? ' ('.$u['phone'].')' : '');
             ?>
@@ -390,8 +390,10 @@ while ($day<=$days_in_month) {
     $tt_items      = [];
     $entry_payload = [];
     foreach ($entries as $sid => $e) {
-        $tech_label = trim($e['name'].' '.$e['surname']) ?: $e['username'];
-        $res_label  = $e['userid_reserva'] ? (trim($e['reserva_name'].' '.$e['reserva_surname']) ?: '') : '';
+        // Rótulos vêm prontos do controller (UserLabel): concatenar aqui
+        // duplicaria o nome de quem tem o nome completo no campo surname.
+        $tech_label = $e['label'] ?: $e['username'];
+        $res_label  = $e['userid_reserva'] ? ($e['reserva_label'] ?: '') : '';
 
         $tt_items[] = [
             'shift'     => $sid > 0 ? $e['shift_name'] : null,
@@ -435,7 +437,7 @@ while ($day<=$days_in_month) {
     echo '</div>';
 
     foreach ($entries as $sid => $e) {
-        $tech_label = trim($e['name'].' '.$e['surname']) ?: $e['username'];
+        $tech_label = $e['label'] ?: $e['username'];
         echo '<div class="plt-entry">';
         if ($sid > 0) {
             echo '<div class="plt-shift-label">'.htmlspecialchars($e['shift_name'] ?: 'Turno removido').'</div>';
@@ -447,7 +449,7 @@ while ($day<=$days_in_month) {
             echo '<div class="plt-no-phone">sem telefone</div>';
         }
         if ($e['userid_reserva']) {
-            $res_label = trim($e['reserva_name'].' '.$e['reserva_surname']) ?: '';
+            $res_label = $e['reserva_label'] ?: '';
             echo '<div class="plt-res-label">Reserva</div>';
             echo '<div class="plt-res-name">'.htmlspecialchars($res_label).'</div>';
             if ($e['reserva_phone'])
@@ -613,7 +615,7 @@ document.addEventListener('click', function (ev) {
 var PLT_SHIFT_IDS    = <?= $shift_ids_json ?>;
 var PLT_SHIFT_LABELS = <?= $shift_labels_json ?>;
 var PLT_USERS  = <?= json_encode(array_values(array_map(function($u){
-    $n = trim($u['name'].' '.$u['surname']);
+    $n = $u['label'] ?? trim($u['name'].' '.$u['surname']);
     $l = $n!=='' ? $n : $u['username'];
     return ['userid'=>(int)$u['userid'],'name'=>$l,
             'display'=>$l.($u['phone']?' ('.$u['phone'].')':'')];

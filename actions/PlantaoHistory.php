@@ -6,6 +6,8 @@ use CController, CControllerResponseData, CWebUser;
 
 class PlantaoHistory extends CController {
 
+    use UserLabel;
+
     public function init(): void { $this->disableCsrfValidation(); }
 
     protected function checkInput(): bool {
@@ -70,7 +72,19 @@ class PlantaoHistory extends CController {
             ' ORDER BY h.changed_at DESC' .
             ' LIMIT ' . $per_page . ' OFFSET ' . $offset
         );
-        while ($r = DBfetch($res)) $rows[] = $r;
+        while ($r = DBfetch($res)) {
+            // Rótulos prontos (UserLabel), um por pessoa citada na linha.
+            // Campo *_name nulo = não havia ninguém ali; a view usa isso para
+            // distinguir "sem técnico" de "técnico sem nome cadastrado".
+            foreach (['n', 'o', 'rn', 'ro', 'cb'] as $p) {
+                $r[$p . '_label'] = $this->userLabel(
+                    $r[$p . '_name'] ?? '',
+                    $r[$p . '_surn'] ?? '',
+                    (string) ($r[$p . '_user'] ?? '')
+                );
+            }
+            $rows[] = $r;
+        }
 
         $response = new CControllerResponseData([
             'groups'   => $groups,

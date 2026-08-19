@@ -223,7 +223,7 @@ trait TurnosReportBase {
 
     private function queryShiftAnalysts(ZbxDb $db, int $shiftId): array {
         $sql = "SELECT u.userid, u.username,
-                    CONCAT(COALESCE(u.name,''), ' ', COALESCE(u.surname,'')) AS fullname,
+                    u.name, u.surname,
                     online.last_seen,
                     CASE WHEN online.last_seen IS NOT NULL
                               AND online.last_seen >= " . SqlFn::nowMinusMinutes(15) . "
@@ -236,13 +236,15 @@ trait TurnosReportBase {
                     GROUP BY userid
                 ) online ON online.userid = u.userid
                 WHERE cush.shift_id = ?
-                ORDER BY fullname ASC";
+                ORDER BY COALESCE(NULLIF(TRIM(CONCAT(COALESCE(u.name,''), ' ',
+                         COALESCE(u.surname,''))), ''), u.username) ASC";
 
         try {
             $stmt = $db->prepare($sql);
             $stmt->bind_param('i', $shiftId);
             $stmt->execute();
-            return $stmt->get_result()->fetch_all();
+
+            return $this->withFullName($stmt->get_result()->fetch_all());
         } catch (\Exception $e) {
             return [];
         }
@@ -375,14 +377,14 @@ trait TurnosReportBase {
     // ── Queries ──────────────────────────────────────────────
 
     private function queryMTTA(ZbxDb $db, int $s, int $e, string $hostFilter = ''): array {
-        $sql = "SELECT sub.userid, sub.username, sub.fullname,
+        $sql = "SELECT sub.userid, sub.username, sub.name, sub.surname,
                     COUNT(*) AS total_acks,
                     ROUND(AVG(sub.mtta), 0) AS avg_mtta,
                     MIN(sub.mtta) AS min_mtta,
                     MAX(sub.mtta) AS max_mtta
                 FROM (
                     SELECT a.userid, u.username,
-                        CONCAT(COALESCE(u.name,''), ' ', COALESCE(u.surname,'')) AS fullname,
+                        u.name, u.surname,
                         a.eventid,
                         (a.clock - ev.clock) AS mtta
                     FROM acknowledges a
@@ -402,13 +404,14 @@ trait TurnosReportBase {
                       )
                       $hostFilter
                 ) sub
-                GROUP BY sub.userid, sub.username, sub.fullname
+                GROUP BY sub.userid, sub.username, sub.name, sub.surname
                 ORDER BY avg_mtta ASC";
 
         $stmt = $db->prepare($sql);
         $stmt->bind_param('ii', $s, $e);
         $stmt->execute();
-        return $stmt->get_result()->fetch_all();
+
+        return $this->withFullName($stmt->get_result()->fetch_all());
     }
 
     /**
@@ -880,21 +883,25 @@ trait TurnosReportBase {
             $enabled = $this->enabledUserClause('u');
             $stmt = $db->prepare(
                 "SELECT u.userid, u.username,
-                        CONCAT(COALESCE(u.name,''), ' ', COALESCE(u.surname,'')) AS fullname,
+                        u.name, u.surname,
                         cush.shift_id
                  FROM users u
                  INNER JOIN users_groups ugm ON ugm.userid = u.userid
                  LEFT JOIN module_plantonistas_user_shift cush ON cush.userid = u.userid
                  WHERE ugm.usrgrpid = ?
                    AND $enabled
-                 ORDER BY fullname ASC"
+                 ORDER BY COALESCE(NULLIF(TRIM(CONCAT(COALESCE(u.name,''), ' ',
+                          COALESCE(u.surname,''))), ''), u.username) ASC"
             );
             // (O antigo `if ($stmt === false)` saiu: o ZbxDb::prepare() tem
             // retorno tipado e nunca devolve false — a falha vem por exceção
             // do execute(), que o catch abaixo já trata.)
             $stmt->bind_param('i', $usrgrpid);
             $stmt->execute();
-            return ['error' => null, 'rows' => $stmt->get_result()->fetch_all()];
+            return [
+                'error' => null,
+                'rows'  => $this->withFullName($stmt->get_result()->fetch_all()),
+            ];
         } catch (\Throwable $e) {
             error_log('[plantonistas] listUsersByGroup() falhou (usrgrpid=' . $usrgrpid . '): ' . $e->getMessage());
             return ['error' => $e->getMessage(), 'rows' => []];
@@ -1107,10 +1114,26 @@ trait TurnosReportBase {
     }
 
     /**
-     * Usuários @mencionáveis: mesma regra de visibilidade já usada em
-     * Notas/Presença (grupo compartilhado) + só usuários ativos (mesmo
-     * critério de Telefones/Escala/Gerenciar Turnos).
+     * Acrescenta `fullname` a linhas que trazem name/surname/username.
+     *
+     * As consultas de MTTA, analistas do turno e usuários da equipe passaram a
+     * devolver os campos SEPARADOS em vez de um `CONCAT(name, ' ', surname)`:
+     * concatenar às cegas duplica o nome em cadastro que tem o nome completo
+     * no campo surname ("Rafael Rafael Leao Ereno"), e o SQL não tem como
+     * aplicar a regra de bordas do formatUserLabel(). Com o rótulo montado
+     * aqui, as telas continuam lendo `fullname` sem saber da mudança.
      */
+    private function withFullName(array $rows): array {
+        foreach ($rows as &$r) {
+            $r['fullname'] = $this->formatUserLabel(
+                $r['name'] ?? '', $r['surname'] ?? '', (string) ($r['username'] ?? '')
+            );
+        }
+        unset($r);
+
+        return $rows;
+    }
+
     /**
      * Nome de exibição a partir de users.name/surname, com username de reserva.
      *
@@ -1196,6 +1219,11 @@ trait TurnosReportBase {
         return "$alias.attempt_failed < (SELECT MIN(login_attempts) FROM config)";
     }
 
+    /**
+     * Usuários @mencionáveis: mesma regra de visibilidade já usada em
+     * Notas/Presença (grupo compartilhado) + só usuários ativos (mesmo
+     * critério de Telefones/Escala/Gerenciar Turnos).
+     */
     private function searchMentionableUsers(ZbxDb $db, array $ctx, string $q): array {
         $activeClause = $this->enabledUserClause('u')
             . ' AND ' . $this->notBlockedUserClause('u');
@@ -1404,6 +1432,8 @@ trait TurnosReportBase {
      * derrubar o save da nota por causa de 1 menção ruim.
      */
     private function recordMentions(ZbxDb $db, int $noteId, array $mentionedUserids, int $authorUserid, array $ctx): void {
+        $agora = date('Y-m-d H:i:s');
+
         foreach ($mentionedUserids as $uid) {
             if ($uid === $authorUserid) {
                 continue; // mencionar a si mesmo não gera notificação
@@ -1424,104 +1454,34 @@ trait TurnosReportBase {
                     continue;
                 }
                 $stmt = $db->prepare(
-                    'INSERT INTO module_plantonistas_mentions (note_id, mentioned_userid, created_by)
-                     VALUES (?, ?, ?)'
+                    'INSERT INTO module_plantonistas_mentions
+                        (note_id, mentioned_userid, created_by, created_at)
+                     VALUES (?, ?, ?, ?)'
                 );
-                $stmt->bind_param('iii', $noteId, $uid, $authorUserid);
+                // created_at gerado em PHP, não pelo DEFAULT do banco: o
+                // MariaDB roda em outro host e pode estar em UTC, e o cron de
+                // notificação compara essa coluna com um horário calculado em
+                // PHP (America/Sao_Paulo). Mesma decisão do presence tracker.
+                $stmt->bind_param('iiis', $noteId, $uid, $authorUserid, $agora);
                 $stmt->execute();
             } catch (\Throwable $e) {
                 error_log('[plantonistas] recordMentions() falhou (userid=' . $uid . '): ' . $e->getMessage());
-                continue;   // sem a linha gravada, não faz sentido notificar
             }
-
-            // Notificação pelo media type (issue #6). Fica FORA do try acima de
-            // propósito: a menção já está gravada e o banner da tela já
-            // funciona — o envio é um extra que não pode desfazer nada. O
-            // notifyUser() nunca lança; devolve o motivo de não ter enviado.
-            $this->notifyMention($db, $uid, $authorUserid, $noteId);
-        }
-    }
-
-    /**
-     * URL base do frontend, com barra no fim, para montar link em e-mail.
-     *
-     * Prefere a "URL do frontend" configurada em Administração → Geral (é a
-     * única que sabe o nome público atrás do F5). O acesso é defensivo de
-     * propósito: a constante/método do CSettingsHelper varia entre versões do
-     * Zabbix, e um link errado num e-mail é bem menos grave que um fatal error
-     * no meio do save da nota. Sem ela, cai para o host da requisição atual.
-     */
-    private function frontendUrl(): string {
-        try {
-            if (class_exists('\CSettingsHelper')
-                    && defined('\CSettingsHelper::URL')
-                    && method_exists('\CSettingsHelper', 'getPublic')) {
-                $url = trim((string) \CSettingsHelper::getPublic(\CSettingsHelper::URL));
-                if ($url !== '') {
-                    return rtrim($url, '/') . '/';
-                }
-            }
-        } catch (\Throwable $e) {
-            // segue para o fallback
         }
 
-        // Sem a URL configurada, o link vai RELATIVO — de propósito.
+        // A notificação pelo media type NÃO acontece aqui: a linha gravada
+        // acima É a fila, e quem envia é o scripts/cron_notify_mentions.php.
         //
-        // Reconstruir a partir de $_SERVER['HTTP_HOST'] pareceria mais útil,
-        // mas o Host é controlado por quem faz a requisição: quem escreve a
-        // nota poderia postar com "Host: sitefalso.com" e o colega mencionado
-        // receberia, pelo canal legítimo do Zabbix, um e-mail com link para o
-        // domínio do atacante. Link relativo não clica, mas também não engana.
-        return '';
+        // A primeira versão enviava direto neste ponto, durante o save da
+        // nota. Cada envio abre um socket para o Zabbix server, e uma nota
+        // mencionando várias pessoas com várias mídias virava uma fila de
+        // sockets em série com o analista esperando a tela responder — daí o
+        // teto de 5 envios e os timeouts curtos que existiam, que na prática
+        // significavam parte das notificações não saindo. No cron não há
+        // ninguém esperando: sem teto, sem pressa, e com dedupe.
     }
 
-    /**
-     * Avisa o mencionado pelo media type dele.
-     *
-     * Silencioso quando não há token de API configurado (env
-     * PLANTONISTAS_ALERT_TOKEN) — é o estado normal de quem não ligou o
-     * recurso, e encher o log a cada menção não ajudaria ninguém. Os demais
-     * motivos vão para o log, porque aí há o que investigar.
-     */
-    private function notifyMention(ZbxDb $db, int $uid, int $authorUserid, int $noteId): void {
-        try {
-            $autor = 'um analista';
-            $stmt  = $db->prepare('SELECT username, name, surname FROM users WHERE userid = ?');
-            $stmt->bind_param('i', $authorUserid);
-            $stmt->execute();
-            $a = $stmt->get_result()->fetch_assoc();
-            if ($a !== null) {
-                $autor = $this->formatUserLabel(
-                    $a['name'] ?? '', $a['surname'] ?? '', (string) ($a['username'] ?? '')
-                );
-            }
 
-            $base = $this->frontendUrl();
-            $link = $base . 'zabbix.php?action=plantonistas.report.view';
-
-            $subject = 'Você foi mencionado no Diário de Bordo';
-            $message = $autor . " mencionou você numa nota do Diário de Bordo do Repasse de Plantão.\n\n"
-                     . ($base !== ''
-                        ? "Abra o Repasse para ler: " . $link . "\n\n"
-                        : "Abra o Repasse de Plantão no Zabbix para ler.\n\n")
-                     . "(Mensagem automática do módulo Plantonistas — nota #" . $noteId . ".)";
-
-            $r = ZbxAlertSender::notifyUser($db, $uid, $subject, $message);
-
-            // 'fora-da-janela' é comportamento esperado (a pessoa configurou
-            // horário comercial e são 3h da manhã), não defeito — e
-            // 'token-ausente' é o estado de quem não ligou o recurso. Os
-            // outros motivos têm o que investigar.
-            if ($r['sent'] === 0
-                    && !in_array($r['reason'], ['token-ausente', 'fora-da-janela'], true)) {
-                error_log('[plantonistas] menção não notificada (userid=' . $uid . '): '
-                    . ($r['reason'] ?? 'motivo desconhecido'));
-            }
-        } catch (\Throwable $e) {
-            // Nunca derruba o save da nota — mesma decisão da menção inválida.
-            error_log('[plantonistas] notifyMention() falhou (userid=' . $uid . '): ' . $e->getMessage());
-        }
-    }
 
     /**
      * Menções [user] pendentes (não lidas) para o usuário logado — usado

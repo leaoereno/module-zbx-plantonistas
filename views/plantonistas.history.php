@@ -11,9 +11,10 @@ $page     = $data['page'];
 $per_page = $data['per_page'];
 $pages    = (int) ceil($total / $per_page);
 
-function hName(string $n, string $s, string $u): string {
-    $f = trim($n . ' ' . $s);
-    return $f !== '' ? htmlspecialchars($f) : htmlspecialchars($u);
+// Rótulo já vem montado do controller (UserLabel, que já cai no username
+// quando name e surname estão vazios). Aqui só escapa.
+function hName(string $label): string {
+    return htmlspecialchars($label);
 }
 
 $action_labels = [
@@ -102,13 +103,17 @@ ob_start(); ?>
     <tbody>
     <?php foreach ($rows as $r):
         $al       = $action_labels[$r['action']] ?? ['label'=>$r['action'],'cls'=>''];
-        $tech_old = $r['o_name'] !== null ? hName($r['o_name'],$r['o_surn'],$r['o_user']) : null;
-        $tech_new = $r['n_name'] !== null ? hName($r['n_name'],$r['n_surn'],$r['n_user']) : null;
-        $res_old  = $r['ro_name'] !== null ? hName($r['ro_name'],$r['ro_surn'],$r['ro_user']) : null;
-        $res_new  = $r['rn_name'] !== null ? hName($r['rn_name'],$r['rn_surn'],$r['rn_user']) : null;
+        // "Havia alguém ali?" se decide pela coluna de id da própria tabela
+        // de histórico, não pelo nome vindo do LEFT JOIN: o \DBfetch() do
+        // Zabbix converte NULL na string '0' por padrão, então testar o nome
+        // por `!== null` nunca dá falso — e a célula imprimia "0".
+        $tech_old = (int)($r['userid_old']  ?? 0) > 0 ? hName($r['o_label']  ?? '') : null;
+        $tech_new = (int)($r['userid_new']  ?? 0) > 0 ? hName($r['n_label']  ?? '') : null;
+        $res_old  = (int)($r['reserva_old'] ?? 0) > 0 ? hName($r['ro_label'] ?? '') : null;
+        $res_new  = (int)($r['reserva_new'] ?? 0) > 0 ? hName($r['rn_label'] ?? '') : null;
         $date_fmt = date('d/m/Y', strtotime($r['schedule_date']));
         $when_fmt = date('d/m/Y H:i', (int)$r['changed_at']);
-        $by_name  = hName($r['cb_name']??'',$r['cb_surn']??'',$r['cb_user']??'');
+        $by_name  = hName($r['cb_label'] ?? '');
     ?>
     <tr>
         <td><?= $date_fmt ?></td>
