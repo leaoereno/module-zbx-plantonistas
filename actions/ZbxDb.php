@@ -122,7 +122,18 @@ class ZbxDb {
                 ? 'SELECT lastval() AS id'
                 : 'SELECT LAST_INSERT_ID() AS id';
 
-            $row = \DBfetch(\DBselect($sql), false);
+            // Silenciado: LAST_INSERT_ID() nunca falha, mas lastval() SIM —
+            // "lastval is not yet defined in this session" quando nenhuma
+            // sequence foi usada ainda. Sem a guarda, isso viraria banner
+            // vermelho com SQL na tela, no meio do save de uma nota.
+            $cursor = self::silenced(fn() => \DBselect($sql));
+
+            if ($cursor === false) {
+                error_log('[plantonistas] insert_id indisponível nesta sessão.');
+                return 0;
+            }
+
+            $row = \DBfetch($cursor, false);
 
             return $row ? (int) $row['id'] : 0;
         }

@@ -129,19 +129,19 @@ class Module extends CModule {
             $hasNew = isset($exists[$new]);
 
             if ($hasOld && !$hasNew) {
-                \DBexecute('RENAME TABLE `' . $old . '` TO `' . $new . '`');
+                \DBexecute($this->renameTableSql($old, $new));
                 $exists[$new] = true;
                 unset($exists[$old]);
             }
             elseif ($hasOld && $hasNew) {
-                // Cenário de schema.sql rodado antes da migração: a tabela
-                // nova existe vazia enquanto a antiga tem os dados. Só nesse
-                // caso a nova (vazia) é descartada para o RENAME acontecer.
-                // Tabela com qualquer linha NUNCA é dropada.
-                $newHasRows = (bool) \DBfetch(\DBselect('SELECT 1 AS x FROM `' . $new . '` LIMIT 1'));
+                // Cenário de schema rodado antes da migração: a tabela nova
+                // existe vazia enquanto a antiga tem os dados. Só nesse caso a
+                // nova (vazia) é descartada para o RENAME acontecer. Tabela com
+                // qualquer linha NUNCA é dropada.
+                $newHasRows = (bool) \DBfetch(\DBselect('SELECT 1 AS x FROM ' . $new . ' LIMIT 1'), false);
                 if (!$newHasRows) {
-                    \DBexecute('DROP TABLE `' . $new . '`');
-                    \DBexecute('RENAME TABLE `' . $old . '` TO `' . $new . '`');
+                    \DBexecute('DROP TABLE ' . $new);
+                    \DBexecute($this->renameTableSql($old, $new));
                     unset($exists[$old]);
                 }
                 else {
@@ -179,7 +179,9 @@ class Module extends CModule {
      * leitura da global pelo código.
      */
     private function isPgsql(): bool {
-        return strtolower((string)($GLOBALS['DB']['TYPE'] ?? '')) === 'postgresql';
+        // Delega ao SqlFn para haver UMA implementação: duas cópias da mesma
+        // expressão só divergem quando alguém corrige uma delas.
+        return Actions\SqlFn::isPgsql();
     }
 
     /**
@@ -191,6 +193,127 @@ class Module extends CModule {
      */
     private function schemaFilter(): string {
         return $this->isPgsql() ? 'current_schema()' : 'DATABASE()';
+    }
+
+    /**
+     * `RENAME TABLE a TO b` é MySQL; o padrão é `ALTER TABLE a RENAME TO b`.
+     *
+     * As crases saíram junto: são identificador de MySQL. Como todos os nomes
+     * do módulo são minúsculos e sem caractere especial, não precisam de
+     * aspas em banco nenhum.
+     */
+    private function renameTableSql(string $old, string $new): string {
+        return $this->isPgsql()
+            ? "ALTER TABLE $old RENAME TO $new"
+            : "RENAME TABLE $old TO $new";
+    }
+
+    /**
+     * Adiciona coluna. O `AFTER x` do MySQL não existe no PostgreSQL, que não
+     * ordena colunas — lá a coluna nova vai para o fim, e isso não afeta nada
+     * (o módulo nunca faz `SELECT *` posicional).
+     *
+     * `COMMENT` inline também é MySQL; no PostgreSQL vira statement separado —
+     * e ele É emitido, de propósito. O `Schema.php` já emite `COMMENT ON
+     * COLUMN` numa instalação PG do zero; se a migração não emitisse, dois
+     * ambientes PG acabariam com catálogos diferentes, que é exatamente a
+     * divergência silenciosa que o Schema existe para evitar.
+     *
+     * @return string[] statements a executar em ordem
+     */
+    private function addColumnSql(string $table, string $col, string $tipoMysql,
+                                  string $tipoPgsql, string $after = '',
+                                  string $comment = ''): array {
+        if ($this->isPgsql()) {
+            $stmts = ["ALTER TABLE $table ADD COLUMN $col $tipoPgsql"];
+            if ($comment !== '') {
+                $stmts[] = "COMMENT ON COLUMN $table.$col IS '"
+                    . str_replace("'", "''", $comment) . "'";
+            }
+            return $stmts;
+        }
+
+        $sql = "ALTER TABLE $table ADD COLUMN $col $tipoMysql";
+        if ($comment !== '') {
+            $sql .= " COMMENT '" . str_replace("'", "''", $comment) . "'";
+        }
+        if ($after !== '') {
+            $sql .= " AFTER $after";
+        }
+
+        return [$sql];
+    }
+
+    /** Índice: `ALTER TABLE ... ADD INDEX` é MySQL; o padrão é `CREATE INDEX`. */
+    private function addIndexSql(string $table, string $nome, string $cols): string {
+        return $this->isPgsql()
+            ? "CREATE INDEX IF NOT EXISTS $nome ON $table ($cols)"
+            : "ALTER TABLE $table ADD INDEX $nome ($cols)";
+    }
+
+    /** Remoção de índice. No PostgreSQL o índice é objeto do schema, não da tabela. */
+    private function dropIndexSql(string $table, string $nome): string {
+        return $this->isPgsql()
+            ? "DROP INDEX IF EXISTS $nome"
+            : "ALTER TABLE $table DROP INDEX `$nome`";
+    }
+
+    /** Executa uma lista de statements em ordem. */
+    private function execAll(array $stmts): void {
+        foreach ($stmts as $stmt) {
+            \DBexecute($stmt);
+        }
+    }
+
+    /**
+     * Troca o tipo de uma coluna existente.
+     *
+     * `MODIFY COLUMN nome TIPO NOT NULL` é MySQL — o padrão separa as duas
+     * coisas: `ALTER COLUMN nome TYPE tipo` e `ALTER COLUMN nome SET NOT NULL`.
+     * Por isso o retorno é uma LISTA de statements, não um só.
+     *
+     * @return string[] statements a executar em ordem
+     */
+    private function modifyTypeSql(string $table, string $col, string $tipo,
+                                   bool $notNull = false): array {
+        if (!$this->isPgsql()) {
+            return ["ALTER TABLE $table MODIFY COLUMN $col $tipo" . ($notNull ? ' NOT NULL' : '')];
+        }
+
+        $stmts = ["ALTER TABLE $table ALTER COLUMN $col TYPE $tipo"];
+        if ($notNull) {
+            $stmts[] = "ALTER TABLE $table ALTER COLUMN $col SET NOT NULL";
+        }
+
+        return $stmts;
+    }
+
+    /**
+     * Remove um UNIQUE.
+     *
+     * No PostgreSQL um UNIQUE criado como CONSTRAINT **não sai por DROP
+     * INDEX**: o banco recusa com "cannot drop index ... because constraint
+     * ... requires it". E como `\DBexecute()` não lança (devolve false), o
+     * try/catch do `init()` não pegaria nada — o erro sairia como banner
+     * vermelho do Zabbix, com o SQL inteiro, a CADA carga de página, porque a
+     * migração nunca concluiria.
+     *
+     * Vale para `uniq_group_day`, que é criado pelo próprio módulo via
+     * addUniqueSql(). Os outros três nomes dropados por aqui
+     * (`schedule_date`, `uniq_group_week`, `uk_schedule_date`) são índices
+     * legados do escala v1→v3, que só existem em MySQL.
+     */
+    private function dropUniqueSql(string $table, string $nome): string {
+        return $this->isPgsql()
+            ? "ALTER TABLE $table DROP CONSTRAINT IF EXISTS $nome"
+            : "ALTER TABLE $table DROP INDEX `$nome`";
+    }
+
+    /** UNIQUE: `ADD UNIQUE KEY nome (...)` é MySQL; o padrão é CONSTRAINT. */
+    private function addUniqueSql(string $table, string $nome, string $cols): string {
+        return $this->isPgsql()
+            ? "ALTER TABLE $table ADD CONSTRAINT $nome UNIQUE ($cols)"
+            : "ALTER TABLE $table ADD UNIQUE KEY $nome ($cols)";
     }
 
     private function existingTables(array $names): array {
@@ -271,27 +394,26 @@ class Module extends CModule {
         $t = 'module_plantonistas_schedule';
         if (isset($cols[$t])) {
             if (!isset($cols[$t]['usrgrpid'])) {
-                \DBexecute("ALTER TABLE $t ADD COLUMN usrgrpid BIGINT NOT NULL DEFAULT 0 AFTER scheduleid");
+                $this->execAll($this->addColumnSql($t, 'usrgrpid', 'BIGINT NOT NULL DEFAULT 0', 'BIGINT NOT NULL DEFAULT 0', 'scheduleid'));
             }
             if (!isset($cols[$t]['userid_reserva'])) {
-                \DBexecute("ALTER TABLE $t ADD COLUMN userid_reserva BIGINT NULL AFTER userid");
+                $this->execAll($this->addColumnSql($t, 'userid_reserva', 'BIGINT NULL', 'BIGINT', 'userid'));
             }
             if (!isset($cols[$t]['shift_id'])) {
-                \DBexecute("ALTER TABLE $t ADD COLUMN shift_id BIGINT UNSIGNED NOT NULL DEFAULT 0" .
-                    " COMMENT 'FK -> module_plantonistas_shifts.id; 0 = grupo sem turnos configurados (legado)'" .
-                    " AFTER usrgrpid");
+                $this->execAll($this->addColumnSql($t, 'shift_id', 'BIGINT NOT NULL DEFAULT 0', 'BIGINT NOT NULL DEFAULT 0',
+                    'usrgrpid', 'FK -> module_plantonistas_shifts.id; 0 = grupo sem turnos configurados (legado)'));
             }
             if (!isset($idx[$t]['uniq_group_day']) && !isset($idx[$t]['uniq_group_day_shift'])) {
                 if (isset($idx[$t]['schedule_date'])) {
-                    \DBexecute("ALTER TABLE $t DROP INDEX `schedule_date`");
+                    \DBexecute($this->dropIndexSql($t, 'schedule_date'));
                 }
                 if (isset($idx[$t]['uniq_group_week'])) {
-                    \DBexecute("ALTER TABLE $t DROP INDEX `uniq_group_week`");
+                    \DBexecute($this->dropUniqueSql($t, 'uniq_group_week'));
                 }
-                \DBexecute("ALTER TABLE $t ADD UNIQUE KEY uniq_group_day (usrgrpid, schedule_date)");
+                \DBexecute($this->addUniqueSql($t, 'uniq_group_day', 'usrgrpid, schedule_date'));
             }
             if (isset($idx[$t]['uk_schedule_date'])) {
-                \DBexecute("ALTER TABLE $t DROP INDEX `uk_schedule_date`");
+                \DBexecute($this->dropUniqueSql($t, 'uk_schedule_date'));
             }
 
             // v4.1 — turnos dinâmicos na Escala: shift_id passa a fazer parte
@@ -299,13 +421,13 @@ class Module extends CModule {
             // grupo/dia"; >0 = 1 titular por grupo/dia/turno). ADD antes do
             // DROP para nunca deixar a tabela um instante sem constraint.
             if (!isset($idx[$t]['uniq_group_day_shift'])) {
-                \DBexecute("ALTER TABLE $t ADD UNIQUE KEY uniq_group_day_shift (usrgrpid, schedule_date, shift_id)");
+                \DBexecute($this->addUniqueSql($t, 'uniq_group_day_shift', 'usrgrpid, schedule_date, shift_id'));
             }
             if (isset($idx[$t]['uniq_group_day'])) {
-                \DBexecute("ALTER TABLE $t DROP INDEX `uniq_group_day`");
+                \DBexecute($this->dropUniqueSql($t, 'uniq_group_day'));
             }
             if (!isset($idx[$t]['idx_sched_shift'])) {
-                \DBexecute("ALTER TABLE $t ADD INDEX idx_sched_shift (shift_id)");
+                \DBexecute($this->addIndexSql($t, 'idx_sched_shift', 'shift_id'));
             }
         }
 
@@ -315,13 +437,13 @@ class Module extends CModule {
         $t = 'module_plantonistas_history';
         if (isset($cols[$t])) {
             if (!isset($cols[$t]['shift_id'])) {
-                \DBexecute("ALTER TABLE $t ADD COLUMN shift_id BIGINT UNSIGNED NOT NULL DEFAULT 0 AFTER usrgrpid");
+                $this->execAll($this->addColumnSql($t, 'shift_id', 'BIGINT NOT NULL DEFAULT 0', 'BIGINT NOT NULL DEFAULT 0', 'usrgrpid'));
             }
             if (!isset($cols[$t]['shift_name'])) {
-                \DBexecute("ALTER TABLE $t ADD COLUMN shift_name VARCHAR(50) NOT NULL DEFAULT '' AFTER shift_id");
+                $this->execAll($this->addColumnSql($t, 'shift_name', "VARCHAR(50) NOT NULL DEFAULT ''", "VARCHAR(50) NOT NULL DEFAULT ''", 'shift_id'));
             }
             if (!isset($idx[$t]['idx_hist_shift'])) {
-                \DBexecute("ALTER TABLE $t ADD INDEX idx_hist_shift (shift_id)");
+                \DBexecute($this->addIndexSql($t, 'idx_hist_shift', 'shift_id'));
             }
         }
 
@@ -329,23 +451,24 @@ class Module extends CModule {
         $t = 'module_plantonistas_shift_notes';
         if (isset($cols[$t])) {
             if (!isset($cols[$t]['shift_id'])) {
-                \DBexecute("ALTER TABLE $t ADD COLUMN shift_id BIGINT UNSIGNED DEFAULT NULL" .
-                    " COMMENT 'FK -> module_plantonistas_shifts.id (NULL = turno legado)' AFTER shift_name");
-                \DBexecute("ALTER TABLE $t ADD INDEX idx_csn_shift_id (shift_id)");
+                $this->execAll($this->addColumnSql($t, 'shift_id', 'BIGINT DEFAULT NULL', 'BIGINT',
+                    'shift_name', 'FK -> module_plantonistas_shifts.id (NULL = turno legado)'));
+                \DBexecute($this->addIndexSql($t, 'idx_csn_shift_id', 'shift_id'));
             }
             if (!isset($cols[$t]['noc_context'])) {
-                \DBexecute("ALTER TABLE $t ADD COLUMN noc_context VARCHAR(50) DEFAULT NULL AFTER notes");
-                \DBexecute("ALTER TABLE $t ADD INDEX idx_csn_noc (noc_context)");
+                $this->execAll($this->addColumnSql($t, 'noc_context', 'VARCHAR(50) DEFAULT NULL', 'VARCHAR(50)', 'notes'));
+                \DBexecute($this->addIndexSql($t, 'idx_csn_noc', 'noc_context'));
             }
             if ((int)($cols[$t]['shift_name'] ?? 0) > 0 && (int)$cols[$t]['shift_name'] < 50) {
-                \DBexecute("ALTER TABLE $t MODIFY COLUMN shift_name VARCHAR(50) NOT NULL");
+                $this->execAll($this->modifyTypeSql($t, 'shift_name', 'VARCHAR(50)', true));
             }
             // v4.2 — editor rico + menções: distingue nota antiga (texto puro,
             // precisa de nl2br+htmlspecialchars na exibição) de nota nova
             // (HTML já sanitizado no save, exibida direto).
             if (!isset($cols[$t]['notes_format'])) {
-                \DBexecute("ALTER TABLE $t ADD COLUMN notes_format VARCHAR(10) NOT NULL DEFAULT 'text'" .
-                    " COMMENT 'text = legado (escapado na exibição) | html = editor rico (ja sanitizado)' AFTER notes");
+                $this->execAll($this->addColumnSql($t, 'notes_format',
+                    "VARCHAR(10) NOT NULL DEFAULT 'text'", "VARCHAR(10) NOT NULL DEFAULT 'text'",
+                    'notes', 'text = legado (escapado na exibicao) | html = editor rico (ja sanitizado)'));
             }
         }
 
@@ -362,7 +485,7 @@ class Module extends CModule {
             // `ip` PRECISA vir antes do bloco de noc_context: o ALTER de
             // noc_context usa AFTER ip e falharia numa tabela criada pelo cron.
             if (!isset($cols[$t]['ip'])) {
-                \DBexecute("ALTER TABLE $t ADD COLUMN ip VARCHAR(39) DEFAULT NULL AFTER lastaccess");
+                $this->execAll($this->addColumnSql($t, 'ip', 'VARCHAR(39) DEFAULT NULL', 'VARCHAR(39)', 'lastaccess'));
             }
             // id INT estoura em 2,1 bi de linhas — a tabela é de alta rotação
             // (uma escrita por analista a cada ciclo do cron).
@@ -373,6 +496,9 @@ class Module extends CModule {
                     && str_starts_with((string)($types[$t]['id'] ?? ''), 'int')) {
                 \DBexecute("ALTER TABLE $t MODIFY COLUMN id BIGINT NOT NULL AUTO_INCREMENT");
             }
+            // (Sem par no PostgreSQL de propósito: a coluna `id` lá nasce
+            // BIGSERIAL pelo Schema, e uma instalação PG nunca passou pelo
+            // CREATE TABLE do cron antigo, que é quem deixava `id INT`.)
             // A promoção de `userid` para UNSIGNED saiu: o Schema passou a
             // gerar BIGINT sem unsigned nos dois bancos (o PostgreSQL não tem
             // unsigned, e o ganho de dobrar um teto que essas tabelas nunca vão
@@ -382,8 +508,8 @@ class Module extends CModule {
             // fazer. Coluna já UNSIGNED em produção fica como está — é
             // compatível e converter custaria um rebuild sem ganho nenhum.
             if (!isset($cols[$t]['noc_context'])) {
-                \DBexecute("ALTER TABLE $t ADD COLUMN noc_context VARCHAR(50) DEFAULT NULL AFTER ip");
-                \DBexecute("ALTER TABLE $t ADD INDEX idx_cus_noc_context (noc_context)");
+                $this->execAll($this->addColumnSql($t, 'noc_context', 'VARCHAR(50) DEFAULT NULL', 'VARCHAR(50)', 'ip'));
+                \DBexecute($this->addIndexSql($t, 'idx_cus_noc_context', 'noc_context'));
             }
             // Índices com o nome oficial. Os do cron (idx_userid,
             // idx_lastaccess) ficam onde estão: são redundantes, mas dropar
@@ -394,7 +520,7 @@ class Module extends CModule {
                 'idx_cus_session_start' => 'session_start',
             ] as $name => $col) {
                 if (!isset($idx[$t][$name]) && isset($cols[$t][$col])) {
-                    \DBexecute("ALTER TABLE $t ADD INDEX $name ($col)");
+                    \DBexecute($this->addIndexSql($t, $name, $col));
                 }
             }
         }
@@ -406,8 +532,8 @@ class Module extends CModule {
         $t = 'module_plantonistas_shift_reports';
         if (isset($cols[$t])) {
             if (!isset($cols[$t]['noc_context'])) {
-                \DBexecute("ALTER TABLE $t ADD COLUMN noc_context VARCHAR(50) DEFAULT NULL AFTER shift_name");
-                \DBexecute("ALTER TABLE $t ADD INDEX idx_csr_noc (noc_context)");
+                $this->execAll($this->addColumnSql($t, 'noc_context', 'VARCHAR(50) DEFAULT NULL', 'VARCHAR(50)', 'shift_name'));
+                \DBexecute($this->addIndexSql($t, 'idx_csr_noc', 'noc_context'));
             }
             // A tabela de produção veio do RENAME de custom_shift_reports e,
             // até o "Fechar turno" (issue #2), NUNCA teve uma linha escrita —
@@ -416,9 +542,12 @@ class Module extends CModule {
             // estoura: com sql_mode STRICT o INSERT falha, e sem STRICT
             // trunca em silêncio — aí a leitura devolve "fechamento não
             // encontrado" por JSON inválido, que é o pior dos dois mundos.
+            // Só no MySQL: no PostgreSQL `TEXT` já é ilimitado, então não há
+            // o que promover — a checagem lá casaria com 'text' e a migração
+            // seria um ALTER inútil reescrevendo a tabela.
             $tipo = (string) ($types[$t]['report_json'] ?? '');
-            if ($tipo !== '' && !str_contains($tipo, 'longtext')) {
-                \DBexecute("ALTER TABLE $t MODIFY COLUMN report_json LONGTEXT NOT NULL");
+            if (!$this->isPgsql() && $tipo !== '' && !str_contains($tipo, 'longtext')) {
+                $this->execAll($this->modifyTypeSql($t, 'report_json', 'LONGTEXT', true));
             }
         }
     }

@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS module_plantonistas_schedule (
   CONSTRAINT uniq_group_day_shift UNIQUE (usrgrpid, schedule_date, shift_id)
 );
 CREATE INDEX IF NOT EXISTS idx_sched_shift ON module_plantonistas_schedule (shift_id);
+COMMENT ON TABLE module_plantonistas_schedule IS 'Escala de plantão: 1 titular por grupo/dia, ou por grupo/dia/turno quando há turnos cadastrados';
 COMMENT ON COLUMN module_plantonistas_schedule.usrgrpid IS 'FK -> usrgrp.usrgrpid';
 COMMENT ON COLUMN module_plantonistas_schedule.shift_id IS 'FK -> module_plantonistas_shifts.id; 0 = grupo sem turnos (legado)';
 
@@ -51,6 +52,10 @@ CREATE TABLE IF NOT EXISTS module_plantonistas_history (
   changed_at INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (historyid)
 );
+CREATE INDEX IF NOT EXISTS idx_schedule_date ON module_plantonistas_history (schedule_date);
+CREATE INDEX IF NOT EXISTS idx_usrgrpid ON module_plantonistas_history (usrgrpid);
+CREATE INDEX IF NOT EXISTS idx_hist_shift ON module_plantonistas_history (shift_id);
+COMMENT ON TABLE module_plantonistas_history IS 'Histórico de alterações da escala';
 COMMENT ON COLUMN module_plantonistas_history.shift_name IS 'Snapshot do nome do turno — sobrevive a rename/remoção';
 
 -- ── module_plantonistas_user_sessions ───────────────────────────
@@ -65,6 +70,11 @@ CREATE TABLE IF NOT EXISTS module_plantonistas_user_sessions (
   noc_context VARCHAR(50),
   PRIMARY KEY (id)
 );
+CREATE INDEX IF NOT EXISTS idx_cus_userid ON module_plantonistas_user_sessions (userid);
+CREATE INDEX IF NOT EXISTS idx_cus_lastaccess ON module_plantonistas_user_sessions (lastaccess);
+CREATE INDEX IF NOT EXISTS idx_cus_session_start ON module_plantonistas_user_sessions (session_start);
+CREATE INDEX IF NOT EXISTS idx_cus_noc_context ON module_plantonistas_user_sessions (noc_context);
+COMMENT ON TABLE module_plantonistas_user_sessions IS 'Presença de analistas — populada por scripts/cron_presence_tracker.php';
 
 -- ── module_plantonistas_shift_notes ─────────────────────────────
 CREATE TABLE IF NOT EXISTS module_plantonistas_shift_notes (
@@ -80,6 +90,11 @@ CREATE TABLE IF NOT EXISTS module_plantonistas_shift_notes (
   created_at TIMESTAMP(0) NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id)
 );
+CREATE INDEX IF NOT EXISTS idx_csn_shift ON module_plantonistas_shift_notes (shift_date, shift_name);
+CREATE INDEX IF NOT EXISTS idx_csn_shift_id ON module_plantonistas_shift_notes (shift_id);
+CREATE INDEX IF NOT EXISTS idx_csn_analyst ON module_plantonistas_shift_notes (analyst_userid);
+CREATE INDEX IF NOT EXISTS idx_csn_noc ON module_plantonistas_shift_notes (noc_context);
+COMMENT ON TABLE module_plantonistas_shift_notes IS 'Diário de Bordo — histórico permanente, sem expiração';
 COMMENT ON COLUMN module_plantonistas_shift_notes.notes_format IS 'text = legado (escapado na exibição) | html = editor rico (já sanitizado)';
 
 -- ── module_plantonistas_mentions ────────────────────────────────
@@ -93,6 +108,9 @@ CREATE TABLE IF NOT EXISTS module_plantonistas_mentions (
   read_at TIMESTAMP(0),
   PRIMARY KEY (id)
 );
+CREATE INDEX IF NOT EXISTS idx_mention_user_unread ON module_plantonistas_mentions (mentioned_userid, is_read);
+CREATE INDEX IF NOT EXISTS idx_mention_note ON module_plantonistas_mentions (note_id);
+COMMENT ON TABLE module_plantonistas_mentions IS 'Menções @ do Diário de Bordo';
 
 -- ── module_plantonistas_shift_reports ───────────────────────────
 CREATE TABLE IF NOT EXISTS module_plantonistas_shift_reports (
@@ -105,6 +123,9 @@ CREATE TABLE IF NOT EXISTS module_plantonistas_shift_reports (
   report_json TEXT NOT NULL,
   PRIMARY KEY (id)
 );
+CREATE INDEX IF NOT EXISTS idx_csr_shift ON module_plantonistas_shift_reports (shift_date, shift_name);
+CREATE INDEX IF NOT EXISTS idx_csr_noc ON module_plantonistas_shift_reports (noc_context);
+COMMENT ON TABLE module_plantonistas_shift_reports IS 'Turnos fechados — repasse congelado (issue #2)';
 COMMENT ON COLUMN module_plantonistas_shift_reports.generated_by IS 'FK -> users.userid';
 COMMENT ON COLUMN module_plantonistas_shift_reports.report_json IS 'Snapshot JSON do relatório no fechamento do turno';
 
@@ -122,6 +143,9 @@ CREATE TABLE IF NOT EXISTS module_plantonistas_shifts (
   PRIMARY KEY (id),
   CONSTRAINT uq_cs_group_name UNIQUE (usrgrpid, name)
 );
+CREATE INDEX IF NOT EXISTS idx_cs_usrgrp ON module_plantonistas_shifts (usrgrpid);
+CREATE INDEX IF NOT EXISTS idx_cs_active ON module_plantonistas_shifts (active);
+COMMENT ON TABLE module_plantonistas_shifts IS 'Turnos configuráveis por equipe';
 COMMENT ON COLUMN module_plantonistas_shifts.usrgrpid IS 'FK -> usrgrp.usrgrpid (equipe dona do turno)';
 COMMENT ON COLUMN module_plantonistas_shifts.name IS 'Ex: Diurno, Turno 1';
 COMMENT ON COLUMN module_plantonistas_shifts.end_time IS 'Se <= start_time, o turno vira o dia (madrugada)';
@@ -134,4 +158,5 @@ CREATE TABLE IF NOT EXISTS module_plantonistas_user_shift (
   PRIMARY KEY (userid)
 );
 CREATE INDEX IF NOT EXISTS idx_cush_shift ON module_plantonistas_user_shift (shift_id);
+COMMENT ON TABLE module_plantonistas_user_shift IS 'Vínculo analista -> turno (1 turno por analista)';
 

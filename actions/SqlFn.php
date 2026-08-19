@@ -88,13 +88,15 @@ class SqlFn {
     /**
      * Minutos entre dois instantes.
      *
-     * O `EXTRACT(EPOCH FROM ...)` do PostgreSQL devolve segundos com fração —
-     * daí o `FLOOR`, para bater com o `TIMESTAMPDIFF(MINUTE, ...)` do MySQL,
-     * que trunca.
+     * O `EXTRACT(EPOCH FROM ...)` do PostgreSQL devolve segundos com fração.
+     * `TRUNC` e não `FLOOR`: o `TIMESTAMPDIFF(MINUTE, ...)` do MySQL trunca em
+     * direção a zero, enquanto o FLOOR arredonda para baixo — os dois só
+     * divergem com diferença negativa, que o único chamador de hoje não
+     * produz, mas TRUNC é a tradução exata e custa a mesma palavra.
      */
     public static function minutesBetween(string $inicio, string $fim): string {
         return self::isPgsql()
-            ? "FLOOR(EXTRACT(EPOCH FROM ($fim - $inicio)) / 60)"
+            ? "TRUNC(EXTRACT(EPOCH FROM ($fim - $inicio)) / 60)"
             : "TIMESTAMPDIFF(MINUTE, $inicio, $fim)";
     }
 
@@ -105,8 +107,26 @@ class SqlFn {
      */
     public static function nowMinusMinutes(int $minutos): string {
         return self::isPgsql()
-            ? "(NOW() - INTERVAL '$minutos minutes')"
+            ? "(" . self::now() . " - INTERVAL '$minutos minutes')"
             : "(NOW() - INTERVAL $minutos MINUTE)";
+    }
+
+    /**
+     * "Agora" para gravar em coluna de data/hora, ou comparar com uma.
+     *
+     * `NOW()` do MySQL devolve `DATETIME` — hora de parede, sem fuso — e as
+     * colunas do módulo são desse tipo nos dois bancos (`TIMESTAMP(0)` sem
+     * fuso no PG, ver Schema.php). Mas o `now()` do PostgreSQL devolve
+     * `timestamptz`, e converter para `timestamp` usa o `TimeZone` **da
+     * sessão**, que ninguém configura no frontend do Zabbix: com o servidor em
+     * UTC e o cron gravando em America/Sao_Paulo, o "online nos últimos 15
+     * minutos" erraria por 3 horas e a nota nasceria com carimbo adiantado.
+     *
+     * `LOCALTIMESTAMP` é a tradução literal: hora local do servidor, sem fuso.
+     * É o quarto lugar deste módulo em que fuso ia morder.
+     */
+    public static function now(): string {
+        return self::isPgsql() ? 'LOCALTIMESTAMP' : 'NOW()';
     }
 
     /**
