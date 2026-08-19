@@ -79,6 +79,7 @@ class TurnosReportView extends CController {
                 'presence' => [], 'notes' => [], 'mtta_timeline' => [],
                 'sev_dist' => [], 'calendar' => [], 'shift_analysts' => [], 'limit' => $limitStr,
                 'pending_mentions' => [],
+                'mention_history'  => [],
             ];
             $closed_report = null;
         } else {
@@ -116,6 +117,10 @@ class TurnosReportView extends CController {
                 // antes de fechar a conexão, some da tela quando o usuário
                 // marca como lida (ver plantonistas.report.mentions.read).
                 'pending_mentions' => $this->queryPendingMentions($db, $current_userid),
+                // Histórico: pendentes E lidas. O banner é notificação e some
+                // quando a pessoa marca como lida; sem o histórico, achar de
+                // novo a nota de ontem não tinha por onde.
+                'mention_history'  => $this->queryMentionHistory($db, $current_userid),
             ];
             // Fechamento do turno (issue #2): só o metadado, para a tela saber
             // que existe e por quem. O documento em si é renderizado pelo PDF,

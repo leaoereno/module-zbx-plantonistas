@@ -13,6 +13,11 @@
     --rp-text: #333333;
     --rp-text-muted: #888888;
     --rp-radius: 8px;
+    /* Superfície um tom abaixo do card, para barra e painel auxiliar.
+       Nasceu como `var(--rp-bg-soft, #fafafa)` sem nunca ter sido definida:
+       o fallback valia sempre, e no tema escuro o painel virava uma caixa
+       branca com texto branco. */
+    --rp-bg-soft: #fafafa;
 
     /* Cores de severidade = Administração > Geral > Opções de exibição de
        acionadores (config.severity_color_0..5). Fixo por enquanto — TODO
@@ -805,6 +810,7 @@ body[class*="dark"] .rp-native-container {
     --sev-warn-bg: rgba(116, 153, 255, 0.2);
     --sev-info-bg: rgba(0, 255, 255, 0.2);
     --sev-notclass-bg: rgba(151, 170, 179, 0.2);
+    --rp-bg-soft: #22303f;
 }
 
 [data-theme="dark-theme"] .rp-card,
@@ -1392,6 +1398,78 @@ a.rp-mention-link:hover {
     color: #c62828;
 }
 
+/* ── Histórico de menções (pendentes e lidas) ─────────────── */
+/* Painel neutro de propósito: o banner laranja é notificação, isto aqui é
+   consulta. Se os dois tivessem a mesma cor, a pendência deixaria de saltar. */
+.rp-mention-history {
+    margin-bottom: 14px;
+    border: 1px solid var(--rp-border, #e0e0e0);
+    border-radius: 6px;
+    background: var(--rp-bg-soft);
+    overflow: hidden;
+}
+
+/* `hidden` perde para o `display` explícito das regras de layout — mesma
+   armadilha da barra de seleção em massa de Gerenciar Turnos. */
+.rp-mention-history[hidden] { display: none; }
+
+.rp-mh-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 14px;
+    font-size: 12px;
+    font-weight: 700;
+    border-bottom: 1px solid var(--rp-border, #e0e0e0);
+}
+
+.rp-mh-head .rp-muted { flex: 1; font-weight: 400; }
+
+.rp-mh-close {
+    background: none;
+    border: none;
+    font-size: 18px;
+    line-height: 1;
+    cursor: pointer;
+    color: var(--rp-text-muted, #888);
+    padding: 0 4px;
+}
+
+.rp-mh-close:hover { color: #c62828; }
+
+/* Teto de altura para o painel não empurrar o relatório inteiro para baixo
+   quando há 100 menções. */
+.rp-mh-list {
+    max-height: 320px;
+    overflow-y: auto;
+}
+
+.rp-mh-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 7px 14px;
+    font-size: 12px;
+    border-top: 1px solid var(--rp-border, #eee);
+}
+
+.rp-mh-item:first-child { border-top: none; }
+
+.rp-mh-txt { flex: 1; }
+
+/* Bolinha = lida/não lida. Cor sozinha não basta para quem não distingue
+   cores, por isso o `title` no HTML diz qual é qual. */
+.rp-mh-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex: 0 0 auto;
+    background: var(--rp-border, #ccc);
+}
+
+.rp-mh-unread { font-weight: 600; }
+.rp-mh-unread .rp-mh-dot { background: #e65100; }
+
 [data-theme="dark-theme"] .rp-editor,
 .theme-dark-blue .rp-editor,
 body[class*="dark"] .rp-editor,
@@ -1443,7 +1521,7 @@ body[class*="dark"] .rp-mention-opt:hover {
     margin-bottom: 12px;
     border: 1px solid var(--rp-border, #e0e0e0);
     border-radius: 6px;
-    background: var(--rp-bg-soft, #fafafa);
+    background: var(--rp-bg-soft);
 }
 /* O atributo `hidden` do HTML vale `display:none` na folha do navegador, mas
    perde para o `display:flex` da regra acima (mesma especificidade, e a nossa

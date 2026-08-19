@@ -1508,15 +1508,64 @@ trait TurnosReportBase {
     }
 
     /**
+     * Histórico de menções do usuário logado — pendentes E já lidas.
+     *
+     * O banner mostra só as pendentes, porque é notificação. Quem foi
+     * mencionado às 3h, dispensou o banner e no dia seguinte quer achar a
+     * nota de novo não tinha por onde: a menção lida sumia sem deixar rastro
+     * na tela. É esta consulta que sustenta o "ver todas".
+     *
+     * Teto de 100 e sem paginação de propósito: menção não é caixa de
+     * entrada, é rastro. Quem precisa de mais que as últimas 100 está
+     * procurando a NOTA, e para isso existe a navegação por data do Repasse.
+     */
+    private function queryMentionHistory(ZbxDb $db, int $userid): array {
+        try {
+            $stmt = $db->prepare(
+                "SELECT m.id, m.note_id, m.is_read,
+                        n.shift_date, n.shift_id, n.shift_name, n.analyst_name,
+                        " . SqlFn::dateTimeBr('m.created_at') . " AS created_at,
+                        " . SqlFn::dateTimeBr('m.read_at')    . " AS read_at
+                 FROM module_plantonistas_mentions m
+                 INNER JOIN module_plantonistas_shift_notes n ON n.id = m.note_id
+                 WHERE m.mentioned_userid = ?
+                 -- ORDER BY QUALIFICADO (m.created_at, não `created_at`): o
+                 -- alias de saída é a string já formatada em d/m/Y, e os dois
+                 -- bancos preferem o alias — ordenar por ele daria resultado
+                 -- cronologicamente errado. Mesma armadilha de queryNotes().
+                 ORDER BY m.created_at DESC
+                 LIMIT 100"
+            );
+            $stmt->bind_param('i', $userid);
+            $stmt->execute();
+
+            return $stmt->get_result()->fetch_all();
+        } catch (\Throwable $e) {
+            error_log('[plantonistas] queryMentionHistory() falhou: ' . $e->getMessage());
+
+            // Vazio, não exceção: o histórico é acessório. Se ele falhar, o
+            // relatório inteiro continua na tela — mesma regra do turno na
+            // tabela de Presença.
+            return [];
+        }
+    }
+
+    /**
      * Marca 1 menção como lida — sempre escopada ao próprio usuário
      * (WHERE mentioned_userid = $userid), então não dá pra marcar como
      * lida a notificação de outra pessoa trocando o id no request.
      */
     private function markMentionRead(ZbxDb $db, int $mentionId, int $userid): bool {
         try {
+            // A interpolação estava dentro de aspas SIMPLES: o SQL saía com o
+            // texto literal `" . SqlFn::now() . "`, que o MySQL lê como string
+            // (read_at virava data zerada, ou erro em sql_mode STRICT) e o
+            // PostgreSQL lê como NOME DE COLUNA — erro, exceção engolida pelo
+            // catch, e a menção nunca era marcada como lida: o banner voltava
+            // a cada carga da página, sem nada no log dizendo por quê.
             $stmt = $db->prepare(
                 'UPDATE module_plantonistas_mentions
-                 SET is_read = 1, read_at = " . SqlFn::now() . "
+                 SET is_read = 1, read_at = ' . SqlFn::now() . '
                  WHERE id = ? AND mentioned_userid = ?'
             );
             $stmt->bind_param('ii', $mentionId, $userid);
@@ -1646,6 +1695,57 @@ trait TurnosReportBase {
         $leitor = array_map('intval', $ctx['group_ids'] ?? []);
 
         return $autor !== [] && array_diff($autor, $leitor) === [];
+    }
+
+    /**
+     * Tenta pegar a trava do fechamento de (data, turno). Sem espera.
+     *
+     * Existe porque conferir "já foi fechado?" e gravar são dois passos: dois
+     * usuários clicando ao mesmo tempo passavam ambos pela checagem e gravavam
+     * dois documentos, driblando a regra de que refechar exige Admin+.
+     *
+     * Não dá para resolver com `SELECT ... FOR UPDATE` — o porquê está no
+     * SqlFn::tryLock(): o PostgreSQL não tem gap lock, então travar uma faixa
+     * vazia não impede o INSERT de outra transação.
+     *
+     * Devolve false quando outra pessoa está com a trava; devolve true também
+     * quando a consulta falha, de propósito: a trava é proteção contra uma
+     * corrida rara, e derrubar o fechamento porque o `GET_LOCK` não respondeu
+     * seria trocar um problema raro por um problema toda vez.
+     */
+    private function acquireCloseLock(ZbxDb $db, string $date, string $shift): bool {
+        try {
+            $res = $db->query(SqlFn::tryLock('close:' . $date . ':' . $shift));
+            $row = $res ? $res->fetch_assoc() : null;
+
+            // NULL no MySQL = erro no GET_LOCK (não é "negada", que é 0).
+            if ($row === null || ($row['travou'] ?? null) === null) {
+                error_log('[plantonistas] acquireCloseLock(): banco não respondeu à trava');
+                return true;
+            }
+
+            return (int) $row['travou'] === 1;
+        } catch (\Throwable $e) {
+            error_log('[plantonistas] acquireCloseLock() falhou: ' . $e->getMessage());
+            return true;
+        }
+    }
+
+    /**
+     * Devolve a trava do fechamento.
+     *
+     * Precisa ser chamado inclusive no caminho de erro. No MySQL a trava é da
+     * CONEXÃO, e a do Zabbix não é persistente hoje — ela cairia sozinha no
+     * fim do request. Mas isso é detalhe de configuração, não garantia: ligar
+     * conexão persistente no PHP-FPM deixaria a trava pendurada no worker,
+     * bloqueando o próximo fechamento daquele turno até o processo reciclar.
+     */
+    private function releaseCloseLock(ZbxDb $db, string $date, string $shift): void {
+        try {
+            $db->query(SqlFn::releaseLock('close:' . $date . ':' . $shift));
+        } catch (\Throwable $e) {
+            error_log('[plantonistas] releaseCloseLock() falhou: ' . $e->getMessage());
+        }
     }
 
     /**
