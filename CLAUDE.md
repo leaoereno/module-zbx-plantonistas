@@ -1016,10 +1016,10 @@ erro passaria no teste para explodir em produção, onde RHEL entrega 8.0/8.1 co
 facilidade. Virou método (`snapshotVersion()`). **Regra: nada de `const` em
 trait neste módulo enquanto o piso for PHP 8.0.**
 
-Limitação conhecida: dois usuários fechando ao mesmo tempo passam ambos pela
-checagem e gravam dois documentos, driblando o "refechar exige Admin+". O
-append-only torna o estrago barato; fechar de verdade exigiria `SELECT ... FOR
-UPDATE`.
+~~Limitação conhecida: dois usuários fechando ao mesmo tempo passam ambos pela
+checagem e gravam dois documentos.~~ **Fechada em 2026-08-19** — por trava
+consultiva, e NÃO por `SELECT ... FOR UPDATE`, que não funcionaria no
+PostgreSQL. Ver "Fechar turno: a corrida fechada por advisory lock".
 
 ### Menção notifica pelo media type do usuário (2026-08-19, issue #6)
 
@@ -1343,6 +1343,177 @@ Duas armadilhas do PDO que o adaptador precisou compensar:
 O que **falta**: homologar. Nada disso foi executado contra um PostgreSQL de
 verdade.
 
+### Fechar turno: a corrida fechada por advisory lock (2026-08-19)
+
+Conferir "já foi fechado?" e gravar eram dois passos. Dois usuários clicando ao
+mesmo tempo passavam ambos pela checagem e gravavam dois documentos, driblando
+o "refechar exige Admin+".
+
+**`SELECT ... FOR UPDATE` não resolve.** No MySQL resolveria, pelo gap lock do
+InnoDB, que bloqueia INSERT numa faixa lida mesmo vazia. O **PostgreSQL não tem
+gap lock**: um SELECT sem linhas não trava nada, e as duas transações passariam.
+Escrever `FOR UPDATE` daria a impressão de resolvido e continuaria quebrado num
+dos dois bancos.
+
+A saída foi trava consultiva em `SqlFn::tryLock()`/`releaseLock()` —
+`GET_LOCK(nome, 0)` no MySQL, `pg_try_advisory_lock(chave)` no PostgreSQL —
+**sem espera**: quem não pega recebe "outra pessoa está fechando agora" em vez
+de ficar com a requisição pendurada segurando um worker do PHP-FPM.
+
+Detalhes que a implementação exigiu:
+
+- **`pg_try_advisory_lock` devolve booleano**, que chega como `t`/`f`, e
+  `(int)'t'` é 0 — a trava obtida seria lida como negada. Por isso o ramo PG vai
+  embrulhado em `CASE WHEN ... THEN 1 ELSE 0 END`. É a mesma armadilha do
+  `cron_sync_oncall`, agora num lugar novo.
+- **`GET_LOCK` devolve NULL em erro**, que é diferente de 0 (negada). Falha ao
+  travar deixa o fechamento seguir: a trava protege de uma corrida rara, e
+  derrubar o fechamento porque o banco não respondeu ao `GET_LOCK` trocaria um
+  problema raro por um problema toda vez.
+- **`die()` não executa `finally`.** O `TurnosReportClose` tinha `echo ...;
+  die()` em cada caminho de saída; com a trava, todo caminho de erro deixaria
+  ela pendurada. A action passou a montar `$resposta` numa variável e a ter um
+  único `echo` no fim, com `finally` liberando a trava.
+- **Recusa esperada virou exceção própria** (`actions/CloseBusy.php`). Sem essa
+  distinção, ou a mensagem do `RuntimeException` do `ZbxDb` — que carrega o SQL
+  inteiro — iria para a tela, ou toda recusa viraria o genérico "confira o log",
+  que não diz nada a quem clicou.
+- A trava do MySQL é da **conexão**. A do Zabbix não é persistente hoje, mas
+  liberar explicitamente é o contrato: ligar conexão persistente no PHP-FPM
+  deixaria a trava presa no worker.
+
+Limitação que continua: `countClosedReports()` roda sem filtro de visibilidade
+(de propósito — com filtro, um User refecharia só porque não enxerga o
+fechamento anterior).
+
+### Salvar Escala e Telefones sem perder o que foi digitado (2026-08-19)
+
+Os forms de POST nativo caíam na página "Acesso negado" do Zabbix quando o token
+CSRF expirava — e o conteúdo digitado ia junto. Nesta tela não é raro: a aba
+fica aberta o turno inteiro e o token deriva do `secret` da sessão.
+
+Agora o envio é por `fetch` (`pltPost()` / `phnPost()`), e a página não sai do
+lugar: em caso de recusa aparece um aviso e tudo continua preenchido.
+
+**Como distinguir sucesso de recusa sem mudar o PHP**: as actions respondem
+**redirect** nos dois desfechos normais (salvou / erro de validação), então
+`r.redirected` é verdadeiro. A recusa por CSRF não redireciona — devolve HTML.
+
+Dois pontos registrados no código:
+
+- **Custo aceito**: com `redirect: 'follow'` o fetch baixa a página de destino
+  e a descarta, e o `location.href` seguinte a baixa de novo — dois renders por
+  salvamento. `redirect: 'manual'` evitaria, mas devolve resposta opaca, sem a
+  URL — e é nela que viajam as mensagens (vão por argumento de URL, não por
+  sessão). Resolver de vez exige as actions responderem JSON em request AJAX.
+- **O "remover" precisa de `alert`**: ele parte de uma célula do calendário, e o
+  `#plt-post-hint` fica dentro do formulário lá embaixo, fora da viewport. Sem
+  o alert a falha seria invisível — a página não muda e o clique parece não ter
+  efeito.
+
+Os dois **imports** continuam com `form.submit()` nativo: ali o que se perde é a
+seleção do arquivo, não texto digitado.
+
+### Histórico de menções, e um SQL que nunca funcionou (2026-08-19)
+
+O banner mostra só menção pendente, porque é notificação. Quem foi mencionado às
+3h, dispensou o banner e no dia seguinte quis achar a nota não tinha por onde.
+Agora o botão `@` do cabeçalho abre um painel com pendentes E lidas (teto de
+100, sem paginação: menção é rastro, não caixa de entrada — quem precisa de mais
+está procurando a NOTA, e para isso existe a navegação por data).
+
+**Bug achado no caminho, e ele era sério**: o `markMentionRead()` tinha a
+interpolação do `SqlFn::now()` dentro de aspas **simples**, então o SQL saía com
+o texto literal `" . SqlFn::now() . "`. No MySQL isso é uma string (data zerada,
+ou erro em `sql_mode` STRICT); no PostgreSQL é **nome de coluna** — erro,
+exceção engolida pelo `catch`, e a menção nunca era marcada como lida: o banner
+voltava a cada carga da página sem nada no log. Varredura feita no módulo
+inteiro; era o único caso.
+
+Duas decisões de UI que valem a regra geral:
+
+- A condição do botão é **idêntica** à do painel. `queryMentionHistory()`
+  devolve `[]` quando falha (histórico é acessório, não derruba o relatório), e
+  um botão preso a `pending_mentions` continuaria na tela sem nada para abrir.
+- O `ORDER BY` é **qualificado** (`m.created_at`): o alias de saída é a string
+  já formatada em `d/m/Y`, e os dois bancos preferem o alias — ordenar por ele
+  daria resultado cronologicamente errado. Mesma armadilha de `queryNotes()`.
+
+### Imagem e anexo: proibido explicitamente, não "indefinido" (2026-08-19)
+
+Decisão: o Diário de Bordo é texto formatado + menções, sem anexo. Antes o
+comportamento era *indefinido*, não proibido — colar um print inseria um
+`<img src="data:image/png;base64,...">` de centenas de KB no `contenteditable`,
+a pessoa via a imagem, salvava, e a sanitização do servidor descartava a tag
+(`img` não está na allowlist). A nota voltava sem a imagem, sem mensagem, com
+cara de bug.
+
+**A parte que quase deu errado**: a primeira versão bloqueava quando havia
+qualquer item `image/*` no clipboard. Só que copiar um trecho de planilha —
+Excel, Google Sheets, tabela do próprio Zabbix — coloca `text/plain`,
+`text/html` **e** um bitmap `image/png` ao mesmo tempo. Isso teria descartado a
+colagem de TEXTO, que é o uso mais comum num repasse de NOC. A regra correta é:
+**se veio representação de texto junto, não é anexo**.
+
+### CSV da Escala aprendeu turnos (2026-08-19)
+
+Era decisão consciente que o import/export ignorasse turnos; com a escala por
+turno em uso, virou defeito. A coluna **Turno** entra como 3ª no arquivo, sempre
+(vazia em grupo sem turno), e o import lê pelo nome do turno.
+
+- **Arquivo antigo (7 colunas) continua importando.** O `detectColumns()` casa
+  por igualdade EXATA do cabeçalho, então `dia da semana` não vira `dia` e
+  `telefone reserva` não vira `reserva`. Sem coluna Turno → modo legado, com
+  aviso no resultado dizendo quantas linhas caíram sem turno num grupo que tem
+  turnos cadastrados.
+- **O `shift_id` entra no WHERE do upsert.** A unique key é
+  `(usrgrpid, schedule_date, shift_id)`; sem ele, importar o turno da tarde
+  sobrescreveria o da manhã do mesmo dia.
+- **Turno desativado não some do arquivo.** O export lista os turnos ativos, mas
+  varre também os `shift_id` que sobraram no dia e os emite como
+  `Nome (inativo)`. Sem isso, uma escala apontando para turno desativado
+  existiria no banco, apareceria no calendário e sumiria no round-trip.
+- **Linha sem plantonista é contada, não silenciada.** No arquivo exportado ela
+  é buraco de cobertura (normal); numa planilha preenchida à mão é esquecimento
+  — e "30 linhas importadas" esconderia as 3 que ficaram de fora.
+- `logHistory()` do import passou a gravar `shift_id`/`shift_name` (snapshot do
+  nome, sobrevive a rename/remoção depois).
+
+### Visual unificado no tema do Zabbix (2026-08-19)
+
+A família escala era escura fixa (`#2b2b2b`, `#f2f2f2` à mão em ~40 lugares); a
+repasse, clara com detecção de tema escuro por JS. Quem usava o Zabbix no tema
+claro via metade do menu Plantão escura.
+
+`views/_theme.php` passou a ser a fonte única: emite a paleta `--plt-*` (claro
+no `:root`, escuro em `.plt-dark`) e a detecção de tema, e é incluído pelas seis
+views. Os valores do tema escuro são os originais da família escala — quem já
+usava o Zabbix no escuro não vê diferença.
+
+A detecção lê a **luminância do fundo já renderizado**, não o nome do arquivo de
+tema: o Zabbix referencia arquivos de tema alternativos no HTML mesmo com outro
+tema ativo, e procurar "dark-theme" no href dava falso positivo. A técnica já
+existia na família repasse — estava era **triplicada** (report, shifts e uma
+variação). Agora é uma só, e as duas famílias decidem "claro ou escuro" pelo
+MESMO critério; heurísticas parecidas divergiriam num tema customizado e o menu
+voltaria a ficar metade e metade.
+
+**`--rp-bg-soft` nunca existiu.** Duas regras da família repasse usavam
+`var(--rp-bg-soft, #fafafa)` sem a variável estar definida em lugar nenhum: o
+fallback valia sempre, e no tema escuro o painel virava uma caixa branca com
+texto branco (contraste 1.19:1). Definida nos dois blocos agora.
+
+**Contraste conferido regra a regra no tema claro**, que é o padrão do Zabbix e
+onde o risco estava. Três combinações reprovavam AA e foram corrigidas: aba de
+grupo inativa (2.91:1), badge "não cadastrado" (1.89:1 — justamente a
+informação que a tela existe para destacar) e `--plt-text-faint`, que a 2.24:1
+carregava conteúdo real ("sem telefone", "Nenhum histórico registrado", o "—"
+das células), não enfeite.
+
+Regra daqui em diante: **cor nova entra no `_theme.php`**, nunca em hex dentro
+da view. E `var(--x, fallback)` sem a variável definida é bug silencioso —
+declarar a variável é o que garante que o tema escuro a sobrescreva.
+
 ### Backlog conhecido
 
 - ~~Salvar vínculo analista→turno em massa~~ — **resolvido em 2026-08-19**:
@@ -1357,10 +1528,11 @@ verdade.
   raiz, que foi onde procurei.)
 - Chart.js estático vs F5 (embutir inline se os gráficos falharem em produção).
 - Limpeza opcional de `role_rule` órfãs dos módulos antigos (SQL no README).
-- Unificação visual das duas famílias (escala dark × repasse claro) — só com demanda.
-- CSV import/export da Escala não sabe de turnos (grava/lê sempre shift_id=0,
-  modo legado) — decisão consciente do Rafael, ver seção "Turnos dinâmicos".
-  Se precisar, adicionar coluna Turno nos dois sentidos depois.
+- ~~Unificação visual das duas famílias~~ — **resolvido em 2026-08-19**: as
+  duas seguem o tema do Zabbix, paleta única em `views/_theme.php`.
+- ~~CSV import/export da Escala não sabe de turnos~~ — **resolvido em
+  2026-08-19**: coluna Turno nos dois sentidos, arquivo antigo continua
+  importando em modo legado com aviso.
 - Diário de Bordo sem expiração — avaliar TTL/arquivamento se a tabela crescer muito.
 - ~~Conexão mysqli própria (`getDb()`) reconectando a cada request~~ —
   **resolvido em 2026-08-19** pelo `ZbxDb` (ver "Fim da conexão mysqli
@@ -1384,9 +1556,14 @@ verdade.
 - ~~Notificação de menção síncrona dentro do save da nota~~ e ~~sem dedupe~~ —
   **resolvidos em 2026-08-19** pela fila (`scripts/cron_notify_mentions.php`);
   ver "Menção: o envio virou fila por cron".
-- Editor rico do Diário de Bordo: sem suporte a colar imagem/anexo (só texto
-  formatado + menções). Sem histórico de menções lidas (só as pendentes
-  aparecem — decisão consciente, ver seção acima).
+- Editor rico do Diário de Bordo: imagem e anexo **não são suportados por
+  decisão** e agora são bloqueados explicitamente, com aviso. ~~Sem histórico
+  de menções lidas~~ — resolvido em 2026-08-19 (painel no Repasse).
+- Salvamento de Escala/Telefones renderiza a página de destino duas vezes
+  (fetch segue o redirect e o `location.href` repete). Some quando as actions
+  responderem JSON em request AJAX. Ver "Salvar Escala e Telefones".
+- Os dois imports (Escala e Telefones) ainda usam `form.submit()` nativo: com
+  token expirado caem na página "Acesso negado" e a seleção do arquivo se perde.
 
 ---
 
