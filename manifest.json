@@ -2,7 +2,7 @@
     "manifest_version": 2,
     "id": "plantonistas",
     "name": "Plantonistas",
-    "version": "4.0.0",
+    "version": "4.1.0",
     "author": "Rafael M. A. Leão Ereno - MALE",
     "url": "https://github.com/leaoereno/module-zbx-plantonistas",
     "description": "Gestão completa de plantonistas: escala mensal por grupo de usuários, telefones, histórico, relatório de repasse de plantão NOC e turnos configuráveis por equipe. Unifica os antigos módulos Escala de Plantão (fork de pandradee/zabbix-escala-de-plantao) e Relatório Repasse de Plantão (fork de JohnnyIver/zabbix-report-module).",
