@@ -62,20 +62,16 @@ class PhonesSave extends CController {
             DBexecute('DELETE FROM module_plantonistas_phones WHERE userid = ' . $userid);
             $redirect->setArgument('success', 'Telefone removido.');
         } else {
-            $exists = DBfetch(DBselect(
-                'SELECT userid FROM module_plantonistas_phones WHERE userid = ' . $userid
-            ));
-            if ($exists) {
-                DBexecute(
-                    'UPDATE module_plantonistas_phones SET phone = ' . zbx_dbstr($phone) .
-                    ' WHERE userid = ' . $userid
-                );
-            } else {
-                DBexecute(
-                    'INSERT INTO module_plantonistas_phones (userid, phone)' .
-                    ' VALUES (' . $userid . ', ' . zbx_dbstr($phone) . ')'
-                );
-            }
+            // Upsert numa ida ao banco, em vez do SELECT-then-UPDATE-or-INSERT
+            // que estava aqui: entre o SELECT e o INSERT havia uma janela em
+            // que outra requisição podia inserir a mesma linha, e o segundo
+            // INSERT estouraria a PK. É a mesma forma que o PhonesImport já
+            // usava; agora as duas telas gravam telefone do mesmo jeito.
+            DBexecute(
+                'INSERT INTO module_plantonistas_phones (userid, phone)' .
+                ' VALUES (' . $userid . ', ' . zbx_dbstr($phone) . ')' .
+                SqlFn::upsert('userid', ['phone'])
+            );
             $redirect->setArgument('success', 'Telefone atualizado.');
         }
 

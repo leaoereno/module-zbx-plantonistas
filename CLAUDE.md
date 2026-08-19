@@ -1242,13 +1242,14 @@ verdade.
   modo legado) — decisão consciente do Rafael, ver seção "Turnos dinâmicos".
   Se precisar, adicionar coluna Turno nos dois sentidos depois.
 - Diário de Bordo sem expiração — avaliar TTL/arquivamento se a tabela crescer muito.
-- Conexão mysqli própria (`getDb()`) reconectando a cada request na família
-  repasse (~10 arquivos) em vez de reusar `$GLOBALS['DB']` nativo do Zabbix.
+- ~~Conexão mysqli própria (`getDb()`) reconectando a cada request~~ —
+  **resolvido em 2026-08-19** pelo `ZbxDb` (ver "Fim da conexão mysqli
+  própria").
 - `getUserRoleType()`/`resolveUserContext()` duplicados entre `TurnosReportBase`
   e `TurnosNotesGet`/`TurnosNotesSave` (cada um com sua própria cópia).
-- `PhonesSave` faz SELECT-then-UPDATE-or-INSERT em vez de
-  `INSERT ... ON DUPLICATE KEY UPDATE` (pequena janela de corrida) — o
-  `PhonesImport` novo já usa a forma certa, dá pra copiar de lá.
+- ~~`PhonesSave` faz SELECT-then-UPDATE-or-INSERT (janela de corrida)~~ —
+  **resolvido em 2026-08-19**: virou upsert via `SqlFn::upsert()`, a mesma
+  forma do `PhonesImport`.
 - `readCsv()` duplicado entre `PlantaoImport` e `PhonesImport` (~20 linhas,
   detecção de separador e BOM). Extrair pra trait se aparecer um terceiro.
 - Importação de telefones aceita só CSV; o leitor de XLSX existe, mas está
