@@ -97,6 +97,10 @@ a.phn-export-btn {
 </div>
 
 <script>
+// Token CSRF da action de importação (o form é montado no JS, então não dá
+// para colocar o hidden direto no HTML como no form de salvar).
+const PHN_CSRF_IMPORT = <?= json_encode($data['csrf_import'] ?? '') ?>;
+
 function phnOpenImport() {
     document.getElementById('phn-import-bg').style.display = 'block';
     document.getElementById('phn-import-modal').style.display = 'block';
@@ -136,6 +140,7 @@ function phnSubmitImport() {
         };
         add('import_file_b64',  e.target.result.split(',')[1]);
         add('import_file_name', f.name);
+        add('_csrf_token',      PHN_CSRF_IMPORT);
         document.body.appendChild(form);
         form.submit();
     };
@@ -222,6 +227,7 @@ function phnSubmitImport() {
         </td>
         <td>
             <form method="post" action="zabbix.php?action=plantonistas.phones.save" class="phn-form">
+                <input type="hidden" name="_csrf_token" value="<?= htmlspecialchars($data['csrf_save'] ?? '') ?>">
                 <input type="hidden" name="userid" value="<?= (int)$u['userid'] ?>">
                 <input type="text" name="phone" id="phn-inp-<?= (int)$u['userid'] ?>"
                        value="<?= htmlspecialchars($u['phone_fmt']) ?>"

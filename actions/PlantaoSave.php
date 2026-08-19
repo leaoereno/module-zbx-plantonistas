@@ -20,8 +20,6 @@ use CController, CControllerResponseRedirect, CUrl, CWebUser;
  */
 class PlantaoSave extends CController {
 
-    public function init(): void { $this->disableCsrfValidation(); }
-
     protected function checkInput(): bool {
         return $this->validateInput([
             'schedule_dates'    => 'required|string',

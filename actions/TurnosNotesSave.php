@@ -25,10 +25,6 @@ class TurnosNotesSave extends CController {
 
     use TurnosReportBase;
 
-    protected function init(): void {
-        $this->disableCsrfValidation();
-    }
-
     protected function checkInput(): bool {
         // 'shift' aceita os códigos legados OU o ID numérico de um turno
         // cadastrado em module_plantonistas_shifts (v2.5+).

@@ -6,8 +6,6 @@ use CController, CControllerResponseRedirect, CUrl, CWebUser;
 
 class PlantaoImport extends CController {
 
-    public function init(): void { $this->disableCsrfValidation(); }
-
     protected function checkInput(): bool { return true; }
 
     public function checkPermissions(): bool {

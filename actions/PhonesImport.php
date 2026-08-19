@@ -34,8 +34,6 @@ class PhonesImport extends CController {
     /** Mínimo de dígitos — cobre ramal curto (4) sem aceitar lixo de 1-2 dígitos. */
     private const MIN_DIGITS = 4;
 
-    public function init(): void { $this->disableCsrfValidation(); }
-
     protected function checkInput(): bool { return true; }
 
     public function checkPermissions(): bool {

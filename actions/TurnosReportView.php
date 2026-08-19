@@ -142,6 +142,10 @@ class TurnosReportView extends CController {
             'is_superadmin'     => $ctx['is_superadmin'],
             'role_type'         => $roleType,
             'can_manage_shifts' => $roleType >= 2,
+            // Token CSRF por action (em módulo o Zabbix confere contra a
+            // action completa, não contra o prefixo — ver CLAUDE.md).
+            'csrf_notes_save'    => \CCsrfTokenHelper::get('plantonistas.report.notes.save'),
+            'csrf_mentions_read' => \CCsrfTokenHelper::get('plantonistas.report.mentions.read'),
         ];
 
         $response = new CControllerResponseData($data);

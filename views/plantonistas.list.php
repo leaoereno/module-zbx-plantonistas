@@ -453,16 +453,25 @@ while ($day<=$days_in_month) {
             if ($e['reserva_phone'])
                 echo '<div class="plt-res-phone">'.htmlspecialchars($e['reserva_phone']).'</div>';
         }
-        $del = 'zabbix.php?action=plantonistas.delete&scheduleid='.(int)$e['scheduleid']
-             .'&month='.$month.'&year='.$year.'&usrgrpid='.$usrgrpid;
         $is_today_entry = ($ds === $today_str);
         if ($is_today_entry) {
             echo '<span class="plt-del" style="color:#666;cursor:not-allowed;" '
                . 'title="Não é possível remover o plantão do dia atual">remover</span>';
         } else {
-            echo '<a class="plt-del" href="'.$del.'" tabindex="-1"'
-               .' onclick="event.stopPropagation();return confirm(\'Remover plantão de '
-               .addslashes(htmlspecialchars($tech_label)).' deste dia?\')"'
+            // Remover é POST, não link GET. Dois motivos: a validação CSRF do
+            // Zabbix só roda em POST (em GET ela sempre falha), e um link GET
+            // que apaga dado é justamente o que uma página maliciosa consegue
+            // disparar de fora. O submit real sai do form oculto plt-del-form.
+            //
+            // Nome vai em data-label, não interpolado num onclick: com
+            // ENT_QUOTES (default do PHP 8.1+) o htmlspecialchars() já
+            // transforma a aspa simples em &#039;, o addslashes() seguinte não
+            // vê mais nada para escapar, e o navegador decodifica a entidade ao
+            // parsear o atributo — um "Sant'Ana" quebrava o JS do onclick e
+            // deixava o botão inerte. Em atributo de dado a entidade é inócua.
+            echo '<a class="plt-del" href="#" tabindex="-1"'
+               .' data-schedid="'.(int)$e['scheduleid'].'"'
+               .' data-label="'.htmlspecialchars($tech_label, ENT_QUOTES).'"'
                .'>remover</a>';
         }
         echo '</div>'; // /plt-entry
@@ -489,8 +498,20 @@ echo '</tr>';
         <button type="button" class="plt-sel-clear" id="plt-sel-clear"
                 onclick="pltClearSelection()" style="display:none">Limpar seleção</button>
     </div>
+    <!-- Form oculto do "remover": POST em vez do antigo link GET (ver o
+         comentário no botão remover, acima). -->
+    <form method="post" action="zabbix.php?action=plantonistas.delete" id="plt-del-form"
+          style="display:none">
+        <input type="hidden" name="_csrf_token" value="<?= htmlspecialchars($data['csrf_delete'] ?? '') ?>">
+        <input type="hidden" name="month"    value="<?=$month?>">
+        <input type="hidden" name="year"     value="<?=$year?>">
+        <input type="hidden" name="usrgrpid" value="<?=$usrgrpid?>">
+        <input type="hidden" name="scheduleid" id="plt-del-id" value="">
+    </form>
+
     <form method="post" action="zabbix.php?action=plantonistas.save" id="plt-form"
           onsubmit="return pltValidate()">
+        <input type="hidden" name="_csrf_token" value="<?= htmlspecialchars($data['csrf_save'] ?? '') ?>">
         <input type="hidden" name="month"        value="<?=$month?>">
         <input type="hidden" name="year"         value="<?=$year?>">
         <input type="hidden" name="usrgrpid"     value="<?=$usrgrpid?>">
@@ -561,6 +582,34 @@ echo '</tr>';
 var selDays        = new Set();
 var pltCtx          = 'main';
 var PLT_HAS_SHIFTS  = <?= $has_shifts ? 'true' : 'false' ?>;
+// Token CSRF da importação — o form dela é montado no JS, então não dá para
+// deixar o hidden pronto no HTML como nos forms de salvar e remover.
+var PLT_CSRF_IMPORT = <?= json_encode($data['csrf_import'] ?? '') ?>;
+
+// Remover plantão: preenche e envia o form oculto plt-del-form (POST com
+// token). Antes era um link GET, que a validação CSRF do Zabbix nunca
+// aceitaria — e que qualquer página externa conseguia disparar.
+var pltDeleting = false;
+function pltDelete(scheduleid, label) {
+    if (pltDeleting) return;   // duplo clique enviaria dois POSTs, e o segundo
+                               // volta "Entrada não encontrada" logo depois de
+                               // uma remoção que deu certo
+    if (!confirm('Remover plantão de ' + label + ' deste dia?')) return;
+    pltDeleting = true;
+    document.getElementById('plt-del-id').value = scheduleid;
+    document.getElementById('plt-del-form').submit();
+}
+
+// Listener na fase de CAPTURA: o link de remover fica dentro de um <td> com
+// onclick="pltToggleDay(this)", e handler inline roda no bubbling. Na captura
+// este roda antes e consegue impedir que o clique também selecione o dia.
+document.addEventListener('click', function (ev) {
+    var a = ev.target.closest ? ev.target.closest('.plt-del[data-schedid]') : null;
+    if (!a) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    pltDelete(a.dataset.schedid, a.dataset.label || '');
+}, true);
 var PLT_SHIFT_IDS    = <?= $shift_ids_json ?>;
 var PLT_SHIFT_LABELS = <?= $shift_labels_json ?>;
 var PLT_USERS  = <?= json_encode(array_values(array_map(function($u){
@@ -828,6 +877,7 @@ function pltSubmitImport() {
         };
         addField('import_file_b64',  b64);
         addField('import_file_name', f.name);
+        addField('_csrf_token',      PLT_CSRF_IMPORT);
         document.body.appendChild(form);
         form.submit();
     };

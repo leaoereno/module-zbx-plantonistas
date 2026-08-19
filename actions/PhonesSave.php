@@ -9,10 +9,6 @@ use CController,
 
 class PhonesSave extends CController {
 
-    public function init(): void {
-        $this->disableCsrfValidation();
-    }
-
     protected function checkInput(): bool {
         $fields = [
             'userid' => 'required|string',
