@@ -67,8 +67,9 @@ Actions de redirect da escala (`plantonistas.save/delete/import/export`,
 `plantonistas.report.notes.get` é action morta (sem caller) mantida por segurança.
 
 Cron: `scripts/cron_presence_tracker.php` popula `module_plantonistas_user_sessions`
-a cada 5 min. Token via env `ZABBIX_API_TOKEN` (nunca versionar). Crontab
-aponta pro caminho do módulo — mudou na unificação.
+a cada 5 min, lendo tudo direto do banco (env `DB_*`, obrigatórias em CLI).
+Não usa mais a API do Zabbix nem token — ver "Cron de presença sem API".
+Crontab aponta pro caminho do módulo — mudou na unificação.
 
 ### Modelo de permissões por perfil
 
@@ -386,14 +387,80 @@ por `sed` de `module-zbx-repasse-plantao` → `module-zbx-plantonistas`, o que
 preserva credenciais sem redigitar e mantém o truque do `; sleep 150; php ...`
 (roda a cada 2,5 min em vez de 5). As env `DB_*` no arquivo de cron são
 **obrigatórias**: em CLI não existe `$GLOBALS['DB']`, e sem elas o script cai
-no default `localhost`. `ZABBIX_URL` de produção é o endpoint do
-`nessus.claroempresas.com.br:22443/services/zabbix/api/v1/api_jsonrpc.php`,
-não a URL do frontend. Tracker deve rodar em **um** frontend só (grava no
-banco compartilhado; nos dois duplica escrita e consumo da API).
+no default `localhost`. Tracker deve rodar em **um** frontend só (grava no
+banco compartilhado; nos dois duplica escrita).
 
-Gap ainda aberto: `install.sh` escreve a linha do cron sem nenhuma env, então
-o cron que ele gera nunca autentica (`CRITICAL: ZABBIX_API_TOKEN não
-configurado`) nem acha o banco. Ver Backlog.
+Na época, `ZABBIX_URL`/`ZABBIX_API_TOKEN` também eram obrigatórias — a de
+produção apontava pro endpoint `nessus.claroempresas.com.br:22443/services/
+zabbix/api/v1/api_jsonrpc.php`, não pra URL do frontend. As duas deixaram de
+existir na v5 (seção abaixo); podem sair do `/etc/cron.d/` e o token pode ser
+revogado no Zabbix.
+
+### Cron de presença sem API do Zabbix (2026-08-19, issue #4)
+
+O script autenticava por `Authorization: Bearer <token>` com
+`CURLOPT_SSL_VERIFYPEER`/`VERIFYHOST` em `false` — credencial viajando por
+canal não verificado. E a API **nunca foi necessária**: a presença de verdade
+sempre veio de leitura direta da tabela `sessions`; a API só buscava
+`username`/`name`/`surname`/`usrgrps`, que estão em `users`/`usrgrp`/
+`users_groups`, no mesmo banco em que o script já estava conectado.
+
+Agora são três consultas locais, e a ordem foi **invertida de propósito**:
+primeiro as sessões ativas, depois os dados só dos userids encontrados. Antes
+puxava a base inteira de usuários da API para indexar em memória e descartar
+quase tudo.
+
+- **Usuário habilitado** usa a mesma cláusula do resto do módulo (nenhum grupo
+  com `users_status=1` + `roleid` preenchido), não o `filter gui_access` que a
+  chamada de API usava. Sessão de usuário desabilitado é ignorada, como antes.
+- **`noc_context` virou query própria**, não JOIN — regra do módulo: se o dado
+  acessório falhar, a presença continua sendo gravada (WARN no log, contexto
+  nulo). O descarte de grupo de sistema passou a ser por flag
+  (`users_status`/`gui_access`), que funciona em instalação traduzida; a lista
+  de nomes em inglês ficou só como reserva para o caso do grupo `Guests`.
+- Falha ao gravar **uma** linha não derruba mais a execução inteira (`continue`
+  com WARN), mesma decisão já tomada para menção inválida no Diário de Bordo.
+
+**O `CREATE TABLE IF NOT EXISTS` do cron foi removido.** Ele divergia do DDL
+oficial (`id INT` contra `BIGINT UNSIGNED`, `name VARCHAR(255)` contra `128`,
+sem a coluna `ip`, índices `idx_userid`/`idx_lastaccess` contra `idx_cus_*`).
+Onde o cron rodou antes do primeiro request com o módulo habilitado,
+`existingTables()` via a tabela como pronta e **nunca a corrigia** — e o
+`ALTER ... ADD COLUMN noc_context ... AFTER ip` do `migrateColumns()` falhava,
+porque `ip` não existia. Provisionamento agora vive só no `Module.php`; sem a
+tabela, o cron encerra dizendo para habilitar o módulo uma vez.
+
+`migrateColumns()` conserta o que o cron antigo criou: adiciona `ip` **antes**
+do bloco de `noc_context`, promove `id INT` → `BIGINT UNSIGNED`, `userid` para
+unsigned, e cria os índices `idx_cus_*` que faltam. Duas decisões conscientes:
+os índices antigos do cron **não** são dropados (redundantes, mas dropar índice
+em tabela grande trava escrita) e `name VARCHAR(255)` **não** é reduzido para
+128 (encurtar coluna trunca dado em silêncio; 255 acomoda 128).
+
+Para detectar `id INT` foi preciso trazer `COLUMN_TYPE` no SELECT de
+`INFORMATION_SCHEMA.COLUMNS` — `CHARACTER_MAXIMUM_LENGTH` é NULL em coluna
+numérica e não distingue INT de BIGINT.
+
+**Três defeitos antigos corrigidos na mesma passada** (achados na revisão):
+
+- **Fuso do PHP × fuso do banco.** `session_start`/`lastaccess` sempre foram
+  gerados por `date()` em `America/Sao_Paulo`, mas o `DATE(session_start) =
+  CURDATE()` e o `DATE_SUB(NOW(), INTERVAL 7 DAY)` eram avaliados no fuso do
+  MariaDB, que roda em outro host. Com o banco em UTC, das 21h em diante o
+  `CURDATE()` já é amanhã: a linha gravada às 21h05 nunca casava e o script
+  inseria uma sessão nova **a cada ciclo**, duplicando presença justamente no
+  turno da noite. Agora os dois valores são calculados em PHP e vão como
+  parâmetro. É o mesmo bug de fuso do heatmap do Repasse, em outro lugar —
+  vale procurar por `CURDATE()`/`NOW()` antes de assumir que não há mais.
+- **Nome em branco para conta de serviço.** `buildFullName()` devolvia `''`
+  quando `name` e `surname` estavam os dois vazios, e a view imprime o campo
+  cru. Ganhou o `$username` como reserva, igual ao `formatUserLabel()` do
+  trait (o comentário já dizia que espelhava; agora espelha de verdade).
+- **Nome longo descartava a linha.** `users.name` e `users.surname` são
+  VARCHAR(100) cada; o concatenado chega a 201, contra o VARCHAR(128) da
+  tabela de presença. Com `sql_mode` STRICT o INSERT lançava "Data too long"
+  e aquele analista simplesmente não era registrado. Agora trunca em 128, como
+  o `noc_context` já fazia em 50.
 
 ### Nome duplicado no rastreador de presença (2026-08-17)
 
@@ -696,14 +763,142 @@ Upload via base64 em campo hidden, mesmo padrão do import da Escala (a rota do
 Zabbix nessa action não trata multipart). Como as outras actions de redirect do
 módulo, `phones.import` não tem `"view"` no manifest — responde redirect.
 
+### CSRF ligado nas actions de escrita (2026-08-19, issue #3)
+
+Todas as 21 actions chamavam `disableCsrfValidation()`. Nas 10 que escrevem no
+banco isso deixava qualquer página aberta por um Admin logado disparar
+`plantonistas.delete` ou apagar um turno sem clique consciente.
+
+**A regra que decide tudo**: `CController::checkCsrfToken()` começa com
+`if (!isRequestMethod('post')) return false;` — em GET a validação não é
+dispensada, ela **falha**. Então `disableCsrfValidation()` continua obrigatório
+em toda action alcançável por GET (as 11 de leitura, incluindo os exports em
+CSV e o PDF); tirar de lá derruba a tela na hora.
+
+**Em módulo o token é por action COMPLETA.** O `checkCsrfToken()` tem um ramo
+só para classes em `Modules\`: confere contra `$this->action` inteiro. O core
+agrupa pelo primeiro segmento (o token `host` serve para `host.edit`,
+`host.delete`…) — aqui não: `plantonistas.save` e `plantonistas.delete` têm
+tokens diferentes. Cada view recebe um token por action que ela chama.
+
+Onde o token entra, por tela:
+
+| Tela | Como |
+|---|---|
+| Escala | hidden nos forms de salvar e de remover; `PLT_CSRF_IMPORT` no form de import montado em JS |
+| Telefones | hidden no form de salvar; `PHN_CSRF_IMPORT` no form de import |
+| Gerenciar Turnos | mapa `CSRF_TOKENS[action]` dentro do helper `post()` — um ponto só para as 3 actions |
+| Repasse | `CSRF_NOTES_SAVE` no fetch da nota; `CSRF_MENTIONS_READ` no fetch e no `sendBeacon` (que envia `URLSearchParams` como form-urlencoded, então o token chega no `$_POST` igual) |
+
+**"Remover" da Escala deixou de ser link GET.** Era
+`<a href="zabbix.php?action=plantonistas.delete&scheduleid=N">` — com CSRF
+ligado nunca passaria, e um link GET que apaga dado é exatamente o vetor da
+issue. Virou submit de um form oculto (`plt-del-form`), com o id preenchido por
+`pltDelete()`. Consequência aceita: URL de remoção salva em favorito passa a
+responder "Acesso negado".
+
+Dois defeitos corrigidos junto, nesse mesmo botão:
+
+- **Nome com apóstrofo quebrava o `onclick`.** O rótulo era interpolado como
+  `addslashes(htmlspecialchars($label))` dentro do atributo. Do PHP 8.1 em
+  diante `htmlspecialchars()` usa `ENT_QUOTES` por padrão, então a aspa já
+  virou `&#039;` e o `addslashes()` não acha mais nada para escapar — o
+  navegador decodifica a entidade ao parsear o atributo e o JS recebe
+  `pltDelete(1,'Sant'Ana')`, sintaxe inválida. O handler era descartado
+  inteiro: o clique não removia, não fazia `stopPropagation` e ainda
+  selecionava o dia. Agora o nome vai em `data-label` e o clique é tratado por
+  um listener **na fase de captura** — precisa ser captura porque o `<td>` tem
+  `onclick` inline, que roda no bubbling e selecionaria o dia antes.
+- Duplo clique disparava dois POSTs, e o segundo respondia "Entrada não
+  encontrada" logo depois de uma remoção bem-sucedida. Guarda `pltDeleting`.
+
+**Modo de falha novo, que vale conhecer antes de debugar**: token inválido
+lança `CAccessDeniedException` e o Zabbix responde a página **HTML** "Acesso
+negado" — inclusive para action AJAX com `layout.javascript`, que cai no
+`default` do `ZBase::denyPageAccess()`. Sem tratamento, o `r.json()` do fetch
+estoura erro de parse e o usuário vê "erro de conexão". Por isso o `post()` de
+Turnos e o fetch da nota checam `content-type` antes e devolvem uma mensagem
+dizendo para recarregar a página. **Nada disso vai para log nenhum** — não há
+`error_log` nesse caminho do Zabbix. E a causa mais provável no dia a dia não é
+ataque: é a aba deixada aberta o turno inteiro, com a sessão expirada, porque o
+token deriva do `secret` da sessão.
+
+Os forms de POST nativo (salvar escala, salvar telefone, os dois imports) não
+têm como exibir mensagem amigável — caem na página "Acesso negado" do Zabbix e
+o conteúdo digitado se perde. Aceito por ora; a alternativa seria converter
+esses saves em AJAX.
+
+### Fim da conexão mysqli própria — ZbxDb (2026-08-19, issue #1 passo 1)
+
+A família repasse abria uma conexão **mysqli própria a cada request**
+(`getDb()`, lendo credencial de `$GLOBALS['DB']`), paralela à do Zabbix. Isso
+custava uma conexão por request e deixava metade do módulo fora da única
+camada do Zabbix que é agnóstica de banco — o que trava o PostgreSQL.
+
+**Escolha de rota**: em vez de reescrever as ~50 consultas à mão (50 chances de
+esquecer um `zbx_dbstr()` e criar SQL injection), entrou um adaptador fino em
+`actions/ZbxDb.php` + `ZbxDbStmt.php` + `ZbxDbResult.php`. Ele implementa a
+fatia da API do mysqli que o módulo usa — `prepare`/`query`/`close`/`error`/
+`insert_id`, `bind_param`/`execute`/`get_result`, `fetch_all`/`fetch_assoc`/
+`fetch_row` — por cima de `\DBselect`/`\DBexecute`/`\DBfetch`. Nenhuma consulta
+foi reescrita; só o `getDb()` e os type hints `\mysqli $db` → `ZbxDb $db`.
+
+O escape ficou num lugar só (`ZbxDbStmt::escape()`), com o valor entrando pelo
+tipo declarado no `bind_param` — `i` vira cast int, `s` vai por `\zbx_dbstr()`,
+`null` vira `NULL` literal. O parser de `?` respeita literal entre aspas
+(inclusive `''` e escape com barra), porque `str_replace` trocaria o caractere
+errado numa consulta futura que tivesse `?` dentro de string.
+
+Autoload confirmado no fonte do Zabbix 7.0: `CAutoloader` resolve
+`Modules\Plantonistas\Actions\ZbxDb` para `actions/ZbxDb.php` na pasta do
+módulo. Classe auxiliar **não** precisa estar no manifest — é o mesmo caminho
+que já carrega os traits `TurnosReportBase` e `PhonesFormat`.
+
+**Três diferenças de comportamento que o adaptador teve que compensar** — e que
+valem para qualquer código novo aqui:
+
+- **`\DBselect`/`\DBexecute` não lançam**, devolvem `false`. Todo o módulo foi
+  escrito contra `MYSQLI_REPORT_STRICT`, com try/catch em volta das consultas.
+  Por isso o adaptador **lança `\RuntimeException`** quando a camada devolve
+  false: sem isso, consulta quebrada voltaria a virar array vazio em silêncio,
+  que é o defeito que já custou o diagnóstico de "grupos não listam usuários".
+- **`\DBfetch()` converte NULL na string `'0'`** por padrão (`$convertNulls`).
+  As três leituras passam `false`. Nenhum ponto quebraria hoje, mas o primeiro
+  `=== null` ou `?? 'text'` escrito depois quebraria sem avisar.
+- **`prepare()` não valida mais a consulta no servidor** — só monta a string. O
+  mysqli validava e lançava ali; agora o erro nasce no `execute()`. Isso já
+  tinha deixado o fallback de schema do `TurnosNotesSave` inalcançável (o
+  `execute()` estava fora do try) — corrigido movendo o `execute()` para dentro
+  de cada ramo. Regra: `prepare`, `bind_param` e `execute` ficam **juntos** no
+  mesmo try.
+
+**Erro de consulta ia virar banner vermelho na tela, com o SQL inteiro.** O
+`trigger_error` do `DBselect` é capturado pelo `zbx_err_handler` do frontend e
+vira mensagem na página. `ZbxDb::silenced()` troca o handler durante a chamada
+e restaura depois — o erro continua chegando como exceção e como
+`error_log('[plantonistas] …')`, mas não polui a tela do dado principal nem
+expõe SQL na UI.
+
+**Ganho colateral**: o `getDb()` antigo chamava
+`mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT)`, configuração
+**global do processo**, que passava a valer também para a conexão nativa do
+Zabbix no resto do request. Isso acabou.
+
+O que **não** mudou: o SQL continua MySQL-only (`DATE_FORMAT`,
+`FROM_UNIXTIME`, `IF()`, `TIMESTAMPDIFF`, `INTERVAL`, `ON DUPLICATE KEY
+UPDATE`, e o `LAST_INSERT_ID()` do `insert_id`). O adaptador tira o bloqueio da
+conexão paralela, não o do dialeto — esse é o passo 3 da issue #1.
+
 ### Backlog conhecido
 
 - Salvar vínculo analista→turno em massa (hoje é um clique por analista) —
   ganhou urgência: a coluna Turno da Presença mostra "Sem turno" pra quase
   todo mundo enquanto os vínculos não forem cadastrados.
-- `install.sh` gera `/etc/cron.d/plantonistas-presence` sem as env
-  `ZABBIX_API_TOKEN`/`ZABBIX_URL`/`DB_*` — o cron criado por ele não roda.
-  Passar a perguntar e escrever no arquivo (com `chmod 600`, é credencial).
+- `install.sh` gerava `/etc/cron.d/plantonistas-presence` sem env nenhuma — o
+  cron criado por ele não rodava. **O arquivo não existe mais no repo** (só as
+  menções na doc sobreviveram). Se voltar, precisa perguntar e escrever as
+  `DB_*` no arquivo, com `chmod 600` — é credencial. As env de API saíram de
+  cena com a issue #4.
 - Chart.js estático vs F5 (embutir inline se os gráficos falharem em produção).
 - Limpeza opcional de `role_rule` órfãs dos módulos antigos (SQL no README).
 - Unificação visual das duas famílias (escala dark × repasse claro) — só com demanda.
@@ -758,10 +953,17 @@ módulo, `phones.import` não tem `"view"` no manifest — responde redirect.
   registrar no manifest e, se página, no menu do Module.php.
 - Prefixo CSS por tela (`plt-`, `rp-`, `ov-`, `phn-`) — não misturar famílias.
 - Texto de UI e mensagens em PT-BR; logs com prefixo `[plantonistas]`.
+- Action nova que **escreve** no banco: nada de `disableCsrfValidation()`; o
+  caller tem que ser POST e mandar `_csrf_token` gerado com
+  `\CCsrfTokenHelper::get('<action completa>')`. Action alcançável por **GET**
+  (página, filtro, export, PDF) mantém `disableCsrfValidation()` — em GET a
+  validação falha, não é dispensada.
 - Nunca engolir exceção de DB em silêncio: `error_log` + UI distinguindo
-  "vazio de verdade" de "consulta falhou". Na família repasse o `prepare()`
-  também tem que estar **dentro** do try — `getDb()` liga
-  `MYSQLI_REPORT_STRICT` e ele lança exceção antes do `execute()`.
+  "vazio de verdade" de "consulta falhou". Na família repasse, `prepare()`,
+  `bind_param()` e `execute()` ficam **juntos dentro** do try — quem lança
+  agora é o `execute()` (ver "Fim da conexão mysqli própria").
+- Consulta nova na família repasse passa pelo `ZbxDb` (`$db->prepare(...)` com
+  `?` + `bind_param`), nunca por conexão própria nem por SQL interpolado à mão.
 - Informação acessória (turno, rótulo, enfeite) não entra por JOIN na query
   do dado principal: se a tabela do enfeite não existir naquele ambiente, o
   dado principal desaparece inteiro. Query separada + fallback na UI.

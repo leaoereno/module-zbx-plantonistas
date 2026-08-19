@@ -1,0 +1,242 @@
+# ROADMAP — module-zbx-plantonistas
+
+Plano de atuação sobre as 6 issues abertas no GitHub. Base: v4.0.0.
+Escrito em 2026-08-19.
+
+---
+
+## Visão geral
+
+| # | Issue | Tipo | Esforço | Fase |
+|---|---|---|---|---|
+| [#1](https://github.com/leaoereno/module-zbx-plantonistas/issues/1) | Suporte a PostgreSQL (v5.0) | Portabilidade | G | 1 e 3 |
+| ~~[#3](https://github.com/leaoereno/module-zbx-plantonistas/issues/3)~~ | ~~CSRF desativado nas actions de escrita~~ — **feito** (2026-08-19) | Segurança | M | 2 |
+| ~~[#4](https://github.com/leaoereno/module-zbx-plantonistas/issues/4)~~ | ~~Cron de presença: eliminar a API do Zabbix~~ — **feito** (2026-08-19) | Segurança + dívida | M | 2 |
+| [#5](https://github.com/leaoereno/module-zbx-plantonistas/issues/5) | Sincronizar escala com escalonamento do Zabbix | Funcionalidade | M/G | 4 |
+| [#2](https://github.com/leaoereno/module-zbx-plantonistas/issues/2) | "Fechar turno" (`shift_reports` é tabela morta) | Funcionalidade | M/G | 5 |
+| [#6](https://github.com/leaoereno/module-zbx-plantonistas/issues/6) | Menção só notifica dentro da tela do Repasse | Funcionalidade | M | 5 |
+
+### Por que essa ordem
+
+A issue #1 não é uma issue só — o **passo 1 dela (sair do `mysqli`, usar
+`DBselect()`/`DBexecute()` do Zabbix) é infraestrutura que todo o resto usa.**
+Fazer esse passo primeiro:
+
+- destrava os passos 3 e 6 da própria #1 (metade do dialeto some junto com o driver);
+- muda o arquivo central da #4 (`cron_presence_tracker.php`) **antes** de reescrevê-lo;
+- evita reescrever duas vezes o `TurnosReportBase::doAction()`, que é a base das #2 e #6;
+- fecha de brinde 3 itens do backlog do CLAUDE.md (conexão reconectando a cada
+  request, `prepare()` fora do try, `getUserRoleType()` duplicado).
+
+Fazer #2 ou #6 antes disso significa escrever código novo em `mysqli` e migrá-lo
+logo depois. Por isso as funcionalidades ficam para o fim.
+
+---
+
+## Fase 1 — Fundação: matar o `mysqli` (issue #1, passo 1) — **CONCLUÍDA em 2026-08-19**
+
+Resolvida por um **adaptador fino** (`actions/ZbxDb.php` + `ZbxDbStmt.php` +
+`ZbxDbResult.php`) em vez da reescrita consulta a consulta: as ~50 consultas
+continuam com `?` + `bind_param`, mas rodam sobre `\DBselect`/`\DBexecute`/
+`\DBfetch`. O escape ficou num ponto único, testável, em vez de 50
+interpolações manuais — cada uma delas uma chance de SQL injection.
+
+Resultado: nenhuma conexão mysqli no frontend, nenhum uso de `MYSQLI_ASSOC`,
+e o `mysqli_report()` global (que vazava para a conexão nativa do Zabbix)
+eliminado. Decisões e as três diferenças de comportamento que o adaptador teve
+que compensar estão no `CLAUDE.md`.
+
+Pendente de campo: validar as 6 telas no lab — especialmente Repasse (notas,
+presença, menções) e Gerenciar Turnos, que são as que mais consultam.
+
+<details>
+<summary>Plano original (mantido para referência)</summary>
+
+**Objetivo:** zero mudança de comportamento visível. É refactor puro.
+
+Hoje 12 arquivos abrem conexão própria:
+
+```
+actions/TurnosReportBase.php      actions/TurnosNotesGet.php
+actions/TurnosReportView.php      actions/TurnosNotesSave.php
+actions/TurnosReportPdf.php       actions/TurnosShiftsView.php
+actions/TurnosMentionsSearch.php  actions/TurnosShiftsSave.php
+actions/TurnosMentionsRead.php    actions/TurnosShiftsDelete.php
+actions/TurnosUserShiftSave.php   scripts/cron_presence_tracker.php
+```
+
+O cron fica de fora desta fase (roda em CLI, sem `$GLOBALS['DB']` — vai na Fase 2/3).
+
+### PRs sugeridos
+
+1. **PR 1.1 — `TurnosReportBase` para `\DBselect`/`\DBexecute`.** É o arquivo maior
+   e o que os outros herdam. Trocar `prepare()`/`bind_param()` por `zbx_dbstr()`
+   com escape explícito. Manter `error_log('[plantonistas] ...')` em todo catch.
+2. **PR 1.2 — actions de turnos** (`ShiftsView/Save/Delete`, `UserShiftSave`).
+3. **PR 1.3 — actions de notas e menções** (`NotesSave`, `NotesGet`,
+   `MentionsSearch`, `MentionsRead`), aproveitando para deduplicar
+   `getUserRoleType()`/`resolveUserContext()` no trait.
+4. **PR 1.4 — `TurnosReportPdf` e `TurnosReportView`**, e remoção do `getDb()`.
+
+### Riscos e cuidados
+
+- `getDb()` liga `MYSQLI_REPORT_STRICT`; `\DBselect` **não lança** — retorna
+  `false`. Todo ponto que hoje depende de exceção precisa passar a checar retorno,
+  senão o erro volta a ser silencioso (exatamente o que a regra do CLAUDE.md proíbe).
+- Sem `bind_param`, toda interpolação vira `zbx_dbstr()` / cast `(int)`.
+  Revisar 100% dos pontos — é aqui que se introduz SQL injection sem querer.
+- A regra "informação acessória não entra por JOIN" continua valendo
+  (`attachUserShift()` não vira JOIN durante o refactor).
+
+### Critério de saída
+
+As 6 telas validadas no lab-zbx + `grep -r mysqli actions/` sem resultado.
+
+</details>
+
+---
+
+## Fase 2 — Segurança (issues #3 e #4) — **CONCLUÍDA em 2026-08-19**
+
+As duas foram feitas antes da Fase 1, por serem as mais rápidas e por não
+dependerem do refactor. Detalhe completo das decisões no `CLAUDE.md`
+("Cron de presença sem API do Zabbix" e "CSRF ligado nas actions de escrita").
+
+### #4 — Cron de presença sem API ✅
+
+- [x] API JSON-RPC substituída por consulta local em `users`/`usrgrp`/`users_groups`.
+      Saíram o `CURLOPT_SSL_VERIFYPEER => false`, o `ZABBIX_API_TOKEN`, o
+      `ZABBIX_URL`, o `curl` e a dependência do endpoint.
+- [x] `CREATE TABLE IF NOT EXISTS` removido do cron; `migrateColumns()` passou a
+      consertar o que o cron antigo criou (coluna `ip`, `id INT` → `BIGINT
+      UNSIGNED`, índices `idx_cus_*`).
+- [x] `install.sh` não existe mais no repo — item de backlog reescrito.
+- [x] Bônus: três defeitos antigos corrigidos (fuso PHP × banco duplicando
+      presença à noite, nome em branco de conta de serviço, nome longo
+      descartando a linha).
+
+Pendente de campo: rodar o script à mão no lab e conferir a tela de Presença;
+tirar `ZABBIX_URL`/`ZABBIX_API_TOKEN` do `/etc/cron.d/` e revogar o token.
+
+### #3 — CSRF nas actions de escrita ✅
+
+Cobriu **10** actions, não 8: entraram também `plantonistas.import` e
+`plantonistas.report.mentions.read`, que a issue não listava mas escrevem.
+
+- [x] Token nos forms de Escala, Telefones, Turnos e Repasse (um por action —
+      em módulo o Zabbix valida contra a action completa, não contra o prefixo).
+- [x] `disableCsrfValidation()` removido só das 10 de escrita; as 11 de leitura
+      mantêm, porque em GET a validação **falha** em vez de ser dispensada.
+- [x] "Remover" da Escala deixou de ser link GET e virou POST em form oculto.
+- [x] Guarda de `content-type` no JS das telas AJAX — falha de CSRF responde
+      HTML, não JSON, e sem isso o erro é indecifrável.
+
+Pendente de campo: validar as 6 telas, exercitando salvar, remover, importar e
+escrever nota em cada uma.
+
+---
+
+## Fase 3 — PostgreSQL de fato: v5.0 (issue #1, passos 2 a 7)
+
+Só começa com a Fase 1 fechada.
+
+| Passo | Trabalho |
+|---|---|
+| 2 | `sql/schema.mysql.sql` + `sql/schema.pgsql.sql`; `init()` escolhe por `$DB['TYPE']`. Sem `UNSIGNED`, `AUTO_INCREMENT` → `BIGSERIAL`, sem `ENGINE`/`CHARSET` |
+| 3 | `IFNULL`→`COALESCE`, `DATE_FORMAT`→`to_char`, `FROM_UNIXTIME`→`to_timestamp`, `ON DUPLICATE KEY UPDATE`→`ON CONFLICT ... DO UPDATE`, crases fora |
+| 4 | `INFORMATION_SCHEMA.STATISTICS` → `pg_indexes`. `TABLES`/`COLUMNS` já é padrão SQL |
+| 5 | `RENAME TABLE a TO b` → `ALTER TABLE a RENAME TO b` (migração e rollback) |
+| 6 | Cron em PDO com DSN a partir de `DB_TYPE` no arquivo de cron |
+| 7 | Homologação em lab PostgreSQL |
+
+### Achados do levantamento (concreto, para não redescobrir)
+
+Depois da Fase 1, sobra dialeto **também na família escala**, que a issue não
+detalha — são 7 pontos, todos triviais:
+
+```
+actions/PlantaoDelete.php:44     DATE_FORMAT(s.schedule_date,'%Y-%m-%d')
+actions/PlantaoExport.php:57     DATE_FORMAT(s.schedule_date,'%Y-%m-%d')
+actions/PlantaoList.php:109      DATE_FORMAT(s.schedule_date,'%Y-%m-%d')
+actions/PlantaoList.php:113      IFNULL(s.userid_reserva,'')
+actions/PlantaoOverview.php:68   IFNULL(s.userid_reserva,0)
+actions/PhonesImport.php:148     ON DUPLICATE KEY UPDATE
+actions/TurnosReportBase.php     10 ocorrências (as pt-BR de exibição)
+```
+
+Detalhe útil: `schedule_date` já é `DATE`. Os três `DATE_FORMAT(...,'%Y-%m-%d')`
+são só cast para string — dá para trocar por `CAST(... AS CHAR)`/`::text` ou
+formatar em PHP, resolvendo os dois bancos sem função de dialeto nenhuma.
+
+Já os `DATE_FORMAT(..., '%d/%m/%Y %H:%i')` do `TurnosReportBase` são exibição
+pt-BR e **precisam** virar `to_char(..., 'DD/MM/YYYY HH24:MI')` no PG — mantendo
+a coluna auxiliar de ordenação com o valor cru (auditoria de 2026-08-14).
+
+### Estratégia sugerida para o dialeto
+
+Um helper único no trait (ex.: `sqlDateFormat()`, `sqlIfNull()`, `sqlUpsert()`)
+que decide por `$DB['TYPE']`, em vez de `if` espalhado pelas queries. Facilita a
+próxima auditoria e evita que uma query nova nasça só-MySQL.
+
+### Critério de saída da v5.0
+
+Lab PostgreSQL: as 6 telas abertas, um ciclo completo do cron de presença,
+importação e exportação de CSV (Escala e Telefones), e a migração das tabelas
+antigas testada nos dois bancos. Só então bump para `5.0.0` no manifest e README.
+
+---
+
+## Fase 4 — Escala vira operacional (issue #5)
+
+`cron_sync_oncall.php`, no padrão já validado pelo presence tracker (e sem API,
+porque a Fase 2 já removeu essa dependência).
+
+Decisões a bater antes de codar:
+
+- [ ] Um grupo de usuários por equipe, ou um grupo único com todos os plantonistas?
+- [ ] Frequência: a virada de turno precisa ser rápida (5 min?).
+- [ ] Dia **sem cobertura**: manter o último plantonista, cair para um grupo de
+      fallback, ou esvaziar? *Esvaziar = alerta sem destinatário — evitar.*
+- [ ] Rodar em **um** frontend só, como o presence tracker (o CLAUDE.md registra
+      que o cron do front02 ainda não foi conferido — resolver junto).
+
+É a issue de maior valor operacional da lista: transforma a escala de tela de
+consulta em fonte da verdade do escalonamento.
+
+---
+
+## Fase 5 — Funcionalidades sobre a base nova (issues #2 e #6)
+
+### #2 — Fechar turno
+
+Entrega três coisas de uma vez: auditoria (repasse imutável, imune ao housekeeper),
+performance (1 leitura de JSON no lugar de ~8 queries contra `events`) e diff entre
+turnos. Depende do payload do `TurnosReportBase::doAction()` já migrado.
+
+Pontos: nova action `plantonistas.report.close` (AJAX, `layout.javascript` +
+`view: null`); `TurnosReportView` checa snapshot de `(data, turno, grupo)` antes
+de rodar as queries; reabrir exige Admin+ e fica registrado.
+
+### #6 — Menção via media type
+
+Enfileirar o alerta no mesmo ponto em que `recordMentions()` grava a linha.
+Falha no envio **não pode derrubar o save da nota** — mesma decisão já tomada
+para menção inválida. Respeitar a janela de notificação do usuário (não mandar
+e-mail às 4h para quem só recebe em horário comercial).
+
+A mecânica serve depois para "amanhã é seu plantão" / "seu turno começa em 1h",
+o que a torna mais barata se feita **depois** da #5.
+
+---
+
+## Regras que valem em todas as fases
+
+- Testar no **lab-zbx** antes de produção; validar as 6 telas após qualquer deploy.
+- Deploy nos **dois** frontends: `git pull` + `chown -R apache:apache .` +
+  `systemctl restart php-fpm`.
+- Migrações idempotentes no `migrateSchema()`; nunca DROP de tabela com dados.
+- Nunca engolir exceção de DB: `error_log('[plantonistas] ...')` + UI distinguindo
+  "vazio de verdade" de "consulta falhou".
+- Commits em PT-BR (`fix:`/`feat:`/`docs:`), corpo explicando o porquê.
+- Ao fechar cada issue, registrar a decisão e o porquê no `CLAUDE.md` — é o que
+  evita redescobrir a mesma causa raiz daqui a três meses.
