@@ -16,6 +16,12 @@ use CController,
  */
 class TurnosNotesGet extends CController {
 
+    // Passou a usar o trait em vez de manter cópias próprias de getDb(),
+    // validateDate(), getUserRoleType(), isSuperAdmin() e sameGroupExists().
+    // Eram cinco métodos idênticos aos do trait — cinco lugares para corrigir
+    // quando a regra de permissão mudasse, e um deles ficaria para trás.
+    use TurnosReportBase;
+
     protected function init(): void {
         $this->disableCsrfValidation();
     }
@@ -28,75 +34,10 @@ class TurnosNotesGet extends CController {
         return !CWebUser::isGuest();
     }
 
-    /**
-     * Cópia própria do getDb() (esta classe não usa o trait TurnosReportBase).
-     * Passou a devolver o ZbxDb, que fala com a conexão nativa do Zabbix em
-     * vez de abrir uma mysqli paralela — ver a documentação em ZbxDb.
-     */
-    private function getDb(): ?ZbxDb {
-        try {
-            return new ZbxDb();
-        } catch (\Throwable $e) {
-            error_log('[plantonistas] getDb() falhou: ' . $e->getMessage());
-            return null;
-        }
-    }
 
-    private function validateDate(string $date): string {
-        if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) {
-            [$y, $m, $d] = explode('-', $date);
-            if (checkdate((int)$m, (int)$d, (int)$y)) {
-                return $date;
-            }
-        }
-        return date('Y-m-d');
-    }
 
-    private function getUserRoleType(ZbxDb $db, int $userid): int {
-        try {
-            $stmt = $db->prepare(
-                "SELECT r.type AS user_type
-                 FROM users u
-                 INNER JOIN role r ON r.roleid = u.roleid
-                 WHERE u.userid = ?"
-            );
-            $stmt->bind_param('i', $userid);
-            $stmt->execute();
-            $row = $stmt->get_result()->fetch_assoc();
-            if ($row !== false && $row !== null) {
-                return (int)$row['user_type'];
-            }
-        } catch (\Exception $e) {}
 
-        try {
-            $stmt = $db->prepare("SELECT type AS user_type FROM users WHERE userid = ?");
-            $stmt->bind_param('i', $userid);
-            $stmt->execute();
-            $row = $stmt->get_result()->fetch_assoc();
-            return $row ? (int)$row['user_type'] : 1;
-        } catch (\Exception $e) {
-            return 1;
-        }
-    }
 
-    private function isSuperAdmin(ZbxDb $db, int $userid): bool {
-        // Somente role_type=3 (Super Admin role) tem visão irrestrita.
-        return $this->getUserRoleType($db, $userid) === 3;
-    }
-
-    /**
-     * Fragmento SQL: mesmo grupo de usuário entre leitor e autor.
-     */
-    private function sameGroupExists(int $userid, string $authorIdColumn): string {
-        return "EXISTS (
-            SELECT 1
-            FROM users_groups ug_reader
-            JOIN users_groups ug_author
-                ON ug_author.usrgrpid = ug_reader.usrgrpid
-            WHERE ug_reader.userid = $userid
-              AND ug_author.userid  = $authorIdColumn
-        )";
-    }
 
     protected function doAction(): void {
         header('Content-Type: application/json; charset=utf-8');
@@ -120,7 +61,7 @@ class TurnosNotesGet extends CController {
         }
 
         $userid       = (int)(CWebUser::$data['userid'] ?? 0);
-        $isSuperAdmin = $this->isSuperAdmin($db, $userid);
+        $isSuperAdmin = ($this->getUserRoleType($db, $userid) === 3);
 
         // Turnos cadastrados (v2.5+) são gravados com shift_id numérico;
         // turnos legados (24h/manha/tarde/noite) continuam filtrando por
