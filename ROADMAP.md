@@ -223,6 +223,32 @@ Pontos: nova action `plantonistas.report.close` (AJAX, `layout.javascript` +
 `view: null`); `TurnosReportView` checa snapshot de `(data, turno, grupo)` antes
 de rodar as queries; reabrir exige Admin+ e fica registrado.
 
+#### Questão em aberto: o snapshot congela a visão de UMA pessoa
+
+O `$data_pack` que a issue propõe serializar **não é o mesmo para todo mundo**.
+Ele nasce de `resolveUserContext()` e varia em três eixos que o módulo inteiro
+foi construído para respeitar: eventos e Top Hosts seguem o `host_filter`
+derivado da tabela `rights`; MTTA é restrito ao próprio usuário quando role
+type = 1; Notas e Presença são segmentadas por grupo compartilhado.
+
+Servir a um segundo usuário o JSON gravado por um primeiro **fura essa
+segmentação** — um User veria o MTTA de todos e as notas de grupos a que não
+pertence, porque quem fechou o turno foi um Super Admin. É a única parte da
+issue que não é só trabalho: é uma decisão de produto. Três saídas:
+
+1. **Snapshot por contexto**: chavear por grupo e só servir a quem pertence ao
+   mesmo grupo E tem o mesmo role type. Preserva a regra, mas multiplica
+   snapshots e complica o "diff entre turnos".
+2. **Snapshot como documento separado**: fechar gera um registro imutável
+   consultável/exportável (o repasse formal do turno), e a tela continua
+   consultando ao vivo. Elimina o risco e entrega auditoria e diff — mas perde
+   o ganho de performance, que era um dos três motivos da issue.
+3. **Snapshot só para Admin+**: quem fecha e quem lê são Admin ou Super Admin;
+   User continua sempre na consulta ao vivo. Simples, mas User é justamente
+   quem mais abre o Repasse.
+
+Decidir isso antes de codar — refazer depois significa migrar dados já gravados.
+
 ### #6 — Menção via media type
 
 Enfileirar o alerta no mesmo ponto em que `recordMentions()` grava a linha.
@@ -232,6 +258,46 @@ e-mail às 4h para quem só recebe em horário comercial).
 
 A mecânica serve depois para "amanhã é seu plantão" / "seu turno começa em 1h",
 o que a torna mais barata se feita **depois** da #5.
+
+#### Levantamento de 2026-08-19: como notificar, de fato
+
+A nota que circulava aqui — "a tabela `alerts` não pode ser usada por módulo,
+o jeito é `exec()` + `curl` no relay SMTP" — está **errada nas duas metades**.
+Conferido no fonte do Zabbix 7.0:
+
+- **Inserir em `alerts` realmente não serve**, mas não pelo motivo que se
+  dizia. `userid` e `mediatypeid` são anuláveis; quem inviabiliza são
+  `actionid` e `eventid`, **NOT NULL com FK ON DELETE CASCADE** — seria preciso
+  "emprestar" uma Ação e um evento reais, que o housekeeper apaga um dia,
+  levando a linha junto. Pior: o `alertid` é alocado por um **contador em
+  memória do server**, não pela tabela `ids` que o frontend usa — dois
+  alocadores para a mesma coluna, a mesma classe de incidente do
+  `role_rule`/`fcorr`.
+- **Existe via oficial frontend→server**: o request de socket `alert.send`,
+  exposto por `CZabbixServer::testMediaType()` — é o que o botão "Test" de
+  Alertas → Tipos de mídia usa. Não grava em `alerts`, não cria task, é
+  síncrono e devolve erro e log de debug. Um módulo pode instanciar
+  `\CZabbixServer`.
+- Não existe task de "enviar mensagem" (`ZBX_TM_TASK_*` não tem nada disso) e a
+  API JSON-RPC só expõe `alert.get` — não há `alert.create`.
+
+**Duas consequências que mudam o escopo da issue:**
+
+1. **`alert.send` exige Super Admin**, validado no *server*
+   (`trapper_process_alert_send()`), aceitando session id de 32 chars ou token
+   de API de 64. Ou seja: a issue passa a exigir guardar um **token de Super
+   Admin** na configuração do módulo — logo depois de a issue #4 ter removido
+   exatamente um token de API de circulação. É decisão do Rafael, não técnica.
+2. **A janela de notificação não vem de graça.** Quem avalia `media.period`,
+   `severity` e `active` é o escalonador, ao criar a linha em `alerts`
+   (`add_message_alert()`); o consumidor não reavalia, e o `alert.send` recebe
+   `sendto`/`mediatypeid` prontos. Indo por essa via, o módulo tem que
+   replicar a regra de período em PHP.
+
+A alternativa sem token é gerar um evento de verdade (item trapper via
+`history.push` + trigger + Ação) e deixar o escalonador fazer tudo — aí
+período, severidade e escalonamento funcionam sozinhos, ao custo de a menção
+virar "problema" na tela de Problemas e de configurar item/trigger/Ação.
 
 ---
 
