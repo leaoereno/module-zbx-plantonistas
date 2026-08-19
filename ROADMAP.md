@@ -155,7 +155,7 @@ passo 4 da introspecção (`STATISTICS` → `pg_indexes`, `DATABASE()` →
 | 2 | `migrateColumns()` | `AFTER`, `MODIFY COLUMN`, `ADD/DROP INDEX`. Metade das guardas existe para consertar o que o antigo CREATE TABLE do cron deixou — artefato histórico só de MySQL, vale isolar atrás de `if (!isPgsql())` em vez de traduzir |
 | 4 | Data/hora | `DATE_FORMAT` (14×), `FROM_UNIXTIME` (5×), `TIMESTAMPDIFF` (3×), `CURDATE`, `INTERVAL`. **Decidir o fuso junto**: `to_timestamp()` usa o TimeZone da sessão PG, e fuso já causou erro de um dia três vezes neste módulo |
 | 5 | Escrita | `ON DUPLICATE KEY UPDATE` → `ON CONFLICT` (2×) e `LAST_INSERT_ID()` → `lastval()` no `ZbxDb` |
-| 7 | Os 2 crons | Driver novo (PDO), mais o `install.sh`. Ficam por último: não afetam a UI |
+| ~~7~~ | ~~Os 2 crons~~ — **feito**: `scripts/CliDb.php` (PDO), dialeto pela env `DB_TYPE` | |
 | 8 | `sql/queries.sql` | Documentação de diagnóstico, sem caller |
 
 Duas armadilhas registradas que ainda não morderam: o parser de `?` do
