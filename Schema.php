@@ -163,11 +163,15 @@ class Schema {
                     ['is_read',          'flag',     ['default' => 0]],
                     ['created_at',       'datetime', ['default_now']],
                     ['read_at',          'datetime', ['null']],
+                    ['notified_at',      'datetime', ['null', 'comment' => 'Quando o cron avisou pelo media type; NULL = ainda na fila']],
                 ],
                 'primary' => ['id'],
                 'index'   => [
                     'idx_mention_user_unread' => ['mentioned_userid', 'is_read'],
                     'idx_mention_note'        => ['note_id'],
+                    // A fila varre por notified_at IS NULL a cada minuto:
+                    // sem índice isso é full scan numa tabela que só cresce.
+                    'idx_mention_fila'        => ['notified_at'],
                 ],
                 'comment' => 'Menções @ do Diário de Bordo',
             ],

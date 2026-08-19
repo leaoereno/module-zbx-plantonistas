@@ -106,11 +106,14 @@ CREATE TABLE IF NOT EXISTS module_plantonistas_mentions (
   is_read SMALLINT NOT NULL DEFAULT 0,
   created_at TIMESTAMP(0) NOT NULL DEFAULT CURRENT_TIMESTAMP,
   read_at TIMESTAMP(0),
+  notified_at TIMESTAMP(0),
   PRIMARY KEY (id)
 );
 CREATE INDEX IF NOT EXISTS idx_mention_user_unread ON module_plantonistas_mentions (mentioned_userid, is_read);
 CREATE INDEX IF NOT EXISTS idx_mention_note ON module_plantonistas_mentions (note_id);
+CREATE INDEX IF NOT EXISTS idx_mention_fila ON module_plantonistas_mentions (notified_at);
 COMMENT ON TABLE module_plantonistas_mentions IS 'Menções @ do Diário de Bordo';
+COMMENT ON COLUMN module_plantonistas_mentions.notified_at IS 'Quando o cron avisou pelo media type; NULL = ainda na fila';
 
 -- ── module_plantonistas_shift_reports ───────────────────────────
 CREATE TABLE IF NOT EXISTS module_plantonistas_shift_reports (
