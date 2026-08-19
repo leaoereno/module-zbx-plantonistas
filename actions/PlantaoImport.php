@@ -326,7 +326,7 @@ class PlantaoImport extends CController {
     private function buildUserMap(int $usrgrpid, bool $is_super): array {
         $map = [];
         if ($is_super) {
-            $res = DBselect("SELECT userid, username, name, surname FROM users WHERE username != 'guest'");
+            $res = DBselect("SELECT userid, username, name, surname FROM users WHERE LOWER(username) <> 'guest'");
         } else {
             $res = DBselect(
                 'SELECT DISTINCT u.userid, u.username, u.name, u.surname' .

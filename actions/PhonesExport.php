@@ -46,7 +46,7 @@ class PhonesExport extends CController {
             ' AND u.roleid IS NOT NULL AND u.roleid <> 0';
 
         if ($is_super) {
-            $sql = $select . " WHERE u.username != 'guest' AND " . $active_filter . " ORDER BY u.name, u.surname";
+            $sql = $select . " WHERE LOWER(u.username) <> 'guest' AND " . $active_filter . " ORDER BY u.name, u.surname";
         } else {
             $group_ids = [];
             $res = DBselect('SELECT usrgrpid FROM users_groups WHERE userid=' . $current_userid);

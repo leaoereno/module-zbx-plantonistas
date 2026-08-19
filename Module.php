@@ -162,15 +162,45 @@ class Module extends CModule {
         $this->migrateColumns();
     }
 
+    /**
+     * O backend é PostgreSQL? (issue #1)
+     *
+     * O Zabbix expõe o tipo em $DB['TYPE'] a partir do zabbix.conf.php. É a
+     * chave que decide dialeto — mantida num método só para não espalhar a
+     * leitura da global pelo código.
+     */
+    private function isPgsql(): bool {
+        return strtolower((string)($GLOBALS['DB']['TYPE'] ?? '')) === 'postgresql';
+    }
+
+    /**
+     * Filtro de schema do INFORMATION_SCHEMA, por dialeto.
+     *
+     * `DATABASE()` é MySQL. No PostgreSQL o equivalente prático é
+     * `current_schema()` — e a diferença conceitual importa: lá o
+     * `table_schema` é o schema (normalmente `public`), não o banco.
+     */
+    private function schemaFilter(): string {
+        return $this->isPgsql() ? 'current_schema()' : 'DATABASE()';
+    }
+
     private function existingTables(array $names): array {
         $in  = "'" . implode("','", $names) . "'";
         $res = \DBselect(
             'SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES' .
-            ' WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN (' . $in . ')'
+            ' WHERE TABLE_SCHEMA = ' . $this->schemaFilter() . ' AND TABLE_NAME IN (' . $in . ')'
         );
         $out = [];
         while ($row = \DBfetch($res)) {
-            $out[$row['TABLE_NAME']] = true;
+            // Chaves normalizadas para minúsculo ANTES de qualquer uso: o
+            // MySQL devolve TABLE_NAME e o PostgreSQL devolve table_name.
+            // Ler direto em maiúsculo daria array vazio no PG — e o estrago
+            // seria silencioso: existingTables() devolveria [], o RENAME das
+            // tabelas antigas nunca aconteceria e migrateColumns() pularia
+            // todas as migrações, sem erro e sem log, com as telas abrindo
+            // normalmente.
+            $row = array_change_key_case($row, CASE_LOWER);
+            $out[$row['table_name']] = true;
         }
         return $out;
     }
@@ -186,30 +216,46 @@ class Module extends CModule {
         $in = "'" . implode("','", $tables) . "'";
 
         // Um SELECT só para todas as colunas relevantes.
-        // COLUMN_TYPE ('bigint(20) unsigned', 'int(11)') vem junto porque
-        // CHARACTER_MAXIMUM_LENGTH é NULL em coluna numérica e não distingue
-        // INT de BIGINT — ver a correção da tabela de presença abaixo.
+        //
+        // O tipo vem junto porque CHARACTER_MAXIMUM_LENGTH é NULL em coluna
+        // numérica e não distingue INT de BIGINT. A coluna que traz o tipo
+        // muda por dialeto: COLUMN_TYPE ('bigint(20) unsigned') é MySQL-only;
+        // no PostgreSQL o padrão é DATA_TYPE ('bigint'), sem a noção de
+        // unsigned — que lá não existe.
+        $tipoCol = $this->isPgsql() ? 'DATA_TYPE' : 'COLUMN_TYPE';
+
         $cols  = [];
         $types = [];
         $res   = \DBselect(
-            'SELECT TABLE_NAME, COLUMN_NAME, CHARACTER_MAXIMUM_LENGTH, COLUMN_TYPE' .
+            'SELECT TABLE_NAME, COLUMN_NAME, CHARACTER_MAXIMUM_LENGTH, ' . $tipoCol . ' AS COL_TYPE' .
             ' FROM INFORMATION_SCHEMA.COLUMNS' .
-            ' WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN (' . $in . ')'
+            ' WHERE TABLE_SCHEMA = ' . $this->schemaFilter() . ' AND TABLE_NAME IN (' . $in . ')'
         );
         while ($row = \DBfetch($res)) {
-            $c = strtolower($row['COLUMN_NAME']);
-            $cols[$row['TABLE_NAME']][$c]  = $row['CHARACTER_MAXIMUM_LENGTH'];
-            $types[$row['TABLE_NAME']][$c] = strtolower((string)$row['COLUMN_TYPE']);
+            $row = array_change_key_case($row, CASE_LOWER);   // ver existingTables()
+            $t = $row['table_name'];
+            $c = strtolower($row['column_name']);
+            $cols[$t][$c]  = $row['character_maximum_length'];
+            $types[$t][$c] = strtolower((string)$row['col_type']);
         }
 
         // Um SELECT só para todos os índices relevantes.
+        //
+        // INFORMATION_SCHEMA.STATISTICS é exclusiva do MySQL — no PostgreSQL
+        // a lista de índices vive em pg_indexes, com outros nomes de coluna.
         $idx = [];
-        $res = \DBselect(
-            'SELECT TABLE_NAME, INDEX_NAME FROM INFORMATION_SCHEMA.STATISTICS' .
-            ' WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN (' . $in . ')'
-        );
+        $res = $this->isPgsql()
+            ? \DBselect(
+                'SELECT tablename AS TABLE_NAME, indexname AS INDEX_NAME FROM pg_indexes' .
+                ' WHERE schemaname = current_schema() AND tablename IN (' . $in . ')'
+            )
+            : \DBselect(
+                'SELECT TABLE_NAME, INDEX_NAME FROM INFORMATION_SCHEMA.STATISTICS' .
+                ' WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN (' . $in . ')'
+            );
         while ($row = \DBfetch($res)) {
-            $idx[$row['TABLE_NAME']][$row['INDEX_NAME']] = true;
+            $row = array_change_key_case($row, CASE_LOWER);
+            $idx[$row['table_name']][$row['index_name']] = true;
         }
 
         // ── module_plantonistas_schedule (herdado do escala v1→v3) ──

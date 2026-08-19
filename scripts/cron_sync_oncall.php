@@ -381,13 +381,19 @@ foreach ($teams as $team) {
     // TEM FK — o INSERT falharia. E escalar quem está desabilitado é escalar
     // ninguém. Mesmo critério de "habilitado" do resto do módulo.
     try {
+        // CASE ... THEN 1 ELSE 0 END em vez de devolver a expressão booleana
+        // crua: o MySQL entrega 1/0, mas o PostgreSQL entrega 't'/'f', e
+        // (int)'t' é 0 — TODO plantonista seria considerado desabilitado,
+        // toda equipe seria pulada, e o log diria "está desabilitado no
+        // Zabbix", mandando investigar um cadastro que está correto.
         $stmt = $db->prepare(
             "SELECT u.userid,
-                    (NOT EXISTS (
-                        SELECT 1 FROM users_groups ugx
-                        INNER JOIN usrgrp gx ON gx.usrgrpid = ugx.usrgrpid
-                        WHERE ugx.userid = u.userid AND gx.users_status = 1
-                     ) AND u.roleid IS NOT NULL AND u.roleid <> 0) AS habilitado
+                    CASE WHEN NOT EXISTS (
+                            SELECT 1 FROM users_groups ugx
+                            INNER JOIN usrgrp gx ON gx.usrgrpid = ugx.usrgrpid
+                            WHERE ugx.userid = u.userid AND gx.users_status = 1
+                         ) AND u.roleid IS NOT NULL AND u.roleid <> 0
+                         THEN 1 ELSE 0 END AS habilitado
                FROM users u WHERE u.userid = ?"
         );
         $stmt->bind_param('i', $userid);
@@ -416,7 +422,15 @@ foreach ($teams as $team) {
 
     // ── 4. O grupo de destino existe e serve? ─────────────────────────────
     try {
-        $stmt = $db->prepare('SELECT usrgrpid, users_status FROM usrgrp WHERE name = ?');
+        // Comparação por LOWER(TRIM(...)) nos dois lados: o nome do grupo é
+        // digitado por uma pessoa na UI do Zabbix, e um espaço no fim ou uma
+        // letra em caixa diferente faria a equipe ser pulada todo ciclo, com
+        // o log dizendo que o grupo "não existe" enquanto ele está lá na tela.
+        // Vale independente de banco, mas é obrigatório no PostgreSQL, que —
+        // ao contrário do MySQL com collation _ci — compara texto com caixa.
+        $stmt = $db->prepare(
+            'SELECT usrgrpid, users_status FROM usrgrp WHERE LOWER(TRIM(name)) = LOWER(TRIM(?))'
+        );
         $stmt->bind_param('s', $groupName);
         $stmt->execute();
         $g = $stmt->get_result()->fetch_assoc();

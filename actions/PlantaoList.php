@@ -110,7 +110,12 @@ class PlantaoList extends CController {
                 '  s.scheduleid, s.shift_id, s.userid,' .
                 '  u.name, u.surname, u.username,' .
                 '  COALESCE(pm.phone, \'\') AS phone,' .
-                '  IFNULL(s.userid_reserva, \'\') AS userid_reserva,' .
+                // COALESCE(..., 0) e não IFNULL(..., ''): IFNULL é MySQL-only, e
+                // o COALESCE do PostgreSQL recusa misturar BIGINT com '' (erro
+                // de tipo). O 0 mantém o contrato com a view, que testa o campo
+                // por truthiness — e '0' é falsy em PHP, igual à string vazia.
+                // Também alinha com PlantaoOverview, que já usava 0 aqui.
+                '  COALESCE(s.userid_reserva, 0) AS userid_reserva,' .
                 '  COALESCE(ur.name, \'\') AS reserva_name,' .
                 '  COALESCE(ur.surname, \'\') AS reserva_surname,' .
                 '  COALESCE(pr.phone, \'\') AS reserva_phone,' .
@@ -168,7 +173,7 @@ class PlantaoList extends CController {
                     '  COALESCE(pm.phone, \'\') AS phone' .
                     ' FROM users u' .
                     ' LEFT JOIN module_plantonistas_phones pm ON pm.userid = u.userid' .
-                    " WHERE u.username != 'guest'" . $active_filter .
+                    " WHERE LOWER(u.username) <> 'guest'" . $active_filter .
                     ' ORDER BY u.name, u.surname'
                 );
             } else {
