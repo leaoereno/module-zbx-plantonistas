@@ -1460,4 +1460,274 @@ trait TurnosReportBase {
             return false;
         }
     }
+
+    // ── Fechamento de turno (issue #2) ───────────────────────
+    //
+    // "Fechar turno" congela o repasse num registro imutável. Motivo original:
+    // abrir o repasse de uma data antiga pode mostrar números diferentes dos do
+    // dia, porque o housekeeper do Zabbix já apagou os eventos.
+    //
+    // DECISÃO IMPORTANTE (Rafael, 2026-08-19): o fechamento é um **documento
+    // separado**, não um cache da tela. A tela do Repasse continua consultando
+    // ao vivo para todo mundo.
+    //
+    // O porquê: o payload do repasse NÃO é o mesmo para todos os usuários — os
+    // eventos seguem o `host_filter` derivado de `rights`, o MTTA é restrito ao
+    // próprio usuário quando role type = 1, e Notas/Presença são segmentadas
+    // por grupo compartilhado. Servir a um segundo usuário o JSON gravado por
+    // um primeiro furaria a segmentação que o módulo inteiro implementa. Usar o
+    // snapshot como cache da tela custaria essa regra; como documento, não.
+    //
+    // Por isso o documento carrega o CONTEXTO de quem o fechou, e a leitura só
+    // o entrega a quem enxergaria pelo menos tanto quanto o autor:
+    //
+    //   - Super Admin lê qualquer fechamento.
+    //   - Fechamento feito POR Super Admin (snapshot sem filtro nenhum) só é
+    //     lido por Super Admin.
+    //   - Nos demais casos, o leitor precisa pertencer a TODOS os grupos do
+    //     autor. "Compartilhar um grupo" não basta: autor em [NOC, Redes] e
+    //     leitor só em [NOC] passaria no teste e o leitor veria as notas dos
+    //     analistas de Redes. Com os mesmos grupos, os `rights` de host também
+    //     coincidem, que é o que sustenta a equivalência.
+    //
+    // A restrição de MTTA é por PAPEL, não por grupo, então nenhum filtro aqui
+    // dá conta dela: quem reaplica é o leitor, na renderização.
+
+    /**
+     * Versão do formato do snapshot — subir se o conteúdo mudar de forma.
+     *
+     * É método, não `const`: constante em trait só existe a partir do PHP 8.2,
+     * e em 8.0/8.1 é erro de COMPILAÇÃO ("Traits cannot have constants") — o
+     * que derrubaria todas as telas que usam este trait. O piso do módulo é
+     * 8.0 (str_starts_with) e o lab roda 8.4, então o erro passaria batido no
+     * teste e só apareceria em produção.
+     */
+    private function snapshotVersion(): int {
+        return 1;
+    }
+
+    /**
+     * Grava um fechamento de turno.
+     *
+     * Append-only: fechar de novo NÃO sobrescreve, cria outra linha. O
+     * histórico fica imutável de verdade, e "refazer" é rastreável por
+     * construção — sem coluna de auditoria extra e sem UPDATE em documento
+     * que já foi lido por alguém.
+     *
+     * @return int|null id do fechamento, ou null em falha (já logada)
+     */
+    private function saveClosedReport(ZbxDb $db, string $date, string $shift,
+                                      array $snapshot, int $userid, ?string $nocContext): ?int {
+        try {
+            $json = json_encode($snapshot, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+            if ($json === false) {
+                throw new \RuntimeException('json_encode falhou: ' . json_last_error_msg());
+            }
+
+            // shift_name é VARCHAR(20): guarda o CÓDIGO do turno (24h, manha,
+            // ou o id numérico do turno cadastrado), que é o que identifica.
+            // O rótulo legível vai dentro do JSON, junto do resto do snapshot.
+            $shiftCode = substr($shift, 0, 20);
+            $ctx       = $nocContext !== null ? mb_substr($nocContext, 0, 50) : null;
+
+            $stmt = $db->prepare(
+                'INSERT INTO module_plantonistas_shift_reports
+                    (shift_date, shift_name, generated_by, noc_context, generated_at, report_json)
+                 VALUES (?, ?, ?, ?, ?, ?)'
+            );
+            // Carimbo gerado em PHP (America/Sao_Paulo), não com NOW() do
+            // banco: o MariaDB roda em outro host e pode estar em UTC — num
+            // documento cuja razão de ser é o carimbo de hora, "congelado às
+            // 21:05" para um fechamento das 18:05 é defeito grave.
+            $agora = date('Y-m-d H:i:s');
+            $stmt->bind_param('ssisss', $date, $shiftCode, $userid, $ctx, $agora, $json);
+            $stmt->execute();
+
+            return (int) $db->insert_id;
+        } catch (\Throwable $e) {
+            error_log('[plantonistas] saveClosedReport() falhou: ' . $e->getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Este usuário pode ler este snapshot?
+     *
+     * Regra e o porquê estão no bloco de comentário do início desta seção.
+     * Resumo: Super Admin lê tudo; fechamento feito por Super Admin só é lido
+     * por Super Admin; nos demais casos os grupos do autor têm que caber nos
+     * do leitor.
+     */
+    private function canReadSnapshot(array $snapshot, int $userid,
+                                     bool $isSuperadmin, array $ctx): bool {
+        if ($isSuperadmin) {
+            return true;
+        }
+
+        if (!empty($snapshot['author_is_superadmin'])) {
+            return false;
+        }
+
+        // Snapshot gravado antes deste campo existir: sem como comparar o
+        // contexto, o lado seguro é não exibir. São documentos de teste, no
+        // máximo — a feature nasceu com o campo.
+        if (!isset($snapshot['author_group_ids']) || !is_array($snapshot['author_group_ids'])) {
+            return (int) ($snapshot['author_userid'] ?? 0) === $userid;
+        }
+
+        $autor  = array_map('intval', $snapshot['author_group_ids']);
+        $leitor = array_map('intval', $ctx['group_ids'] ?? []);
+
+        return $autor !== [] && array_diff($autor, $leitor) === [];
+    }
+
+    /**
+     * Quantos fechamentos (data, turno) já existem — SEM filtro de
+     * visibilidade, de propósito.
+     *
+     * Serve para decidir se fechar de novo exige Admin+. Aplicar o filtro aqui
+     * deixaria um User refechar um turno só porque não enxerga o fechamento
+     * anterior, que é o contrário do que a regra quer.
+     */
+    private function countClosedReports(ZbxDb $db, string $date, string $shift): int {
+        try {
+            $stmt = $db->prepare(
+                'SELECT COUNT(*) AS n FROM module_plantonistas_shift_reports
+                  WHERE shift_date = ? AND shift_name = ?'
+            );
+            $shiftCode = substr($shift, 0, 20);
+            $stmt->bind_param('ss', $date, $shiftCode);
+            $stmt->execute();
+            $row = $stmt->get_result()->fetch_assoc();
+
+            return (int) ($row['n'] ?? 0);
+        } catch (\Throwable $e) {
+            error_log('[plantonistas] countClosedReports() falhou: ' . $e->getMessage());
+            // -1 = "não deu para verificar", diferente de "já existe". Quem
+            // chama precisa distinguir os dois: dizer "este turno já foi
+            // fechado" quando na verdade a consulta quebrou manda a pessoa
+            // procurar um documento que não existe — o mesmo tipo de mensagem
+            // enganosa que já custou caro em "Execute o cron".
+            return -1;
+        }
+    }
+
+    /**
+     * Último fechamento de (data, turno) visível para este usuário.
+     *
+     * Visibilidade igual à das notas: Super Admin vê tudo; os demais só o que
+     * foi fechado por alguém do mesmo grupo. Sem isso, o documento viraria a
+     * porta de entrada para o dado que a tela protege.
+     *
+     * Retorna metadados SEM o JSON (a tela só precisa saber que existe e por
+     * quem) — o JSON é grande e só é lido em loadClosedReport().
+     */
+    private function findClosedReport(ZbxDb $db, string $date, string $shift,
+                                      int $userid, bool $isSuperadmin, array $ctx = []): ?array {
+        try {
+            // O filtro de grupo é aplicado em PHP, sobre o contexto gravado no
+            // snapshot — a comparação é "os grupos do autor cabem nos do
+            // leitor", que não se expressa bem em SQL. Aqui só se restringe o
+            // conjunto de candidatos.
+            $stmt = $db->prepare(
+                "SELECT r.id, r.generated_by, r.noc_context, r.report_json,
+                        DATE_FORMAT(r.generated_at, '%d/%m/%Y %H:%i') AS generated_at,
+                        u.username, u.name, u.surname
+                   FROM module_plantonistas_shift_reports r
+                   LEFT JOIN users u ON u.userid = r.generated_by
+                  WHERE r.shift_date = ? AND r.shift_name = ?
+                  ORDER BY r.generated_at DESC, r.id DESC"
+            );
+            $shiftCode = substr($shift, 0, 20);
+            $stmt->bind_param('ss', $date, $shiftCode);
+            $stmt->execute();
+            $rows = $stmt->get_result()->fetch_all();
+
+            $visiveis = [];
+            foreach ($rows as $r) {
+                $snap = json_decode((string) $r['report_json'], true);
+                if ($this->canReadSnapshot(is_array($snap) ? $snap : [], $userid, $isSuperadmin, $ctx)) {
+                    unset($r['report_json']);
+                    $visiveis[] = $r;
+                }
+            }
+
+            if (!$visiveis) {
+                return null;
+            }
+
+            $row = $visiveis[0];
+            // Conta só o que este usuário pode abrir: dizer "3 fechamentos" e
+            // mostrar o 1º visível seria um texto que se contradiz na tela, e
+            // ainda vazaria a existência dos outros.
+            $row['total'] = count($visiveis);
+
+            $row['closed_by_label'] = $this->formatUserLabel(
+                $row['name'] ?? '', $row['surname'] ?? '', (string) ($row['username'] ?? '')
+            ) ?: 'usuário removido';
+
+            return $row;
+        } catch (\Throwable $e) {
+            // Fechamento é informação acessória para a tela do Repasse: se a
+            // consulta falhar, o relatório continua abrindo sem o banner.
+            error_log('[plantonistas] findClosedReport() falhou: ' . $e->getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Carrega um fechamento pelo id, já decodificado, aplicando a mesma regra
+     * de visibilidade do findClosedReport().
+     *
+     * @return array|null ['meta' => [...], 'snapshot' => [...]] ou null
+     */
+    private function loadClosedReport(ZbxDb $db, int $id, int $userid,
+                                      bool $isSuperadmin, array $ctx = []): ?array {
+        try {
+            $stmt = $db->prepare(
+                "SELECT r.id, r.shift_date, r.shift_name, r.generated_by, r.noc_context,
+                        DATE_FORMAT(r.generated_at, '%d/%m/%Y %H:%i') AS generated_at,
+                        r.report_json, u.username, u.name, u.surname
+                   FROM module_plantonistas_shift_reports r
+                   LEFT JOIN users u ON u.userid = r.generated_by
+                  WHERE r.id = ?"
+            );
+            $stmt->bind_param('i', $id);
+            $stmt->execute();
+            $row = $stmt->get_result()->fetch_assoc();
+
+            if ($row === null) {
+                return null;
+            }
+
+            $snapshot = json_decode($row['report_json'], true);
+            if (!is_array($snapshot)) {
+                error_log('[plantonistas] loadClosedReport(): JSON inválido no fechamento ' . $id);
+                return null;
+            }
+
+            // A checagem é feita AQUI, não no WHERE: comparar "os grupos do
+            // autor cabem nos do leitor" depende do contexto gravado no JSON.
+            // Sem isso, bastaria adivinhar o id na URL do PDF.
+            if (!$this->canReadSnapshot($snapshot, $userid, $isSuperadmin, $ctx)) {
+                return null;
+            }
+
+            $v = (int) ($snapshot['v'] ?? 0);
+            if ($v > $this->snapshotVersion()) {
+                error_log('[plantonistas] fechamento ' . $id . ' foi gravado por uma versão'
+                    . ' mais nova do módulo (v' . $v . '); pode faltar informação na exibição.');
+            }
+
+            $row['closed_by_label'] = $this->formatUserLabel(
+                $row['name'] ?? '', $row['surname'] ?? '', (string) ($row['username'] ?? '')
+            ) ?: 'usuário removido';
+            unset($row['report_json']);
+
+            return ['meta' => $row, 'snapshot' => $snapshot];
+        } catch (\Throwable $e) {
+            error_log('[plantonistas] loadClosedReport() falhou: ' . $e->getMessage());
+            return null;
+        }
+    }
 }

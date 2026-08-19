@@ -142,8 +142,40 @@ $calendar_json = json_encode($data['calendar']);
            class="rp-nh-btn" title="Gerar PDF (abre em nova aba)">
             <i class="fas fa-file-pdf"></i> Gerar PDF
         </a>
+        <button type="button" id="rpCloseShiftBtn" class="rp-nh-btn"
+                title="Congela os números deste turno num documento imutável">
+            <i class="fas fa-lock"></i> Fechar turno
+        </button>
     </div>
 </div>
+
+<?php
+// ── Turno fechado (issue #2) ────────────────────────────────────────────
+// A tela continua consultando ao vivo; o fechamento é um DOCUMENTO à parte,
+// renderizado pelo PDF a partir do snapshot. O aviso existe porque os números
+// desta tela podem já divergir do documento — o housekeeper do Zabbix vai
+// apagando os eventos do período.
+$cr = $data['closed_report'] ?? null;
+if ($cr):
+?>
+<div class="rp-card rp-closed-banner">
+    <div class="rp-closed-body">
+        <i class="fas fa-lock"></i>
+        <span>
+            <strong>Turno fechado</strong> em <?= htmlspecialchars((string)$cr['generated_at']) ?>
+            por <?= htmlspecialchars((string)$cr['closed_by_label']) ?>
+            <?php if ((int)$cr['total'] > 1): ?>
+                <span class="rp-muted">(<?= (int)$cr['total'] ?> fechamentos deste turno; abaixo, o último)</span>
+            <?php endif; ?>
+        </span>
+        <a class="rp-nh-btn" target="_blank"
+           href="zabbix.php?action=plantonistas.report.pdf&report_id=<?= (int)$cr['id'] ?>"
+           title="Abre o documento congelado, com os números do fechamento">
+            <i class="fas fa-file-contract"></i> Ver repasse fechado
+        </a>
+    </div>
+</div>
+<?php endif; ?>
 
 <?php 
 // URL base do Problem View filtrado por período.
@@ -470,9 +502,12 @@ const SEV_DATA = <?= $sev_data ?>;
 const NOTE_SHIFT = '<?= $shift ?>';
 const NOTE_DATE = '<?= $date ?>';
 const CALENDAR_DATA = <?= $calendar_json ?>;
-// Tokens CSRF das duas actions de escrita chamadas por esta tela.
+// Tokens CSRF das actions de escrita chamadas por esta tela.
 const CSRF_NOTES_SAVE    = <?= json_encode($data['csrf_notes_save'] ?? '') ?>;
 const CSRF_MENTIONS_READ = <?= json_encode($data['csrf_mentions_read'] ?? '') ?>;
+const CSRF_REPORT_CLOSE  = <?= json_encode($data['csrf_report_close'] ?? '') ?>;
+const REPORT_LIMIT       = <?= json_encode((string)($data['limit'] ?? '5')) ?>;
+const ALREADY_CLOSED     = <?= !empty($data['closed_report']) ? 'true' : 'false' ?>;
 
 // ── Charts ──
 const maxMtta = Math.max(...MTTA_DATA);
@@ -911,6 +946,52 @@ if (noteForm && editor) {
             }
             else { st.textContent=j.message||'Erro.'; st.style.color='#c62828'; }
         }).catch(()=>{st.textContent='Erro de conexão.';st.style.color='#c62828';});
+    });
+}
+
+// ── Fechar turno (issue #2) ──
+const closeBtn = document.getElementById('rpCloseShiftBtn');
+if (closeBtn) {
+    closeBtn.addEventListener('click', function () {
+        const aviso = ALREADY_CLOSED
+            ? 'Este turno JÁ foi fechado. Fechar de novo cria um segundo documento'
+              + ' (o anterior é mantido) e é restrito a Admin/Super Admin.\n\nContinuar?'
+            : 'Fechar o turno congela os números atuais num documento imutável,'
+              + ' que continua valendo mesmo depois de o Zabbix apagar os eventos'
+              + ' do período.\n\nContinuar?';
+        if (!confirm(aviso)) return;
+
+        closeBtn.disabled = true;   // anti duplo clique: dois cliques criariam
+        closeBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Fechando...'; // dois documentos
+
+        fetch('zabbix.php?action=plantonistas.report.close', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8'},
+            body: new URLSearchParams({
+                date: NOTE_DATE, shift: NOTE_SHIFT, limit: REPORT_LIMIT,
+                _csrf_token: CSRF_REPORT_CLOSE
+            })
+        }).then(function (r) {
+            // Falha de CSRF responde HTML, não JSON — mesma guarda do save da nota.
+            const ct = r.headers.get('content-type') || '';
+            if (!r.ok || ct.indexOf('json') === -1) {
+                return { success: false,
+                    message: 'Sessão expirada ou acesso negado. Recarregue a página (F5).' };
+            }
+            return r.json();
+        }).then(function (j) {
+            alert(j.message || (j.success ? 'Turno fechado.' : 'Não foi possível fechar o turno.'));
+            if (j.success) {
+                location.reload();   // recarrega para a faixa de "turno fechado" aparecer
+                return;
+            }
+            closeBtn.disabled = false;
+            closeBtn.innerHTML = '<i class="fas fa-lock"></i> Fechar turno';
+        }).catch(function () {
+            alert('Erro de conexão ao fechar o turno.');
+            closeBtn.disabled = false;
+            closeBtn.innerHTML = '<i class="fas fa-lock"></i> Fechar turno';
+        });
     });
 }
 
