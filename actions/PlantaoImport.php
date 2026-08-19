@@ -6,6 +6,14 @@ use CController, CControllerResponseRedirect, CUrl, CWebUser;
 
 class PlantaoImport extends CController {
 
+    use UserLabel;
+
+    // readCsv/readXlsx/colRefToIndex saíram daqui para o trait: o readCsv
+    // estava duplicado linha a linha no PhonesImport, e o leitor de XLSX
+    // ficava preso nesta classe — era por isso que a importação de telefones
+    // aceitava só CSV.
+    use SpreadsheetReader;
+
     protected function checkInput(): bool { return true; }
 
     public function checkPermissions(): bool {
@@ -69,9 +77,9 @@ class PlantaoImport extends CController {
         file_put_contents($tmp, $content);
 
         if ($ext === 'xlsx') {
-            $rows = $this->readXlsx($tmp);
+            $rows = $this->readXlsxFile($tmp);
         } else {
-            $rows = $this->readCsv($tmp);
+            $rows = $this->readCsvFile($tmp);
         }
         @unlink($tmp);
 
@@ -190,95 +198,8 @@ class PlantaoImport extends CController {
         ));
     }
 
-    // ── CSV ───────────────────────────────────────────────────────────────
 
-    private function readCsv(string $tmp): ?array {
-        $content = file_get_contents($tmp);
-        if ($content === false) return null;
-        $content = ltrim($content, "\xEF\xBB\xBF");
 
-        $lines = preg_split('/\r\n|\r|\n/', $content);
-        $lines = array_values(array_filter($lines, fn($l) => trim($l) !== ''));
-        if (!$lines) return null;
-
-        $first = $lines[0];
-        $sep   = ';';
-        if (substr_count($first, "\t") > substr_count($first, ';') &&
-            substr_count($first, "\t") > substr_count($first, ',')) {
-            $sep = "\t";
-        } elseif (substr_count($first, ',') > substr_count($first, ';')) {
-            $sep = ',';
-        }
-
-        return array_map(fn($l) => str_getcsv($l, $sep, '"', ''), $lines);
-    }
-
-    // ── XLSX ──────────────────────────────────────────────────────────────
-
-    private function readXlsx(string $tmp): ?array {
-        if (!class_exists('ZipArchive')) return null;
-        $zip = new \ZipArchive();
-        if ($zip->open($tmp) !== true) return null;
-
-        $sharedStrings = [];
-        $ssXml = $zip->getFromName('xl/sharedStrings.xml');
-        if ($ssXml !== false) {
-            $ss = @simplexml_load_string($ssXml);
-            if ($ss) {
-                foreach ($ss->si as $si) {
-                    $val = '';
-                    foreach ($si->xpath('.//t') as $t) { $val .= (string)$t; }
-                    $sharedStrings[] = $val;
-                }
-            }
-        }
-
-        $sheet1 = $zip->getFromName('xl/worksheets/sheet1.xml');
-        if ($sheet1 === false) {
-            $wbXml = $zip->getFromName('xl/workbook.xml');
-            if ($wbXml !== false) {
-                $wb = @simplexml_load_string($wbXml);
-                if ($wb) {
-                    $wb->registerXPathNamespace('r', 'http://schemas.openxmlformats.org/officeDocument/2006/relationships');
-                    $rid  = (string)($wb->sheets->sheet[0]->attributes('r', true)['id'] ?? '');
-                    if ($rid) $sheet1 = $zip->getFromName("xl/worksheets/$rid.xml");
-                }
-            }
-            if ($sheet1 === false) { $zip->close(); return null; }
-        }
-        $zip->close();
-
-        $xml = @simplexml_load_string($sheet1);
-        if (!$xml) return null;
-        $xml->registerXPathNamespace('x', 'http://schemas.openxmlformats.org/spreadsheetml/2006/main');
-
-        $rows = [];
-        foreach ($xml->xpath('//x:row') as $row) {
-            $rowArr  = [];
-            $prevCol = -1;
-            foreach ($row->xpath('x:c') as $cell) {
-                $ref    = (string)($cell->attributes()['r'] ?? '');
-                $colIdx = $this->colRefToIndex(preg_replace('/[0-9]/', '', $ref));
-                for ($g = $prevCol + 1; $g < $colIdx; $g++) { $rowArr[] = ''; }
-                $prevCol = $colIdx;
-                $t = (string)($cell->attributes()['t'] ?? '');
-                $v = (string)($cell->v ?? '');
-                if ($t === 's')         { $rowArr[] = $sharedStrings[(int)$v] ?? ''; }
-                elseif ($t === 'inlineStr') { $rowArr[] = (string)($cell->is->t ?? ''); }
-                else                    { $rowArr[] = $v; }
-            }
-            $rows[] = $rowArr;
-        }
-        return $rows ?: null;
-    }
-
-    private function colRefToIndex(string $ref): int {
-        $idx = 0;
-        foreach (str_split(strtoupper($ref)) as $c) {
-            $idx = $idx * 26 + (ord($c) - ord('A') + 1);
-        }
-        return $idx - 1;
-    }
 
     // ── Helpers ───────────────────────────────────────────────────────────
 
@@ -338,11 +259,15 @@ class PlantaoImport extends CController {
             $uid   = (int)$r['userid'];
             $uname = mb_strtolower(trim($r['username']));
             $full  = mb_strtolower(trim($r['name'] . ' ' . $r['surname']));
+            // O CSV exportado traz o rótulo do UserLabel (sem o nome
+            // duplicado). Sem esta chave, exportar e reimportar deixaria de
+            // casar justamente com quem tem o nome completo no surname.
+            $lbl   = mb_strtolower($this->userLabel($r['name'], $r['surname'], ''));
             $nome  = mb_strtolower(trim($r['name']));
             foreach ([$uname, $this->removeAccents($uname)] as $k) {
                 if ($k !== '') $map[$k] = $uid;
             }
-            foreach ([$full, $this->removeAccents($full)] as $k) {
+            foreach ([$full, $this->removeAccents($full), $lbl, $this->removeAccents($lbl)] as $k) {
                 if ($k !== '') $map[$k] = $uid;
             }
             foreach ([$nome, $this->removeAccents($nome)] as $k) {
