@@ -18,6 +18,8 @@
  * Fork de: https://github.com/JohnnyIver/zabbix-report-module
  *
  * Changelog:
+ *   v3.1.0 - Conexão via CliDb (PDO): roda em MySQL/MariaDB e PostgreSQL,
+ *            escolhido pela env DB_TYPE (issue #1).
  *   v3.0.0 - API do Zabbix removida (issue #4). Tudo vem do banco em que o
  *            script já estava conectado. Some o TLS sem verificação, o
  *            ZABBIX_API_TOKEN, o ZABBIX_URL e a dependência de curl.
@@ -30,8 +32,11 @@
 // Em CLI não existe $GLOBALS['DB'] (o frontend do Zabbix não é carregado),
 // então as env DB_* do /etc/cron.d são obrigatórias em produção. Sem elas o
 // script cai no default localhost e não acha o banco.
+define('DB_TYPE',   strtolower((string)($GLOBALS['DB']['TYPE'] ?? getenv('DB_TYPE') ?: 'mysql')));
 define('DB_HOST',   $GLOBALS['DB']['SERVER']   ?? getenv('DB_HOST')   ?: 'localhost');
-define('DB_PORT',   (int)($GLOBALS['DB']['PORT'] ?? getenv('DB_PORT')  ?: 3306));
+// A porta default acompanha o dialeto: 3306 no MySQL, 5432 no PostgreSQL.
+define('DB_PORT',   (int)($GLOBALS['DB']['PORT'] ?? getenv('DB_PORT')
+    ?: (in_array(DB_TYPE, ['pgsql', 'postgresql'], true) ? 5432 : 3306)));
 define('DB_NAME',   $GLOBALS['DB']['DATABASE'] ?? getenv('DB_NAME')   ?: 'zabbix');
 define('DB_USER',   $GLOBALS['DB']['USER']     ?? getenv('DB_USER')   ?: 'zabbix');
 define('DB_PASS',   $GLOBALS['DB']['PASSWORD'] ?? getenv('DB_PASS')   ?: '');
@@ -55,6 +60,8 @@ define('SYSTEM_GROUPS', ['Disabled', 'No access to the frontend', 'Guests']);
 define('NAME_MAXLEN', 128);
 
 // ── Bootstrap ─────────────────────────────────────────────────────────────────
+
+require_once __DIR__ . '/CliDb.php';
 
 date_default_timezone_set('America/Sao_Paulo');
 
@@ -112,12 +119,12 @@ function buildFullName(?string $name, ?string $surname, string $username = ''): 
 logMsg('=== Presence Tracker Start ===');
 
 try {
-    mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
-    $db = new mysqli(DB_HOST, DB_USER, DB_PASS, DB_NAME, DB_PORT);
-    $db->set_charset('utf8mb4');
+    // CliDb: PDO por baixo, API do mysqli por cima — as consultas deste script
+    // não mudaram. Ver scripts/CliDb.php.
+    $db = new CliDb(DB_HOST, DB_USER, DB_PASS, DB_NAME, DB_PORT, DB_TYPE);
 } catch (Throwable $e) {
     logMsg('CRITICAL: Falha ao conectar no banco: ' . $e->getMessage());
-    logMsg('Confira as env DB_HOST/DB_PORT/DB_NAME/DB_USER/DB_PASS no arquivo de cron.');
+    logMsg('Confira as env DB_TYPE/DB_HOST/DB_PORT/DB_NAME/DB_USER/DB_PASS no arquivo de cron.');
     exit(1);
 }
 
@@ -133,7 +140,7 @@ try {
 try {
     $chk = $db->query(
         "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
-          WHERE TABLE_SCHEMA = DATABASE()
+          WHERE TABLE_SCHEMA = " . $db->schemaFilter() . "
             AND TABLE_NAME   = '" . PRESENCE_TABLE . "'"
     );
     $table_exists = ($chk && $chk->num_rows > 0);
@@ -285,7 +292,7 @@ foreach ($active_users as $userid => $lastaccess_ts) {
             SELECT id
             FROM " . PRESENCE_TABLE . "
             WHERE userid = ?
-              AND DATE(session_start) = ?
+              AND CAST(session_start AS DATE) = CAST(? AS DATE)
             ORDER BY session_start DESC
             LIMIT 1
         ");

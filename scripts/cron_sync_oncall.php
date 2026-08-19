@@ -57,6 +57,8 @@
  * Mantido por Rafael M. A. Leão Ereno (MALE)
  *
  * Changelog:
+ *   v1.1.0 - Conexão via CliDb (PDO): roda em MySQL/MariaDB e PostgreSQL,
+ *            escolhido pela env DB_TYPE (issue #1).
  *   v1.0.0 - Primeira versão (issue #5).
  */
 
@@ -64,8 +66,11 @@
 
 // Em CLI não existe $GLOBALS['DB'], então as env DB_* do /etc/cron.d são
 // obrigatórias em produção — sem elas o script cai no default localhost.
+define('DB_TYPE', strtolower((string)($GLOBALS['DB']['TYPE'] ?? getenv('DB_TYPE') ?: 'mysql')));
 define('DB_HOST', $GLOBALS['DB']['SERVER']   ?? getenv('DB_HOST')   ?: 'localhost');
-define('DB_PORT', (int)($GLOBALS['DB']['PORT'] ?? getenv('DB_PORT') ?: 3306));
+// A porta default acompanha o dialeto: 3306 no MySQL, 5432 no PostgreSQL.
+define('DB_PORT', (int)($GLOBALS['DB']['PORT'] ?? getenv('DB_PORT')
+    ?: (in_array(DB_TYPE, ['pgsql', 'postgresql'], true) ? 5432 : 3306)));
 define('DB_NAME', $GLOBALS['DB']['DATABASE'] ?? getenv('DB_NAME')   ?: 'zabbix');
 define('DB_USER', $GLOBALS['DB']['USER']     ?? getenv('DB_USER')   ?: 'zabbix');
 define('DB_PASS', $GLOBALS['DB']['PASSWORD'] ?? getenv('DB_PASS')   ?: '');
@@ -95,6 +100,8 @@ define('LOOKBACK_DAYS', 2);
 
 // ── Bootstrap ─────────────────────────────────────────────────────────────────
 
+require_once __DIR__ . '/CliDb.php';
+
 date_default_timezone_set('America/Sao_Paulo');
 
 function logMsg(string $msg): void {
@@ -106,12 +113,11 @@ function logMsg(string $msg): void {
 logMsg('=== Sync On-Call Start ===' . (DRY_RUN ? ' (DRY RUN — nada será gravado)' : ''));
 
 try {
-    mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
-    $db = new mysqli(DB_HOST, DB_USER, DB_PASS, DB_NAME, DB_PORT);
-    $db->set_charset('utf8mb4');
+    // CliDb: PDO por baixo, API do mysqli por cima — ver scripts/CliDb.php.
+    $db = new CliDb(DB_HOST, DB_USER, DB_PASS, DB_NAME, DB_PORT, DB_TYPE);
 } catch (Throwable $e) {
     logMsg('CRITICAL: Falha ao conectar no banco: ' . $e->getMessage());
-    logMsg('Confira as env DB_HOST/DB_PORT/DB_NAME/DB_USER/DB_PASS no arquivo de cron.');
+    logMsg('Confira as env DB_TYPE/DB_HOST/DB_PORT/DB_NAME/DB_USER/DB_PASS no arquivo de cron.');
     exit(1);
 }
 
@@ -119,7 +125,7 @@ try {
     foreach (['module_plantonistas_schedule', 'module_plantonistas_shifts'] as $t) {
         $chk = $db->query(
             "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
-              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = '$t'"
+              WHERE TABLE_SCHEMA = " . $db->schemaFilter() . " AND TABLE_NAME = '$t'"
         );
         if (!$chk || $chk->num_rows === 0) {
             logMsg("CRITICAL: tabela $t não existe.");
@@ -190,14 +196,16 @@ function currentShiftDate(string $start, string $end, int $now): ?string {
  *
  * Abre transação própria. Em MySQL/MariaDB `START TRANSACTION` faz **commit
  * implícito** da transação em andamento, então NÃO chame esta função de dentro
- * de outra transação — reserve o id antes de abri-la.
+ * de outra transação — reserve o id antes de abri-la. (No PostgreSQL isso não
+ * acontece: lá `BEGIN` dentro de transação é só um aviso. O código segue a
+ * regra mais restritiva, que vale nos dois.)
  *
  * (O teto ZBX_DB_MAX_ID que o Zabbix confere antes do UPDATE foi omitido de
  * propósito: irrelevante para users_groups.id na escala deste ambiente.)
  *
  * @return int primeiro id livre; os N ids são [retorno, retorno + N - 1]
  */
-function reserveIds(mysqli $db, string $table, string $field, int $count): int {
+function reserveIds(CliDb $db, string $table, string $field, int $count): int {
     $db->begin_transaction();
 
     try {

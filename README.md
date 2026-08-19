@@ -50,13 +50,15 @@ use em produção PG antes de testar — ver o estado exato abaixo.
 | Criação e migração das tabelas (`Module::init()`) | ✅ `Schema.php` gera o DDL por dialeto; `RENAME`, `ADD COLUMN`, `MODIFY`, índices e introspecção têm ramo próprio |
 | Consultas das 6 telas | ✅ `SqlFn` gera `to_char`/`to_timestamp`/`EXTRACT`/`ON CONFLICT`; `insert_id` usa `lastval()` |
 | Armadilhas semânticas | ✅ chaves do `INFORMATION_SCHEMA` em minúsculo, booleano `t`/`f`, comparação de texto com caixa, `SELECT DISTINCT` + `ORDER BY` |
-| `scripts/cron_presence_tracker.php` e `cron_sync_oncall.php` | ❌ **ainda mysqli** — rodam só contra MySQL/MariaDB |
-| Homologação | ❌ nenhum teste em lab PostgreSQL até agora |
+| `scripts/cron_presence_tracker.php` e `cron_sync_oncall.php` | ✅ PDO via `scripts/CliDb.php`, dialeto pela env `DB_TYPE` |
+| Homologação | ❌ **nenhum teste em lab PostgreSQL até agora** |
 
-Ou seja: **em MySQL/MariaDB, pode instalar.** Em PostgreSQL, o módulo deve
-subir e as telas devem funcionar, mas os dois crons (presença e escalonamento)
-ficam de fora até serem migrados para PDO — e nada disso passou por um lab PG.
-Detalhe do que falta no [ROADMAP.md](ROADMAP.md), Fase 3.
+Ou seja: **em MySQL/MariaDB, pode instalar.** Em PostgreSQL o código está todo
+portado, mas *nada foi executado contra um PG de verdade* — trate como
+candidato a homologação, não como pronto.
+
+Nos crons, acrescente `DB_TYPE=pgsql` ao arquivo de cron (o default é `mysql`,
+e a porta acompanha: 3306 ou 5432).
 
 ## Telas
 
@@ -187,7 +189,8 @@ Atenção a três coisas que já causaram tabela de presença vazia em produçã
 - **Nome do arquivo em `/etc/cron.d/` não pode ter ponto** — o cron ignora
   `zbx-repasse-plantao.disabled` silenciosamente (é assim que se desativa).
 - **As variáveis `DB_HOST`/`DB_PORT`/`DB_NAME`/`DB_USER`/`DB_PASS` são
-  obrigatórias no arquivo de cron**: em CLI não existe `$GLOBALS['DB']`, e sem
+  obrigatórias no arquivo de cron** (e `DB_TYPE=pgsql` se o Zabbix estiver em
+  PostgreSQL — o default é `mysql`): em CLI não existe `$GLOBALS['DB']`, e sem
   elas o script tenta `localhost`. São as **únicas** env necessárias — desde a
   v5 o script lê tudo do banco e não chama mais a API do Zabbix, então
   `ZABBIX_API_TOKEN` e `ZABBIX_URL` podem sair do arquivo de cron (e o token
@@ -246,6 +249,7 @@ seção da tabela `ids` no CLAUDE.md).
 
 ```bash
 cat > /etc/cron.d/plantonistas-oncall <<'EOF'
+DB_TYPE=mysql
 DB_HOST=172.18.190.21
 DB_NAME=zabbix
 DB_USER=zabbix

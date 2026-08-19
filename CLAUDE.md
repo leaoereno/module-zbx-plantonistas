@@ -1199,8 +1199,29 @@ operador responde "banco novo", enquanto o `Module::init()` **não conserta
 depois** (`existingTables()` vê a tabela pronta). Regenerar sempre que o
 `Schema.php` mudar; nunca editar à mão.
 
-O que **falta** para rodar em PG está no ROADMAP: os dois crons, que rodam em
-CLI com mysqli e precisam de PDO. E nada disso passou por um lab PostgreSQL.
+**Os dois crons em PDO** (2026-08-19): `scripts/CliDb.php` faz para o CLI o que
+o `ZbxDb` faz para o frontend — expõe a fatia da API do mysqli que os scripts
+usam, por cima do PDO, com DSN escolhido pela env `DB_TYPE`. Nenhuma consulta
+foi reescrita.
+
+Duas armadilhas do PDO que o adaptador precisou compensar:
+
+- **A string de tipos do `bind_param` NÃO é decorativa.** Com
+  `ATTR_EMULATE_PREPARES => false`, passar os valores direto para
+  `execute([...])` faz o PDO enviar **tudo como string**. O MySQL coage
+  sozinho; o PostgreSQL não — `bigint = text` é `operator does not exist`. Como
+  os dois scripts comparam `userid`, `usrgrpid`, `shift_id` e timestamps com
+  `= ?`, ignorar os tipos deixaria o ramo PG quebrado em quase toda consulta.
+  Cada valor é ligado com `bindValue()` e o tipo declarado (`i` → `PARAM_INT`),
+  e o `execute()` vai **sem argumento** — passar o array ali sobrescreveria os
+  tipos e devolveria tudo para string.
+- **`rollBack()` lança se não há transação ativa**, ao contrário do mysqli, que
+  devolve false. O único chamador está num `catch`, então sem a guarda a
+  exceção original — a que diz o que aconteceu — seria trocada por "There is no
+  active transaction".
+
+O que **falta**: homologar. Nada disso foi executado contra um PostgreSQL de
+verdade.
 
 ### Backlog conhecido
 
