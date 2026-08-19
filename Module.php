@@ -186,15 +186,20 @@ class Module extends CModule {
         $in = "'" . implode("','", $tables) . "'";
 
         // Um SELECT só para todas as colunas relevantes.
-        $cols = [];
-        $res  = \DBselect(
-            'SELECT TABLE_NAME, COLUMN_NAME, CHARACTER_MAXIMUM_LENGTH' .
+        // COLUMN_TYPE ('bigint(20) unsigned', 'int(11)') vem junto porque
+        // CHARACTER_MAXIMUM_LENGTH é NULL em coluna numérica e não distingue
+        // INT de BIGINT — ver a correção da tabela de presença abaixo.
+        $cols  = [];
+        $types = [];
+        $res   = \DBselect(
+            'SELECT TABLE_NAME, COLUMN_NAME, CHARACTER_MAXIMUM_LENGTH, COLUMN_TYPE' .
             ' FROM INFORMATION_SCHEMA.COLUMNS' .
             ' WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN (' . $in . ')'
         );
         while ($row = \DBfetch($res)) {
-            $cols[$row['TABLE_NAME']][strtolower($row['COLUMN_NAME'])] =
-                $row['CHARACTER_MAXIMUM_LENGTH'];
+            $c = strtolower($row['COLUMN_NAME']);
+            $cols[$row['TABLE_NAME']][$c]  = $row['CHARACTER_MAXIMUM_LENGTH'];
+            $types[$row['TABLE_NAME']][$c] = strtolower((string)$row['COLUMN_TYPE']);
         }
 
         // Um SELECT só para todos os índices relevantes.
@@ -290,11 +295,49 @@ class Module extends CModule {
         }
 
         // ── module_plantonistas_user_sessions ──
+        //
+        // Até a v4 o próprio cron de presença tinha um CREATE TABLE, que
+        // divergia deste DDL (id INT, name VARCHAR(255), sem a coluna ip,
+        // índices idx_userid/idx_lastaccess). Onde o cron rodou antes do
+        // primeiro request com o módulo habilitado, é essa tabela torta que
+        // está no banco — e existingTables() a considera pronta. O DDL do
+        // cron foi removido na v5; o conserto do que ele criou é aqui.
         $t = 'module_plantonistas_user_sessions';
-        if (isset($cols[$t]) && !isset($cols[$t]['noc_context'])) {
-            \DBexecute("ALTER TABLE $t ADD COLUMN noc_context VARCHAR(50) DEFAULT NULL AFTER ip");
-            \DBexecute("ALTER TABLE $t ADD INDEX idx_cus_noc_context (noc_context)");
+        if (isset($cols[$t])) {
+            // `ip` PRECISA vir antes do bloco de noc_context: o ALTER de
+            // noc_context usa AFTER ip e falharia numa tabela criada pelo cron.
+            if (!isset($cols[$t]['ip'])) {
+                \DBexecute("ALTER TABLE $t ADD COLUMN ip VARCHAR(39) DEFAULT NULL AFTER lastaccess");
+            }
+            // id INT estoura em 2,1 bi de linhas — a tabela é de alta rotação
+            // (uma escrita por analista a cada ciclo do cron).
+            if (str_starts_with((string)($types[$t]['id'] ?? ''), 'int')) {
+                \DBexecute("ALTER TABLE $t MODIFY COLUMN id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT");
+            }
+            if (str_contains((string)($types[$t]['userid'] ?? ''), 'bigint')
+                    && !str_contains((string)($types[$t]['userid'] ?? ''), 'unsigned')) {
+                \DBexecute("ALTER TABLE $t MODIFY COLUMN userid BIGINT UNSIGNED NOT NULL");
+            }
+            if (!isset($cols[$t]['noc_context'])) {
+                \DBexecute("ALTER TABLE $t ADD COLUMN noc_context VARCHAR(50) DEFAULT NULL AFTER ip");
+                \DBexecute("ALTER TABLE $t ADD INDEX idx_cus_noc_context (noc_context)");
+            }
+            // Índices com o nome oficial. Os do cron (idx_userid,
+            // idx_lastaccess) ficam onde estão: são redundantes, mas dropar
+            // índice numa tabela grande trava escrita, e o ganho é zero.
+            foreach ([
+                'idx_cus_userid'        => 'userid',
+                'idx_cus_lastaccess'    => 'lastaccess',
+                'idx_cus_session_start' => 'session_start',
+            ] as $name => $col) {
+                if (!isset($idx[$t][$name]) && isset($cols[$t][$col])) {
+                    \DBexecute("ALTER TABLE $t ADD INDEX $name ($col)");
+                }
+            }
         }
+        // `name` VARCHAR(255) criado pelo cron NÃO é reduzido para o
+        // VARCHAR(128) do DDL: encurtar coluna trunca dado silenciosamente, e
+        // 255 acomoda 128 sem prejuízo nenhum.
 
         // ── module_plantonistas_shift_reports ──
         $t = 'module_plantonistas_shift_reports';

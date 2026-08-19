@@ -158,16 +158,22 @@ Atenção a três coisas que já causaram tabela de presença vazia em produçã
   `zbx-repasse-plantao.disabled` silenciosamente (é assim que se desativa).
 - **As variáveis `DB_HOST`/`DB_PORT`/`DB_NAME`/`DB_USER`/`DB_PASS` são
   obrigatórias no arquivo de cron**: em CLI não existe `$GLOBALS['DB']`, e sem
-  elas o script tenta `localhost`. `ZABBIX_API_TOKEN` e `ZABBIX_URL` idem —
-  `ZABBIX_URL` é o endpoint da API, não a URL do frontend.
+  elas o script tenta `localhost`. São as **únicas** env necessárias — desde a
+  v5 o script lê tudo do banco e não chama mais a API do Zabbix, então
+  `ZABBIX_API_TOKEN` e `ZABBIX_URL` podem sair do arquivo de cron (e o token
+  ser revogado no Zabbix).
 - **Rodar em UM frontend só** — grava no banco compartilhado; nos dois
-  duplica escrita e consumo da API.
+  duplica escrita sem ganho nenhum.
+
+O script **não cria tabela**: se `module_plantonistas_user_sessions` não
+existir, ele encerra pedindo que o módulo seja habilitado uma vez no frontend
+(é o `Module::init()` que provisiona e migra o schema).
 
 Teste manual antes de esperar o cron (as aspas simples do arquivo protegem o
 `$` da senha):
 
 ```bash
-set -a; source <(grep -E "^(ZABBIX|DB)_" /etc/cron.d/plantonistas-presence); set +a
+set -a; source <(grep -E "^DB_" /etc/cron.d/plantonistas-presence); set +a
 php /usr/share/zabbix/modules/module-zbx-plantonistas/scripts/cron_presence_tracker.php
 ```
 
