@@ -80,6 +80,7 @@ class TurnosReportView extends CController {
                 'sev_dist' => [], 'calendar' => [], 'shift_analysts' => [], 'limit' => $limitStr,
                 'pending_mentions' => [],
             ];
+            $closed_report = null;
         } else {
             $ctx          = $this->resolveUserContext($db, $current_userid);
             $hostFilter   = $ctx['host_filter'];
@@ -116,6 +117,10 @@ class TurnosReportView extends CController {
                 // marca como lida (ver plantonistas.report.mentions.read).
                 'pending_mentions' => $this->queryPendingMentions($db, $current_userid),
             ];
+            // Fechamento do turno (issue #2): só o metadado, para a tela saber
+            // que existe e por quem. O documento em si é renderizado pelo PDF,
+            // a partir do snapshot — a tela continua consultando ao vivo.
+            $closed_report = $this->findClosedReport($db, $date, $shift, $current_userid, $isSuperadmin, $ctx);
             $db->close();
         }
 
@@ -142,10 +147,12 @@ class TurnosReportView extends CController {
             'is_superadmin'     => $ctx['is_superadmin'],
             'role_type'         => $roleType,
             'can_manage_shifts' => $roleType >= 2,
+            'closed_report'     => $closed_report,
             // Token CSRF por action (em módulo o Zabbix confere contra a
             // action completa, não contra o prefixo — ver CLAUDE.md).
             'csrf_notes_save'    => \CCsrfTokenHelper::get('plantonistas.report.notes.save'),
             'csrf_mentions_read' => \CCsrfTokenHelper::get('plantonistas.report.mentions.read'),
+            'csrf_report_close'  => \CCsrfTokenHelper::get('plantonistas.report.close'),
         ];
 
         $response = new CControllerResponseData($data);

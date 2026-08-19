@@ -13,7 +13,7 @@ Escrito em 2026-08-19.
 | ~~[#3](https://github.com/leaoereno/module-zbx-plantonistas/issues/3)~~ | ~~CSRF desativado nas actions de escrita~~ — **feito** (2026-08-19) | Segurança | M | 2 |
 | ~~[#4](https://github.com/leaoereno/module-zbx-plantonistas/issues/4)~~ | ~~Cron de presença: eliminar a API do Zabbix~~ — **feito** (2026-08-19) | Segurança + dívida | M | 2 |
 | ~~[#5](https://github.com/leaoereno/module-zbx-plantonistas/issues/5)~~ | ~~Sincronizar escala com escalonamento do Zabbix~~ — **feito** (2026-08-19) | Funcionalidade | M/G | 4 |
-| [#2](https://github.com/leaoereno/module-zbx-plantonistas/issues/2) | "Fechar turno" (`shift_reports` é tabela morta) | Funcionalidade | M/G | 5 |
+| ~~[#2](https://github.com/leaoereno/module-zbx-plantonistas/issues/2)~~ | ~~"Fechar turno" (`shift_reports` é tabela morta)~~ — **feito** (2026-08-19) | Funcionalidade | M/G | 5 |
 | [#6](https://github.com/leaoereno/module-zbx-plantonistas/issues/6) | Menção só notifica dentro da tela do Repasse | Funcionalidade | M | 5 |
 
 ### Por que essa ordem
@@ -213,7 +213,21 @@ Pendente de campo: criar os grupos na UI, agendar o cron e rodar com
 
 ## Fase 5 — Funcionalidades sobre a base nova (issues #2 e #6)
 
-### #2 — Fechar turno
+### #2 — Fechar turno ✅ **feito em 2026-08-19**
+
+Implementado como **documento separado** (decisão do Rafael): o botão grava o
+snapshot e o PDF o renderiza via `report_id`; a tela segue consultando ao vivo.
+A leitura exige que os grupos do autor caibam nos do leitor, e o MTTA é
+reaplicado com o papel do LEITOR — a restrição de MTTA é por papel, e nenhum
+filtro de grupo a cobre. Detalhe no `CLAUDE.md`.
+
+Pendente de campo: conferir `SHOW CREATE TABLE module_plantonistas_shift_reports`
+em produção (a tabela nunca teve linha escrita; se `report_json` estiver como
+`TEXT`, o `migrateColumns()` promove para `LONGTEXT` no primeiro request) e
+confirmar `php -v` nos dois frontends — o piso do módulo é PHP 8.0.
+
+<details>
+<summary>Plano original</summary>
 
 Entrega três coisas de uma vez: auditoria (repasse imutável, imune ao housekeeper),
 performance (1 leitura de JSON no lugar de ~8 queries contra `events`) e diff entre
@@ -248,6 +262,10 @@ issue que não é só trabalho: é uma decisão de produto. Três saídas:
    quem mais abre o Repasse.
 
 Decidir isso antes de codar — refazer depois significa migrar dados já gravados.
+
+*(Decidido: opção 2, documento separado.)*
+
+</details>
 
 ### #6 — Menção via media type
 

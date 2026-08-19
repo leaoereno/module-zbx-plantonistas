@@ -341,9 +341,22 @@ class Module extends CModule {
 
         // ── module_plantonistas_shift_reports ──
         $t = 'module_plantonistas_shift_reports';
-        if (isset($cols[$t]) && !isset($cols[$t]['noc_context'])) {
-            \DBexecute("ALTER TABLE $t ADD COLUMN noc_context VARCHAR(50) DEFAULT NULL AFTER shift_name");
-            \DBexecute("ALTER TABLE $t ADD INDEX idx_csr_noc (noc_context)");
+        if (isset($cols[$t])) {
+            if (!isset($cols[$t]['noc_context'])) {
+                \DBexecute("ALTER TABLE $t ADD COLUMN noc_context VARCHAR(50) DEFAULT NULL AFTER shift_name");
+                \DBexecute("ALTER TABLE $t ADD INDEX idx_csr_noc (noc_context)");
+            }
+            // A tabela de produção veio do RENAME de custom_shift_reports e,
+            // até o "Fechar turno" (issue #2), NUNCA teve uma linha escrita —
+            // as colunas nunca foram exercitadas. Se o schema antigo declarou
+            // report_json como TEXT (64 KB), o snapshot de um dia movimentado
+            // estoura: com sql_mode STRICT o INSERT falha, e sem STRICT
+            // trunca em silêncio — aí a leitura devolve "fechamento não
+            // encontrado" por JSON inválido, que é o pior dos dois mundos.
+            $tipo = (string) ($types[$t]['report_json'] ?? '');
+            if ($tipo !== '' && !str_contains($tipo, 'longtext')) {
+                \DBexecute("ALTER TABLE $t MODIFY COLUMN report_json LONGTEXT NOT NULL");
+            }
         }
     }
 

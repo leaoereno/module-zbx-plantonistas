@@ -956,6 +956,71 @@ Decisões técnicas que não foram perguntadas:
 - `DRY_RUN=1` mostra o que faria sem gravar. Falha numa equipe não impede as
   outras, mas o script sai com código 1 se houve erro — dá o que monitorar.
 
+### Fechar turno — o repasse vira documento (2026-08-19, issue #2)
+
+`module_plantonistas_shift_reports` era tabela morta: criada, migrada,
+documentada e com **zero leitura e zero escrita**. Agora o botão "Fechar turno"
+no Repasse grava um snapshot JSON do relatório nela, e o PDF renderiza esse
+snapshot (`plantonistas.report.pdf&report_id=N`) — sem tela nova, reaproveitando
+a navegação por data/turno que já existe.
+
+**A decisão que rege tudo (Rafael): o fechamento é DOCUMENTO SEPARADO, não
+cache da tela.** A tela continua consultando ao vivo para todos. O motivo é de
+segurança, não de gosto: o payload do repasse varia por usuário — eventos e Top
+Hosts pelo `host_filter` derivado de `rights`, MTTA restrito ao próprio usuário
+quando role type = 1, Notas e Presença por grupo compartilhado. Usar o snapshot
+como cache serviria a um usuário o que outro enxergava. Das três saídas
+avaliadas (snapshot por contexto, documento separado, snapshot só para Admin+),
+o documento é a única que não abre mão de nenhuma regra — o preço é abrir mão
+do ganho de performance, que era um dos três motivos da issue.
+
+**Quem lê o documento** (`canReadSnapshot()`): Super Admin lê tudo; fechamento
+feito por Super Admin só Super Admin lê (o snapshot dele é sem filtro nenhum);
+nos demais casos os grupos do autor têm que **caber** nos do leitor. Compartilhar
+UM grupo não basta — autor em `[NOC, Redes]` e leitor só em `[NOC]` passaria, e
+o leitor veria as notas dos analistas de Redes. Com os mesmos grupos, os
+`rights` de host também coincidem, e é isso que sustenta a equivalência.
+
+**MTTA é a exceção que nenhum filtro de grupo cobre**, e quase passou batido: a
+restrição é por **papel**, não por grupo. Um Admin do NOC fecha o turno (MTTA de
+todos gravado), um User do NOC abre o documento, passa no teste de grupo — e
+veria a tabela inteira. Por isso `TurnosReportPdf` **reaplica**
+`restrictMttaByRole()` com o papel do LEITOR e recalcula o MTTA global sobre o
+resultado; usar o `global_mtta` do snapshot devolveria o agregado de todos no
+KPI.
+
+Outras decisões:
+
+- **Append-only**: fechar de novo cria outra linha, nunca sobrescreve. O
+  histórico fica imutável por construção e "refazer" é rastreável sem coluna de
+  auditoria. Refechar exige Admin+; `countClosedReports()` roda **sem** filtro
+  de visibilidade de propósito — com filtro, um User refecharia só porque não
+  enxerga o fechamento anterior.
+- `generated_at` é gerado em **PHP**, não com `NOW()`: o banco roda em outro
+  host e pode estar em UTC, e num documento cuja razão de ser é o carimbo de
+  hora, "congelado às 21:05" para um fechamento das 18:05 é defeito grave.
+- A mensagem de erro do fechamento é **fixa**: o `RuntimeException` do `ZbxDb`
+  carrega o SQL inteiro, com o JSON do snapshot dentro, e SQL não vai para a UI.
+- `migrateColumns()` promove `report_json` para `LONGTEXT` se o schema antigo
+  tiver deixado `TEXT`. A tabela nunca teve uma linha escrita até agora, então
+  as colunas dela nunca foram exercitadas em produção — com `TEXT` (64 KB) e
+  sem `sql_mode` STRICT o snapshot truncaria em silêncio, e a leitura devolveria
+  "fechamento não encontrado" por JSON inválido.
+
+**Armadilha de PHP que quase entrou** (achada na revisão): a versão do formato
+do snapshot nasceu como `private const` **dentro do trait**. Constante em trait
+só existe do **PHP 8.2** em diante; em 8.0/8.1 é erro de *compilação* ("Traits
+cannot have constants") — e o `TurnosReportBase` é usado por 11 classes, ou
+seja, o Repasse inteiro e Gerenciar Turnos cairiam em 500. O lab roda 8.4 e o
+erro passaria no teste para explodir em produção, onde RHEL entrega 8.0/8.1 com
+facilidade. Virou método (`snapshotVersion()`). **Regra: nada de `const` em
+trait neste módulo enquanto o piso for PHP 8.0.**
+
+Limitação conhecida: dois usuários fechando ao mesmo tempo passam ambos pela
+checagem e gravam dois documentos, driblando o "refechar exige Admin+". O
+append-only torna o estrago barato; fechar de verdade exigiria `SELECT ... FOR
+UPDATE`.
+
 ### Backlog conhecido
 
 - Salvar vínculo analista→turno em massa (hoje é um clique por analista) —

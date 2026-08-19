@@ -24,6 +24,10 @@ class TurnosReportPdf extends CController {
             'date'  => 'string',
             'shift' => 'string',
             'limit' => 'string',
+            // Com report_id, renderiza o snapshot de um turno FECHADO em vez
+            // de consultar o banco — é assim que o documento da issue #2 é
+            // exibido, sem precisar de tela nova.
+            'report_id' => 'int32',
         ]);
     }
 
@@ -78,34 +82,95 @@ class TurnosReportPdf extends CController {
 
         $userid       = (int)(CWebUser::$data['userid'] ?? 0);
         $nocCtx       = $this->resolveUserContext($db, $userid);
-        $hostFilter   = $nocCtx['host_filter'];
         $isSuperadmin = $nocCtx['is_superadmin'];
-        $roleType     = $nocCtx['role_type'];
-        $nocLabel     = !empty($nocCtx['display_groups'])
-                        ? implode(' / ', $nocCtx['display_groups'])
-                        : null;
+        $reportId     = (int) $this->getInput('report_id', 0);
+        $closedMeta   = null;
 
-        $shiftOptions = $this->queryShiftOptions($db, $nocCtx)['options'];
-        $shift        = $this->normalizeShift($shiftRaw, $shiftOptions);
+        if ($reportId > 0) {
+            // ── Documento de turno FECHADO ───────────────────────────────
+            //
+            // Nada é consultado: tudo vem do snapshot gravado no fechamento.
+            // É esse o ponto da issue #2 — o repasse de uma data antiga passa
+            // a mostrar os números do dia em que o turno acabou, e não o que
+            // sobrou depois de o housekeeper apagar os eventos.
+            //
+            // A visibilidade é conferida dentro do loadClosedReport(), sobre o
+            // contexto gravado no snapshot: Super Admin vê todos; fechamento
+            // feito por Super Admin só ele lê; nos demais casos os grupos do
+            // autor têm que caber nos do leitor. O documento congela a visão
+            // de UMA pessoa — entregá-lo a quem enxerga menos furaria a
+            // segmentação da tela.
+            $closed = $this->loadClosedReport($db, $reportId, $userid, $isSuperadmin, $nocCtx);
+            $db->close();
 
-        [$ts_start, $ts_end] = $this->getShiftBounds($db, $date, $shift);
+            if ($closed === null) {
+                echo '<h1>Fechamento não encontrado.</h1>';
+                echo '<p>O documento não existe ou não é visível para o seu usuário.</p>';
+                die();
+            }
 
-        $mtta         = $this->queryMTTA($db, $ts_start, $ts_end, $hostFilter);
-        $mtta         = $this->restrictMttaByRole($mtta, $roleType, $userid);
-        $inherited    = $this->queryInheritedAlerts($db, $ts_start, $hostFilter);
-        $unacked      = $this->queryUnackedAlerts($db, $ts_start, $ts_end, $hostFilter);
-        $top_hosts    = $this->queryTopHosts($db, $ts_start, $ts_end, $limit, $hostFilter);
-        $top_triggers = $this->queryTopTriggers($db, $ts_start, $ts_end, $limit, $hostFilter);
-        $totals       = $this->queryEventTotals($db, $ts_start, $ts_end, $hostFilter);
-        $notes        = $this->queryNotes($db, $date, $shift, $userid, $isSuperadmin);
-        $db->close();
+            $closedMeta = $closed['meta'];
+            $snap       = $closed['snapshot'];
+            $d          = $snap['data'] ?? [];
 
-        $gmtta   = $this->calcGlobalMTTA($mtta);
-        $user_fn = $this->formatUserLabel(
-            CWebUser::$data['name']    ?? '',
-            CWebUser::$data['surname'] ?? '',
-            CWebUser::$data['username'] ?? 'Admin'
-        );
+            $date         = $snap['date']  ?? $date;
+            $shift        = $snap['shift'] ?? $shiftRaw;
+            $shiftOptions = [$shift => $snap['shift_label'] ?? $shift];
+            $nocLabel     = $snap['noc_label'] ?? null;
+            // Papel do LEITOR: decide os rótulos ("Seu MTTA" x "MTTA Global")
+            // e tem que casar com a restrição aplicada logo abaixo.
+            $roleType     = (int) $nocCtx['role_type'];
+
+            // MTTA é restrito por PAPEL, e o papel gravado no snapshot é o de
+            // quem fechou. Reaplicar com o papel do LEITOR — senão um User
+            // enxergaria, pelo documento, o MTTA de todos os analistas, que
+            // ele nunca veria na tela ao vivo. Nenhum filtro de grupo na
+            // consulta cobre isso: a regra não é de grupo, é de papel.
+            $mtta         = $this->restrictMttaByRole(
+                                $d['mtta'] ?? [], (int) $nocCtx['role_type'], $userid
+                            );
+            $inherited    = $d['inherited']    ?? [];
+            $unacked      = $d['unacked']      ?? [];
+            $top_hosts    = $d['top_hosts']    ?? [];
+            $top_triggers = $d['top_triggers'] ?? [];
+            $totals       = $d['totals']       ?? ['total'=>0,'critical'=>0,'average'=>0,'low'=>0];
+            $notes        = $d['notes']        ?? [];
+            // Recalculado sobre o MTTA já restrito: usar o global_mtta do
+            // snapshot devolveria um agregado de todos os analistas no KPI.
+            $gmtta        = $this->calcGlobalMTTA($mtta);
+            // O rodapé mostra quem FECHOU, não quem está imprimindo: o
+            // documento é dele.
+            $user_fn      = $snap['closed_by'] ?? ($closedMeta['closed_by_label'] ?? '');
+        }
+        else {
+            $hostFilter   = $nocCtx['host_filter'];
+            $roleType     = $nocCtx['role_type'];
+            $nocLabel     = !empty($nocCtx['display_groups'])
+                            ? implode(' / ', $nocCtx['display_groups'])
+                            : null;
+
+            $shiftOptions = $this->queryShiftOptions($db, $nocCtx)['options'];
+            $shift        = $this->normalizeShift($shiftRaw, $shiftOptions);
+
+            [$ts_start, $ts_end] = $this->getShiftBounds($db, $date, $shift);
+
+            $mtta         = $this->queryMTTA($db, $ts_start, $ts_end, $hostFilter);
+            $mtta         = $this->restrictMttaByRole($mtta, $roleType, $userid);
+            $inherited    = $this->queryInheritedAlerts($db, $ts_start, $hostFilter);
+            $unacked      = $this->queryUnackedAlerts($db, $ts_start, $ts_end, $hostFilter);
+            $top_hosts    = $this->queryTopHosts($db, $ts_start, $ts_end, $limit, $hostFilter);
+            $top_triggers = $this->queryTopTriggers($db, $ts_start, $ts_end, $limit, $hostFilter);
+            $totals       = $this->queryEventTotals($db, $ts_start, $ts_end, $hostFilter);
+            $notes        = $this->queryNotes($db, $date, $shift, $userid, $isSuperadmin);
+            $db->close();
+
+            $gmtta   = $this->calcGlobalMTTA($mtta);
+            $user_fn = $this->formatUserLabel(
+                CWebUser::$data['name']    ?? '',
+                CWebUser::$data['surname'] ?? '',
+                CWebUser::$data['username'] ?? 'Admin'
+            );
+        }
 
         $isUserRole = ($roleType < 2);
         $mttaKpiLabel  = $isUserRole ? 'Seu MTTA' : 'MTTA Global';
@@ -116,7 +181,7 @@ class TurnosReportPdf extends CController {
         // sugere como NOME DO ARQUIVO ao salvar/imprimir em PDF, e barra não é
         // caractere válido em nome de arquivo — viria substituída por _ ou -
         // dependendo do sistema. Continua dia-mês-ano, padrão brasileiro.
-        $pdfTitle = 'Repasse de Plantão'
+        $pdfTitle = ($closedMeta !== null ? 'Repasse Fechado' : 'Repasse de Plantão')
             . ($nocLabel ? ' — ' . $nocLabel : '')
             . ' — ' . $this->shiftLabel($shift, $shiftOptions)
             . ' — ' . str_replace('/', '-', $this->formatDateBr($date));
@@ -151,6 +216,22 @@ class TurnosReportPdf extends CController {
         }
         echo '<span class="rp-nh-sub">' . $this->shiftLabel($shift, $shiftOptions) . ' — ' . htmlspecialchars($this->formatDateBr($date)) . '</span>';
         echo '</div></div>';
+
+        // Faixa de documento fechado: deixa explícito que estes números são um
+        // instantâneo, e de quem — o snapshot congela a visão de uma pessoa,
+        // que pode não ser a de quem está lendo.
+        if ($closedMeta !== null) {
+            echo '<div class="rp-card" style="border-left:4px solid #2e7d32;margin-bottom:14px">';
+            echo '<div style="padding:10px 14px">';
+            echo '<strong><i class="fas fa-lock"></i> Turno fechado</strong> — repasse congelado em '
+               . htmlspecialchars((string) $closedMeta['generated_at'])
+               . ' por ' . htmlspecialchars((string) $closedMeta['closed_by_label'])
+               . ' (fechamento #' . (int) $closedMeta['id'] . ').';
+            echo '<div class="rp-muted" style="margin-top:4px">Os números abaixo são os do'
+               . ' momento do fechamento e não mudam mais, mesmo depois de o housekeeper do'
+               . ' Zabbix apagar os eventos do período.</div>';
+            echo '</div></div>';
+        }
 
         // KPIs
         echo '<div class="rp-kpi-grid">';
