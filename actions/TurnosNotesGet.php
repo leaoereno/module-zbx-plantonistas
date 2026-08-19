@@ -28,19 +28,16 @@ class TurnosNotesGet extends CController {
         return !CWebUser::isGuest();
     }
 
-    private function getDb(): ?\mysqli {
+    /**
+     * Cópia própria do getDb() (esta classe não usa o trait TurnosReportBase).
+     * Passou a devolver o ZbxDb, que fala com a conexão nativa do Zabbix em
+     * vez de abrir uma mysqli paralela — ver a documentação em ZbxDb.
+     */
+    private function getDb(): ?ZbxDb {
         try {
-            $server = $GLOBALS['DB']['SERVER']   ?? 'localhost';
-            $port   = (int)($GLOBALS['DB']['PORT'] ?? 3306);
-            $dbname = $GLOBALS['DB']['DATABASE'] ?? 'zabbix';
-            $user   = $GLOBALS['DB']['USER']     ?? 'zabbix';
-            $pass   = $GLOBALS['DB']['PASSWORD'] ?? '';
-
-            mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
-            $mysqli = new \mysqli($server, $user, $pass, $dbname, $port);
-            $mysqli->set_charset('utf8mb4');
-            return $mysqli;
-        } catch (\Exception $e) {
+            return new ZbxDb();
+        } catch (\Throwable $e) {
+            error_log('[plantonistas] getDb() falhou: ' . $e->getMessage());
             return null;
         }
     }
@@ -55,7 +52,7 @@ class TurnosNotesGet extends CController {
         return date('Y-m-d');
     }
 
-    private function getUserRoleType(\mysqli $db, int $userid): int {
+    private function getUserRoleType(ZbxDb $db, int $userid): int {
         try {
             $stmt = $db->prepare(
                 "SELECT r.type AS user_type
@@ -82,7 +79,7 @@ class TurnosNotesGet extends CController {
         }
     }
 
-    private function isSuperAdmin(\mysqli $db, int $userid): bool {
+    private function isSuperAdmin(ZbxDb $db, int $userid): bool {
         // Somente role_type=3 (Super Admin role) tem visão irrestrita.
         return $this->getUserRoleType($db, $userid) === 3;
     }
@@ -178,7 +175,7 @@ class TurnosNotesGet extends CController {
             $stmt->execute();
             echo json_encode([
                 'success' => true,
-                'notes'   => $stmt->get_result()->fetch_all(MYSQLI_ASSOC),
+                'notes'   => $stmt->get_result()->fetch_all(),
             ]);
         } catch (\Exception $e) {
             echo json_encode([

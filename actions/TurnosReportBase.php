@@ -34,23 +34,26 @@ trait TurnosReportBase {
 
     // ── Conexão ──────────────────────────────────────────────
 
-    private function getDb(): ?\mysqli {
+    /**
+     * Handle de banco do módulo.
+     *
+     * Já foi uma conexão mysqli própria, aberta a cada request em paralelo à
+     * do Zabbix, lendo credencial de $GLOBALS['DB']. Agora devolve o ZbxDb,
+     * que fala com a conexão nativa (\DBselect / \DBexecute) — uma conexão a
+     * menos por request e, principalmente, o módulo inteiro passando pela
+     * única camada do Zabbix que é agnóstica de banco (issue #1, PostgreSQL).
+     *
+     * O retorno segue anulável e os chamadores seguem checando null: o
+     * contrato não mudou. Na prática, sem conexão do Zabbix a página nem
+     * chegaria a ser roteada, então o ramo de erro virou defesa.
+     */
+    private function getDb(): ?ZbxDb {
         try {
-            $server = $GLOBALS['DB']['SERVER']   ?? 'localhost';
-            $port   = (int)($GLOBALS['DB']['PORT'] ?? 3306);
-            $dbname = $GLOBALS['DB']['DATABASE'] ?? 'zabbix';
-            $user   = $GLOBALS['DB']['USER']     ?? 'zabbix';
-            $pass   = $GLOBALS['DB']['PASSWORD'] ?? '';
-
-            mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
-            $mysqli = new \mysqli($server, $user, $pass, $dbname, $port);
-            $mysqli->set_charset('utf8mb4');
-            return $mysqli;
+            return new ZbxDb();
         } catch (\Throwable $e) {
             // Antes essa falha era só um retorno nulo silencioso — a tela de
             // Gerenciar Turnos aparecia normal, mas todo grupo vinha vazio,
-            // sem nenhum rastro de que a conexão paralela (getDb(), fora do
-            // DB::connect() nativo do Zabbix) nem chegou a abrir.
+            // sem nenhum rastro de que a conexão nem chegou a abrir.
             error_log('[plantonistas] getDb() falhou: ' . $e->getMessage());
             return null;
         }
@@ -76,7 +79,7 @@ trait TurnosReportBase {
     // partir de start_time/end_time — com detecção automática de virada de
     // meia-noite (quando end_time <= start_time).
 
-    private function getShiftBounds(\mysqli $db, string $date, string $shift): array {
+    private function getShiftBounds(ZbxDb $db, string $date, string $shift): array {
         $date = $this->validateDate($date);
         switch ($shift) {
             case 'manha':
@@ -125,7 +128,7 @@ trait TurnosReportBase {
         return [strtotime("$date $start"), strtotime("$next $end") - 1];
     }
 
-    private function getShiftById(\mysqli $db, int $shiftId): ?array {
+    private function getShiftById(ZbxDb $db, int $shiftId): ?array {
         try {
             $stmt = $db->prepare(
                 "SELECT id, usrgrpid, name, start_time, end_time, sort_order, active
@@ -166,7 +169,7 @@ trait TurnosReportBase {
         ];
     }
 
-    private function queryShiftOptions(\mysqli $db, array $ctx): array {
+    private function queryShiftOptions(ZbxDb $db, array $ctx): array {
         $options = $this->legacyShiftLabels();
         $rows = [];
 
@@ -179,7 +182,7 @@ trait TurnosReportBase {
                         WHERE cs.active = 1
                         ORDER BY ug.name ASC, cs.sort_order ASC, cs.start_time ASC";
                 $res = $db->query($sql);
-                $shifts = $res ? $res->fetch_all(MYSQLI_ASSOC) : [];
+                $shifts = $res ? $res->fetch_all() : [];
             } else {
                 $groupIds = $ctx['group_ids'] ?? [];
                 if (empty($groupIds)) {
@@ -193,7 +196,7 @@ trait TurnosReportBase {
                         WHERE cs.active = 1 AND cs.usrgrpid IN ($ids)
                         ORDER BY cs.sort_order ASC, cs.start_time ASC";
                 $res = $db->query($sql);
-                $shifts = $res ? $res->fetch_all(MYSQLI_ASSOC) : [];
+                $shifts = $res ? $res->fetch_all() : [];
             }
 
             foreach ($shifts as $s) {
@@ -218,7 +221,7 @@ trait TurnosReportBase {
 
     // ── Analistas escalados no turno selecionado ─────────────
 
-    private function queryShiftAnalysts(\mysqli $db, int $shiftId): array {
+    private function queryShiftAnalysts(ZbxDb $db, int $shiftId): array {
         $sql = "SELECT u.userid, u.username,
                     CONCAT(COALESCE(u.name,''), ' ', COALESCE(u.surname,'')) AS fullname,
                     online.last_seen,
@@ -239,7 +242,7 @@ trait TurnosReportBase {
             $stmt = $db->prepare($sql);
             $stmt->bind_param('i', $shiftId);
             $stmt->execute();
-            return $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            return $stmt->get_result()->fetch_all();
         } catch (\Exception $e) {
             return [];
         }
@@ -247,7 +250,7 @@ trait TurnosReportBase {
 
     // ── Resolução de contexto ─────────────────────────────────
 
-    private function getUserRoleType(\mysqli $db, int $userid): int {
+    private function getUserRoleType(ZbxDb $db, int $userid): int {
         try {
             $stmt = $db->prepare(
                 "SELECT r.type AS user_type
@@ -274,7 +277,7 @@ trait TurnosReportBase {
         }
     }
 
-    private function resolveUserContext(\mysqli $db, int $userid): array {
+    private function resolveUserContext(ZbxDb $db, int $userid): array {
         $result = [
             'is_superadmin'  => false,
             'host_filter'    => '',
@@ -300,7 +303,7 @@ trait TurnosReportBase {
             $stmt->execute();
             $result['group_ids'] = array_map(
                 fn($r) => (int)$r['usrgrpid'],
-                $stmt->get_result()->fetch_all(MYSQLI_ASSOC)
+                $stmt->get_result()->fetch_all()
             );
         } catch (\Throwable $e) {
             error_log('[plantonistas] resolveUserContext() group_ids falhou (userid=' . $userid . '): ' . $e->getMessage());
@@ -325,7 +328,7 @@ trait TurnosReportBase {
                 $stmt->execute();
                 $hostIds = array_map(
                     fn($r) => (int)$r['hostid'],
-                    $stmt->get_result()->fetch_all(MYSQLI_ASSOC)
+                    $stmt->get_result()->fetch_all()
                 );
                 $result['host_filter'] = empty($hostIds)
                     ? ''
@@ -347,7 +350,7 @@ trait TurnosReportBase {
                 $stmt->bind_param('i', $userid);
                 $stmt->execute();
                 $result['display_groups'] = array_column(
-                    $stmt->get_result()->fetch_all(MYSQLI_ASSOC),
+                    $stmt->get_result()->fetch_all(),
                     'name'
                 );
             } catch (\Exception $e) {}
@@ -371,7 +374,7 @@ trait TurnosReportBase {
 
     // ── Queries ──────────────────────────────────────────────
 
-    private function queryMTTA(\mysqli $db, int $s, int $e, string $hostFilter = ''): array {
+    private function queryMTTA(ZbxDb $db, int $s, int $e, string $hostFilter = ''): array {
         $sql = "SELECT sub.userid, sub.username, sub.fullname,
                     COUNT(*) AS total_acks,
                     ROUND(AVG(sub.mtta), 0) AS avg_mtta,
@@ -405,7 +408,7 @@ trait TurnosReportBase {
         $stmt = $db->prepare($sql);
         $stmt->bind_param('ii', $s, $e);
         $stmt->execute();
-        return $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+        return $stmt->get_result()->fetch_all();
     }
 
     /**
@@ -415,7 +418,7 @@ trait TurnosReportBase {
      * Solução: MIN() em vez de ANY_VALUE() — compatível com MariaDB < 10.2 (determinístico neste
      * contexto pois eventid→host é 1-para-1 via trigger/function/item).
      */
-    private function queryInheritedAlerts(\mysqli $db, int $ts_start, string $hostFilter = ''): array {
+    private function queryInheritedAlerts(ZbxDb $db, int $ts_start, string $hostFilter = ''): array {
         // PERF FIX v2.4.4 (substitui a tentativa v2.4.2): a v2.4.2 limitou a
         // busca em `events` a 180 dias, mas mesmo assim a query levava 200+
         // segundos e nunca terminava nesse ambiente (confirmado via SHOW FULL
@@ -454,14 +457,14 @@ trait TurnosReportBase {
         $stmt = $db->prepare($sql);
         $stmt->bind_param('iii', $ts_start, $ts_start, $ts_start);
         $stmt->execute();
-        return $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+        return $stmt->get_result()->fetch_all();
     }
 
     /**
      * FIX ONLY_FULL_GROUP_BY:
      * Mesma correção — MIN() para colunas de JOIN não agrupadas.
      */
-    private function queryUnackedAlerts(\mysqli $db, int $s, int $e, string $hostFilter = ''): array {
+    private function queryUnackedAlerts(ZbxDb $db, int $s, int $e, string $hostFilter = ''): array {
         $sql = "SELECT ev.eventid, ev.clock, ev.severity,
                     REPLACE(MIN(t.description), '{HOST.NAME}', MIN(h.name)) AS trigger_desc,
                     MIN(h.host) AS host,
@@ -484,10 +487,10 @@ trait TurnosReportBase {
         $stmt = $db->prepare($sql);
         $stmt->bind_param('ii', $s, $e);
         $stmt->execute();
-        return $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+        return $stmt->get_result()->fetch_all();
     }
 
-    private function queryTopHosts(\mysqli $db, int $s, int $e, int $limit, string $hostFilter = ''): array {
+    private function queryTopHosts(ZbxDb $db, int $s, int $e, int $limit, string $hostFilter = ''): array {
         $limitClause = $limit > 0 ? 'LIMIT ' . (int)$limit : '';
         $sql = "SELECT h.hostid, h.host, h.name AS host_name,
                     COUNT(DISTINCT ev.eventid) AS event_count,
@@ -506,10 +509,10 @@ trait TurnosReportBase {
         $stmt = $db->prepare($sql);
         $stmt->bind_param('ii', $s, $e);
         $stmt->execute();
-        return $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+        return $stmt->get_result()->fetch_all();
     }
 
-    private function queryTopTriggers(\mysqli $db, int $s, int $e, int $limit, string $hostFilter = ''): array {
+    private function queryTopTriggers(ZbxDb $db, int $s, int $e, int $limit, string $hostFilter = ''): array {
         $limitClause = $limit > 0 ? 'LIMIT ' . (int)$limit : '';
         $sql = "SELECT t.triggerid,
                     REPLACE(t.description, '{HOST.NAME}', MIN(h.name)) AS description,
@@ -529,10 +532,10 @@ trait TurnosReportBase {
         $stmt = $db->prepare($sql);
         $stmt->bind_param('ii', $s, $e);
         $stmt->execute();
-        return $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+        return $stmt->get_result()->fetch_all();
     }
 
-    private function queryEventTotals(\mysqli $db, int $s, int $e, string $hostFilter = ''): array {
+    private function queryEventTotals(ZbxDb $db, int $s, int $e, string $hostFilter = ''): array {
         $sql = "SELECT COUNT(DISTINCT ev.eventid) AS total,
                     SUM(CASE WHEN ev.severity >= 4 THEN 1 ELSE 0 END) AS critical,
                     SUM(CASE WHEN ev.severity = 3  THEN 1 ELSE 0 END) AS average,
@@ -553,7 +556,7 @@ trait TurnosReportBase {
             ?: ['total' => 0, 'critical' => 0, 'average' => 0, 'low' => 0];
     }
 
-    private function queryMttaTimeline(\mysqli $db, int $s, int $e, string $hostFilter = ''): array {
+    private function queryMttaTimeline(ZbxDb $db, int $s, int $e, string $hostFilter = ''): array {
         $tzOffset = (int)date('Z');
         $sql = "SELECT FROM_UNIXTIME(ev.clock + ?, '%H') AS hora,
                     ROUND(AVG(a.clock - ev.clock), 0) AS avg_mtta
@@ -577,10 +580,10 @@ trait TurnosReportBase {
         $stmt = $db->prepare($sql);
         $stmt->bind_param('iii', $tzOffset, $s, $e);
         $stmt->execute();
-        return $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+        return $stmt->get_result()->fetch_all();
     }
 
-    private function querySeverityDistribution(\mysqli $db, int $s, int $e, string $hostFilter = ''): array {
+    private function querySeverityDistribution(ZbxDb $db, int $s, int $e, string $hostFilter = ''): array {
         $sql = "SELECT ev.severity, COUNT(*) AS cnt
                 FROM events ev
                 INNER JOIN triggers t  ON t.triggerid = ev.objectid
@@ -598,13 +601,13 @@ trait TurnosReportBase {
         $stmt->execute();
 
         $rows = [];
-        foreach ($stmt->get_result()->fetch_all(MYSQLI_ASSOC) as $r) {
+        foreach ($stmt->get_result()->fetch_all() as $r) {
             $rows[(int)$r['severity']] = (int)$r['cnt'];
         }
         return $rows;
     }
 
-    private function queryCalendarHeatmap(\mysqli $db, string $hostFilter = ''): array {
+    private function queryCalendarHeatmap(ZbxDb $db, string $hostFilter = ''): array {
         $ts30     = (int)strtotime('-30 days 00:00:00');
         $tsNow    = (int)time();
         $tzOffset = (int)date('Z');
@@ -628,13 +631,13 @@ trait TurnosReportBase {
         $stmt->execute();
 
         $rows = [];
-        foreach ($stmt->get_result()->fetch_all(MYSQLI_ASSOC) as $r) {
+        foreach ($stmt->get_result()->fetch_all() as $r) {
             $rows[$r['dia']] = $r;
         }
         return $rows;
     }
 
-    private function queryNotes(\mysqli $db, string $date, string $shift,
+    private function queryNotes(ZbxDb $db, string $date, string $shift,
                                 int $userid, bool $isSuperadmin = false): array {
         $date = $this->validateDate($date);
 
@@ -678,22 +681,21 @@ trait TurnosReportBase {
 
         try {
             $stmt->execute();
-            return $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            return $stmt->get_result()->fetch_all();
         } catch (\Exception $e) {
             return [];
         }
     }
 
-    private function queryPresence(\mysqli $db, int $s, int $e,
+    private function queryPresence(ZbxDb $db, int $s, int $e,
                                    int $userid, bool $isSuperadmin = false): array {
         $ds = date('Y-m-d H:i:s', $s);
         $de = date('Y-m-d H:i:s', $e);
 
         // A coluna Turno NÃO é buscada por JOIN aqui de propósito: um JOIN nas
         // tabelas de turno faz a presença inteira desaparecer se essas tabelas
-        // não existirem no ambiente (getDb() roda com MYSQLI_REPORT_STRICT, e
-        // o prepare de uma tabela ausente lança exceção). Turno é enfeite —
-        // não pode derrubar o dado principal. Vem depois, em query própria.
+        // não existirem no ambiente — a consulta falha e leva junto o dado
+        // principal. Turno é enfeite; vem depois, em query própria.
         if ($isSuperadmin) {
             $sql = "SELECT cus.userid, cus.username, cus.name AS fullname,
                         DATE_FORMAT(MIN(cus.session_start), '%d/%m/%Y %H:%i') AS first_seen,
@@ -718,13 +720,15 @@ trait TurnosReportBase {
                     ORDER BY first_seen_sort ASC";
         }
 
-        // prepare() dentro do try: com MYSQLI_REPORT_STRICT ele lança exceção
-        // (tabela/coluna ausente) e, fora do try, derrubava a página inteira.
+        // Toda a consulta dentro do try. Com o ZbxDb quem lança é o execute()
+        // (o prepare() só monta a string, não valida no servidor como o mysqli
+        // fazia) — manter os três passos juntos é o que garante que tabela
+        // ausente não derrube a página.
         try {
             $stmt = $db->prepare($sql);
             $stmt->bind_param('ss', $ds, $de);
             $stmt->execute();
-            $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $rows = $stmt->get_result()->fetch_all();
         } catch (\Throwable $ex) {
             error_log('[plantonistas] queryPresence() falhou: ' . $ex->getMessage());
             return [];
@@ -744,7 +748,7 @@ trait TurnosReportBase {
      * Turno inativo (active=0) continua sendo exibido de propósito: o vínculo
      * existe, e esconder seria pior que mostrar um turno desativado.
      */
-    private function attachUserShift(\mysqli $db, array $rows): array {
+    private function attachUserShift(ZbxDb $db, array $rows): array {
         if (empty($rows)) {
             return $rows;
         }
@@ -815,7 +819,7 @@ trait TurnosReportBase {
      * Grupos que o usuário pode administrar: Super Admin → todos os grupos
      * com pelo menos 1 membro; Admin → apenas os grupos aos quais pertence.
      */
-    private function listManageableGroups(\mysqli $db, array $ctx): array {
+    private function listManageableGroups(ZbxDb $db, array $ctx): array {
         try {
             if (!empty($ctx['is_superadmin'])) {
                 // Nota: exige >=1 membro em users_groups pra o grupo aparecer.
@@ -826,7 +830,7 @@ trait TurnosReportBase {
                         INNER JOIN users_groups ugm ON ugm.usrgrpid = ug.usrgrpid
                         ORDER BY ug.name ASC";
                 $res = $db->query($sql);
-                return $res ? $res->fetch_all(MYSQLI_ASSOC) : [];
+                return $res ? $res->fetch_all() : [];
             }
 
             $groupIds = $ctx['group_ids'] ?? [];
@@ -834,14 +838,14 @@ trait TurnosReportBase {
             $ids = implode(',', array_map('intval', $groupIds));
             $sql = "SELECT usrgrpid, name FROM usrgrp WHERE usrgrpid IN ($ids) ORDER BY name ASC";
             $res = $db->query($sql);
-            return $res ? $res->fetch_all(MYSQLI_ASSOC) : [];
+            return $res ? $res->fetch_all() : [];
         } catch (\Throwable $e) {
             error_log('[plantonistas] listManageableGroups() falhou: ' . $e->getMessage());
             return [];
         }
     }
 
-    private function listShiftsByGroup(\mysqli $db, int $usrgrpid): array {
+    private function listShiftsByGroup(ZbxDb $db, int $usrgrpid): array {
         try {
             $stmt = $db->prepare(
                 "SELECT id, usrgrpid, name, start_time, end_time, sort_order, active
@@ -851,7 +855,7 @@ trait TurnosReportBase {
             );
             $stmt->bind_param('i', $usrgrpid);
             $stmt->execute();
-            return $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            return $stmt->get_result()->fetch_all();
         } catch (\Throwable $e) {
             error_log('[plantonistas] listShiftsByGroup() falhou (usrgrpid=' . $usrgrpid . '): ' . $e->getMessage());
             return [];
@@ -868,7 +872,7 @@ trait TurnosReportBase {
      * mostrava sempre "Nenhum usuário Zabbix neste grupo", sem dar pra saber
      * se o grupo estava mesmo sem gente ou se a consulta tinha explodido.
      */
-    private function listUsersByGroup(\mysqli $db, int $usrgrpid): array {
+    private function listUsersByGroup(ZbxDb $db, int $usrgrpid): array {
         try {
             // Mesmo critério de "usuário habilitado" usado em Telefones/Escala,
             // agora igual ao do Zabbix: qualquer grupo desabilitado tira o
@@ -885,12 +889,12 @@ trait TurnosReportBase {
                    AND $enabled
                  ORDER BY fullname ASC"
             );
-            if ($stmt === false) {
-                throw new \RuntimeException($db->error ?: 'prepare() retornou false');
-            }
+            // (O antigo `if ($stmt === false)` saiu: o ZbxDb::prepare() tem
+            // retorno tipado e nunca devolve false — a falha vem por exceção
+            // do execute(), que o catch abaixo já trata.)
             $stmt->bind_param('i', $usrgrpid);
             $stmt->execute();
-            return ['error' => null, 'rows' => $stmt->get_result()->fetch_all(MYSQLI_ASSOC)];
+            return ['error' => null, 'rows' => $stmt->get_result()->fetch_all()];
         } catch (\Throwable $e) {
             error_log('[plantonistas] listUsersByGroup() falhou (usrgrpid=' . $usrgrpid . '): ' . $e->getMessage());
             return ['error' => $e->getMessage(), 'rows' => []];
@@ -909,7 +913,7 @@ trait TurnosReportBase {
     /**
      * Cria ou atualiza um turno. Retorna ['success'=>bool,'message'=>string,'id'=>?int].
      */
-    private function saveShift(\mysqli $db, array $ctx, ?int $id, int $usrgrpid,
+    private function saveShift(ZbxDb $db, array $ctx, ?int $id, int $usrgrpid,
                                 string $name, string $start, string $end, int $sortOrder): array {
         if (!$this->canManageGroup($ctx, $usrgrpid)) {
             return ['success' => false, 'message' => 'Sem permissão para esta equipe.'];
@@ -946,7 +950,7 @@ trait TurnosReportBase {
         }
     }
 
-    private function deleteShift(\mysqli $db, array $ctx, int $id): array {
+    private function deleteShift(ZbxDb $db, array $ctx, int $id): array {
         $shift = $this->getShiftById($db, $id);
         if ($shift === null) {
             return ['success' => false, 'message' => 'Turno não encontrado.'];
@@ -973,7 +977,7 @@ trait TurnosReportBase {
     /**
      * Vincula (ou desvincula, se $shiftId for null) um usuário a um turno.
      */
-    private function saveUserShift(\mysqli $db, array $ctx, int $userid, ?int $shiftId): array {
+    private function saveUserShift(ZbxDb $db, array $ctx, int $userid, ?int $shiftId): array {
         if ($shiftId !== null) {
             $shift = $this->getShiftById($db, $shiftId);
             if ($shift === null || !$this->canManageGroup($ctx, (int)$shift['usrgrpid'])) {
@@ -987,7 +991,7 @@ trait TurnosReportBase {
                 );
                 $stmt->bind_param('i', $userid);
                 $stmt->execute();
-                $groups = array_map(fn($r) => (int)$r['usrgrpid'], $stmt->get_result()->fetch_all(MYSQLI_ASSOC));
+                $groups = array_map(fn($r) => (int)$r['usrgrpid'], $stmt->get_result()->fetch_all());
                 $allowed = !empty($ctx['is_superadmin']);
                 foreach ($groups as $g) {
                     if ($this->canManageGroup($ctx, $g)) { $allowed = true; break; }
@@ -1026,7 +1030,7 @@ trait TurnosReportBase {
      * Hostgroups visíveis ao usuário — mesma regra de host_filter em
      * resolveUserContext() (rights.permission >= 2). Super Admin vê todos.
      */
-    private function searchHostgroups(\mysqli $db, array $ctx, string $q): array {
+    private function searchHostgroups(ZbxDb $db, array $ctx, string $q): array {
         $like = '%' . $q . '%';
         try {
             if (!empty($ctx['is_superadmin'])) {
@@ -1050,7 +1054,7 @@ trait TurnosReportBase {
                 $stmt->bind_param('is', $userid, $like);
             }
             $stmt->execute();
-            $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $rows = $stmt->get_result()->fetch_all();
             foreach ($rows as &$r) {
                 $r['url'] = 'zabbix.php?action=problem.view&filter_set=1&filter_show=3&filter_groupids[]=' . (int)$r['id'];
             }
@@ -1065,7 +1069,7 @@ trait TurnosReportBase {
      * Hosts visíveis ao usuário — mesma regra de host_filter. Exclui
      * templates (status=3); inclui monitorados (0) e não monitorados (1).
      */
-    private function searchHosts(\mysqli $db, array $ctx, string $q): array {
+    private function searchHosts(ZbxDb $db, array $ctx, string $q): array {
         $like = '%' . $q . '%';
         try {
             if (!empty($ctx['is_superadmin'])) {
@@ -1091,7 +1095,7 @@ trait TurnosReportBase {
                 $stmt->bind_param('iss', $userid, $like, $like);
             }
             $stmt->execute();
-            $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $rows = $stmt->get_result()->fetch_all();
             foreach ($rows as &$r) {
                 $r['url'] = 'zabbix.php?action=problem.view&filter_set=1&filter_show=3&filter_name=' . urlencode($r['label']);
             }
@@ -1192,7 +1196,7 @@ trait TurnosReportBase {
         return "$alias.attempt_failed < (SELECT MIN(login_attempts) FROM config)";
     }
 
-    private function searchMentionableUsers(\mysqli $db, array $ctx, string $q): array {
+    private function searchMentionableUsers(ZbxDb $db, array $ctx, string $q): array {
         $activeClause = $this->enabledUserClause('u')
             . ' AND ' . $this->notBlockedUserClause('u');
         // ORDER BY pelo nome efetivo (username quando não há nome cadastrado):
@@ -1246,7 +1250,7 @@ trait TurnosReportBase {
                 $stmt->bind_param($bindTypes, ...$bindValues);
             }
             $stmt->execute();
-            $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $rows = $stmt->get_result()->fetch_all();
 
             $out = [];
             foreach ($rows as $r) {
@@ -1380,7 +1384,7 @@ trait TurnosReportBase {
      * Admin). Menção inválida é descartada em silêncio — não deve
      * derrubar o save da nota por causa de 1 menção ruim.
      */
-    private function recordMentions(\mysqli $db, int $noteId, array $mentionedUserids, int $authorUserid, array $ctx): void {
+    private function recordMentions(ZbxDb $db, int $noteId, array $mentionedUserids, int $authorUserid, array $ctx): void {
         foreach ($mentionedUserids as $uid) {
             if ($uid === $authorUserid) {
                 continue; // mencionar a si mesmo não gera notificação
@@ -1416,7 +1420,7 @@ trait TurnosReportBase {
      * Menções [user] pendentes (não lidas) para o usuário logado — usado
      * pelo banner de notificação ao entrar no Repasse Plantão.
      */
-    private function queryPendingMentions(\mysqli $db, int $userid): array {
+    private function queryPendingMentions(ZbxDb $db, int $userid): array {
         try {
             $stmt = $db->prepare(
                 "SELECT m.id, m.note_id, n.shift_date, n.shift_id, n.shift_name, n.analyst_name,
@@ -1429,7 +1433,7 @@ trait TurnosReportBase {
             );
             $stmt->bind_param('i', $userid);
             $stmt->execute();
-            return $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            return $stmt->get_result()->fetch_all();
         } catch (\Throwable $e) {
             error_log('[plantonistas] queryPendingMentions() falhou: ' . $e->getMessage());
             return [];
@@ -1441,7 +1445,7 @@ trait TurnosReportBase {
      * (WHERE mentioned_userid = $userid), então não dá pra marcar como
      * lida a notificação de outra pessoa trocando o id no request.
      */
-    private function markMentionRead(\mysqli $db, int $mentionId, int $userid): bool {
+    private function markMentionRead(ZbxDb $db, int $mentionId, int $userid): bool {
         try {
             $stmt = $db->prepare(
                 'UPDATE module_plantonistas_mentions
