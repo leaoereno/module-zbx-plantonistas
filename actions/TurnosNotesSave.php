@@ -124,7 +124,7 @@ class TurnosNotesSave extends CController {
                 $stmt = $db->prepare(
                     "INSERT INTO module_plantonistas_shift_notes
                         (shift_date, shift_name, shift_id, analyst_userid, analyst_name, notes, notes_format, noc_context, created_at)
-                     VALUES (?, ?, ?, ?, ?, ?, 'html', NULL, NOW())"
+                     VALUES (?, ?, ?, ?, ?, ?, 'html', NULL, " . SqlFn::now() . ")"
                 );
                 $stmt->bind_param('ssiiss', $shift_date, $shift_name, $shift_id, $userid, $fullname, $note);
                 $stmt->execute();
@@ -134,7 +134,7 @@ class TurnosNotesSave extends CController {
                 $stmt = $db->prepare(
                     "INSERT INTO module_plantonistas_shift_notes
                         (shift_date, shift_name, analyst_userid, analyst_name, notes, noc_context, created_at)
-                     VALUES (?, ?, ?, ?, ?, NULL, NOW())"
+                     VALUES (?, ?, ?, ?, ?, NULL, " . SqlFn::now() . ")"
                 );
                 $stmt->bind_param('ssiss', $shift_date, $shift_name, $userid, $fullname, $note);
                 $stmt->execute();

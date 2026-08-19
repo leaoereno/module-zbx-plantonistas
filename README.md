@@ -38,26 +38,25 @@ duplo clique gerando dois POSTs.
 4. Opcional: configurar o cron de escalonamento (#5) e a notificação de
    menção (#6) — as duas seções estão mais abaixo.
 
-## ⚠️ Banco de dados: MySQL / MariaDB (por enquanto)
+## ⚠️ Banco de dados: MySQL/MariaDB homologado; PostgreSQL em andamento
 
-**O módulo funciona — e é homologado em produção — apenas com backend
-MySQL 5.7+ / MySQL 8.0 / MariaDB 10.x.** Em Zabbix rodando sobre
-**PostgreSQL o módulo NÃO funciona hoje** (as telas vão falhar na criação
-das tabelas e nas consultas do Repasse). Suporte a PostgreSQL está no
-roadmap — ver [Roadmap](#roadmap).
+**Homologado em produção:** MySQL 5.7+ / MySQL 8.0 / MariaDB 10.x.
 
-Não é limitação do Zabbix, é do módulo: ele fala MySQL direto em quatro
-pontos.
+**PostgreSQL: o frontend já está portado, mas ainda NÃO foi homologado.** Não
+use em produção PG antes de testar — ver o estado exato abaixo.
 
-| O que | Onde | Por que trava no PostgreSQL |
-|---|---|---|
-| DDL com `ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`, `AUTO_INCREMENT`, `BIGINT UNSIGNED` | `Module.php` (init/provisionamento), `sql/schema.sql` | Sintaxe inexistente no PG (`BIGSERIAL`/`GENERATED AS IDENTITY`, sem `UNSIGNED`, sem engine/charset por tabela) |
-| `RENAME TABLE a TO b` na migração dos módulos antigos | `Module.php`, `sql/migrate-*.sql`, `sql/rollback-*.sql` | No PG é `ALTER TABLE ... RENAME TO` |
-| Introspecção por `INFORMATION_SCHEMA.STATISTICS` (checagem de índices) | `Module.php`, `scripts/cron_presence_tracker.php` | `STATISTICS` é exclusiva do MySQL; no PG seria `pg_indexes` / `pg_class` |
-| Conexão `mysqli` própria (fora do `DBselect`/`DBexecute` do Zabbix) + `ON DUPLICATE KEY UPDATE`, `DATE_FORMAT()`, `IFNULL()`, `FROM_UNIXTIME()`, crases | `actions/TurnosReportBase.php`, `TurnosNotesGet.php`, `TurnosNotesSave.php`, `scripts/cron_presence_tracker.php`, `actions/PhonesImport.php` | Driver e dialeto diferentes: `ON CONFLICT`, `to_char()`, `COALESCE()`, `to_timestamp()`, aspas duplas |
+| Parte | Estado em PostgreSQL |
+|---|---|
+| Criação e migração das tabelas (`Module::init()`) | ✅ `Schema.php` gera o DDL por dialeto; `RENAME`, `ADD COLUMN`, `MODIFY`, índices e introspecção têm ramo próprio |
+| Consultas das 6 telas | ✅ `SqlFn` gera `to_char`/`to_timestamp`/`EXTRACT`/`ON CONFLICT`; `insert_id` usa `lastval()` |
+| Armadilhas semânticas | ✅ chaves do `INFORMATION_SCHEMA` em minúsculo, booleano `t`/`f`, comparação de texto com caixa, `SELECT DISTINCT` + `ORDER BY` |
+| `scripts/cron_presence_tracker.php` e `cron_sync_oncall.php` | ❌ **ainda mysqli** — rodam só contra MySQL/MariaDB |
+| Homologação | ❌ nenhum teste em lab PostgreSQL até agora |
 
-Resumindo: **se o seu Zabbix está em MySQL/MariaDB, pode instalar. Se está em
-PostgreSQL, aguarde a v5.**
+Ou seja: **em MySQL/MariaDB, pode instalar.** Em PostgreSQL, o módulo deve
+subir e as telas devem funcionar, mas os dois crons (presença e escalonamento)
+ficam de fora até serem migrados para PDO — e nada disso passou por um lab PG.
+Detalhe do que falta no [ROADMAP.md](ROADMAP.md), Fase 3.
 
 ## Telas
 
@@ -345,7 +344,7 @@ Enquanto as pastas antigas existirem nos frontends, o rollback é rápido:
 
 1. Zabbix UI: desabilitar "Plantonistas" (primeiro! senão o init() dele
    desfaz o passo 2 na próxima carga de página).
-2. Rodar `sql/rollback-to-old-modules.sql` (RENAMEs reversos, instantâneo,
+2. Rodar `sql/rollback-to-old-modules.<banco>.sql` (renames reversos, instantâneo,
    dados gravados durante a vigência do v4 são mantidos).
 3. Zabbix UI: reabilitar os dois módulos antigos.
 4. Restaurar a linha antiga do crontab.
@@ -359,7 +358,7 @@ Pré-requisito: Zabbix 7.0 LTS com backend **MySQL 5.7+ / 8.0 ou MariaDB
 cd /usr/share/zabbix/modules
 git clone https://github.com/leaoereno/module-zbx-plantonistas.git
 chown -R apache:apache module-zbx-plantonistas   # Ubuntu: www-data
-mysql -uzabbix -p zabbix < module-zbx-plantonistas/sql/schema.sql   # opcional: o módulo cria sozinho
+mysql -uzabbix -p zabbix < module-zbx-plantonistas/sql/schema.mysql.sql   # opcional: o módulo cria sozinho
 ```
 
 Zabbix UI → Administration → General → Modules → Scan directory → habilitar

@@ -124,8 +124,8 @@ Pontos fora do padrão "grupo = visibilidade":
   ciente de que quebra URLs salvas e exige migração — a alternativa
   conservadora (manter nomes) foi oferecida e recusada.
 - **Migração por RENAME TABLE** (atômico, só metadados): dados de produção
-  preservados sem cópia. Automática no init(), com `sql/migrate-from-old-modules.sql`
-  (manual, opcional) e `sql/rollback-to-old-modules.sql` (reverso).
+  preservados sem cópia. Automática no init(), com `sql/migrate-from-old-modules.<banco>.sql`
+  (manual, opcional) e `sql/rollback-to-old-modules.<banco>.sql` (reverso).
 - `scripts/]` do repo antigo era lixo acidental (cópia truncada do cron) — excluído.
 - `install.sh` ganhou guard: pergunta se o banco é novo antes de rodar schema.sql
   (rodar schema em banco com dados antigos criaria tabelas novas vazias).
@@ -159,7 +159,7 @@ grupo sem turnos, comportamento idêntico ao de antes) e a unique key virou
 1 titular por grupo/dia/turno em grupos com turnos cadastrados em
 "Gerenciar Turnos". Migração idempotente em `Module::migrateColumns()`
 (ADD COLUMN + troca de unique key, ADD antes do DROP pra nunca ficar sem
-constraint), replicada em `sql/schema.sql` pra instalação nova.
+constraint), replicada em `sql/schema.mysql.sql` pra instalação nova.
 
 - **Escala**: se o grupo tem turnos ativos, "Escalar Técnico" renderiza 1
   seletor por turno (rótulo = nome do turno) no lugar do par Técnico/Reserva
@@ -300,7 +300,7 @@ nenhuma.
 `html`, default `text` — distingue nota antiga de nota nova na exibição) e
 tabela `module_plantonistas_mentions` (note_id, mentioned_userid, created_by,
 is_read, created_at, read_at). Ambos migrados idempotente em
-`Module::migrateColumns()`/`tableDdl()`, replicados em `sql/schema.sql`.
+`Module::migrateColumns()`/`tableDdl()`, replicados em `sql/schema.mysql.sql`.
 
 **Fluxo**: digitar `[hostgroup]`/`[host]`/`[user]` no editor abre um dropdown
 (nova action `plantonistas.report.mentions.search`, GET com `type`+`q`) que
@@ -1127,7 +1127,7 @@ teste. Perigoso é o que roda nos dois bancos e devolve resultado **diferente**.
   simplesmente não tem o que fazer.
 
 **DDL com fonte única** (mesma passada): as 9 tabelas eram descritas duas
-vezes, em MySQL puro — no `Module::tableDdl()` e no `sql/schema.sql`. Agora
+vezes, em MySQL puro — no `Module::tableDdl()` e no `sql/schema.mysql.sql`. Agora
 `Schema.php` descreve cada tabela UMA vez, em tipos abstratos, e gera o DDL do
 banco em uso; `sql/schema.mysql.sql` e `sql/schema.pgsql.sql` são **gerados**
 por `scripts/gen_schema.php` e não devem ser editados à mão. Mapeamentos
@@ -1167,9 +1167,40 @@ Duas armadilhas que o helper documenta porque custariam caro:
   `AT TIME ZONE 'UTC'`, senão o `to_timestamp()` seria renderizado no fuso da
   sessão e o valor mudaria conforme a configuração do servidor.
 
-O que **falta** para rodar em PG está no ROADMAP: as migrações de coluna do
-`migrateColumns()` (`AFTER`, `MODIFY`, `ADD/DROP INDEX`) e os dois crons, que
-rodam em CLI com mysqli e precisam de PDO.
+**Migrações de coluna por dialeto** (2026-08-19): `migrateColumns()` passou a
+montar todo o DDL por helper — `renameTableSql`, `addColumnSql`, `addIndexSql`,
+`dropIndexSql`, `dropUniqueSql`, `addUniqueSql`, `modifyTypeSql`. Quatro coisas
+que a revisão salvou:
+
+- **`DROP INDEX` não remove UNIQUE no PostgreSQL.** Lá o `uniq_group_day` é
+  CONSTRAINT (criado pelo próprio módulo), e o banco recusa: "cannot drop index
+  … because constraint … requires it". Como `\DBexecute()` não lança, o
+  try/catch do `init()` não pegaria nada — o erro sairia como banner vermelho
+  com o SQL inteiro, **a cada carga de página**, porque a migração nunca
+  concluiria. Daí o `dropUniqueSql()` separado.
+- **`AFTER coluna` não existe no PG** (lá coluna não tem ordem) e `MODIFY
+  COLUMN` vira dois statements (`ALTER COLUMN … TYPE` + `SET NOT NULL`) — por
+  isso `modifyTypeSql()` e `addColumnSql()` devolvem **lista**, executada por
+  `execAll()`.
+- **O `COMMENT` da coluna É emitido no PG**, como `COMMENT ON COLUMN`. Não é
+  enfeite: o `Schema.php` já emite numa instalação do zero, e se a migração não
+  emitisse, dois ambientes PG teriam catálogos diferentes — a divergência
+  silenciosa que o `Schema` existe para evitar.
+- **`NOW()` do PG é `timestamptz`**, e as colunas são `TIMESTAMP` sem fuso: a
+  conversão usaria o `TimeZone` da sessão, que ninguém configura no frontend.
+  Com o servidor em UTC e o cron gravando em `America/Sao_Paulo`, o "online nos
+  últimos 15 min" erraria por 3 h. `SqlFn::now()` devolve `LOCALTIMESTAMP` no
+  PG — quarto lugar do módulo em que fuso ia morder.
+
+**Os arquivos `sql/*.sql` são gerados** (`scripts/gen_schema.php` para os
+schemas). Uma versão anterior do gerador tinha um bug que omitia 17 índices e
+os 8 comentários de tabela — e o `install.sh` executa esses arquivos quando o
+operador responde "banco novo", enquanto o `Module::init()` **não conserta
+depois** (`existingTables()` vê a tabela pronta). Regenerar sempre que o
+`Schema.php` mudar; nunca editar à mão.
+
+O que **falta** para rodar em PG está no ROADMAP: os dois crons, que rodam em
+CLI com mysqli e precisam de PDO. E nada disso passou por um lab PostgreSQL.
 
 ### Backlog conhecido
 
@@ -1277,4 +1308,4 @@ rodam em CLI com mysqli e precisam de PDO.
   turnos = ver `[plantonistas]` no log antes de assumir que é dado.
 - Testar no lab-zbx antes de produção; validar as 6 telas após qualquer deploy.
 - Rollback da unificação: desabilitar Plantonistas ANTES de rodar
-  `sql/rollback-to-old-modules.sql`, depois reabilitar os antigos (README).
+  `sql/rollback-to-old-modules.<banco>.sql`, depois reabilitar os antigos (README).

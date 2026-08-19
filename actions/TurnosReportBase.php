@@ -1556,7 +1556,7 @@ trait TurnosReportBase {
         try {
             $stmt = $db->prepare(
                 'UPDATE module_plantonistas_mentions
-                 SET is_read = 1, read_at = NOW()
+                 SET is_read = 1, read_at = " . SqlFn::now() . "
                  WHERE id = ? AND mentioned_userid = ?'
             );
             $stmt->bind_param('ii', $mentionId, $userid);
