@@ -6,6 +6,8 @@ use CController, CControllerResponseData, CWebUser;
 
 class PlantaoOverview extends CController {
 
+    use UserLabel;
+
     public function init(): void { $this->disableCsrfValidation(); }
 
     protected function checkInput(): bool { return true; }
@@ -79,6 +81,11 @@ class PlantaoOverview extends CController {
                 '   AND s.schedule_date = ' . zbx_dbstr($today)
             );
             while ($row = DBfetch($res)) {
+                // Rótulos prontos (UserLabel): a view não concatena
+                // name+surname, que duplicaria o nome de quem tem o nome
+                // completo no campo surname.
+                $row['label']   = $this->userLabel($row['name'], $row['surname'], $row['username']);
+                $row['r_label'] = $this->userLabel($row['r_name'], $row['r_surname'], $row['r_username']);
                 $overview[(int)$row['usrgrpid']][(int)$row['shift_id']] = $row;
             }
         }
