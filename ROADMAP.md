@@ -14,7 +14,7 @@ Escrito em 2026-08-19.
 | ~~[#4](https://github.com/leaoereno/module-zbx-plantonistas/issues/4)~~ | ~~Cron de presença: eliminar a API do Zabbix~~ — **feito** (2026-08-19) | Segurança + dívida | M | 2 |
 | ~~[#5](https://github.com/leaoereno/module-zbx-plantonistas/issues/5)~~ | ~~Sincronizar escala com escalonamento do Zabbix~~ — **feito** (2026-08-19) | Funcionalidade | M/G | 4 |
 | ~~[#2](https://github.com/leaoereno/module-zbx-plantonistas/issues/2)~~ | ~~"Fechar turno" (`shift_reports` é tabela morta)~~ — **feito** (2026-08-19) | Funcionalidade | M/G | 5 |
-| [#6](https://github.com/leaoereno/module-zbx-plantonistas/issues/6) | Menção só notifica dentro da tela do Repasse | Funcionalidade | M | 5 |
+| ~~[#6](https://github.com/leaoereno/module-zbx-plantonistas/issues/6)~~ | ~~Menção só notifica dentro da tela do Repasse~~ — **feito** (2026-08-19) | Funcionalidade | M | 5 |
 
 ### Por que essa ordem
 
@@ -267,7 +267,19 @@ Decidir isso antes de codar — refazer depois significa migrar dados já gravad
 
 </details>
 
-### #6 — Menção via media type
+### #6 — Menção via media type ✅ **feito em 2026-08-19**
+
+Implementado por `alert.send` (`actions/ZbxAlertSender.php`), com token de
+Super Admin na env `PLANTONISTAS_ALERT_TOKEN` e a janela de notificação
+replicada em PHP, avaliada no fuso do destinatário. Sem token, não notifica e
+nada quebra. Detalhe e as armadilhas de webhook no `CLAUDE.md`.
+
+Pendente de campo: gerar o token, colocá-lo no pool do PHP-FPM dos dois
+frontends e configurar a URL do frontend em Administração → Geral (sem ela o
+link do e-mail vai relativo, de propósito).
+
+<details>
+<summary>Plano original e levantamento</summary>
 
 Enfileirar o alerta no mesmo ponto em que `recordMentions()` grava a linha.
 Falha no envio **não pode derrubar o save da nota** — mesma decisão já tomada
@@ -316,6 +328,10 @@ A alternativa sem token é gerar um evento de verdade (item trapper via
 `history.push` + trigger + Ação) e deixar o escalonador fazer tudo — aí
 período, severidade e escalonamento funcionam sozinhos, ao custo de a menção
 virar "problema" na tela de Problemas e de configurar item/trigger/Ação.
+
+*(Decidido: token de Super Admin.)*
+
+</details>
 
 ---
 

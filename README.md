@@ -268,6 +268,46 @@ DELETE FROM role_rule WHERE value_str LIKE 'plantao.%'
    OR value_str LIKE 'phones.%' OR value_str LIKE 'turnos.%';
 ```
 
+## Notificar menção do Diário de Bordo (opcional)
+
+Quando alguém é mencionado com `@` numa nota, o módulo pode avisar pelo media
+type que a pessoa já tem no Zabbix (e-mail, Telegram, webhook), além do banner
+na tela. **É opcional**: sem a configuração abaixo, nada muda e nada quebra —
+o banner continua funcionando.
+
+A via usada é o request `alert.send` do Zabbix server, a mesma do botão "Test"
+em Alertas → Tipos de mídia. Ela **exige Super Admin**, então precisa de um
+token de API:
+
+**1. Gerar o token** — Usuários → Tokens de API → Criar, com um usuário Super
+Admin. Guarde o valor: ele só aparece uma vez.
+
+**2. Colocar no pool do PHP-FPM**, nos dois frontends
+(`/etc/php-fpm.d/zabbix.conf`):
+
+```ini
+env[PLANTONISTAS_ALERT_TOKEN] = "<token de 64 caracteres>"
+```
+
+Depois `systemctl restart php-fpm`. O arquivo tem credencial — confira as
+permissões. Prefira `env[...]` no pool a `fastcgi_param`: como `fastcgi_param`,
+o token aparece em `$_SERVER` e pode sair em dump de debug.
+
+**3. Configurar a URL do frontend** em Administração → Geral → GUI. Sem ela o
+link no corpo do e-mail vai **relativo**, de propósito: montar a URL a partir
+do cabeçalho `Host` da requisição deixaria quem escreve a nota apontar o link
+para um domínio próprio, e o colega receberia esse link pelo canal legítimo do
+Zabbix.
+
+O que o módulo respeita, por conta própria, porque o `alert.send` não respeita:
+a mídia precisa estar **habilitada** e dentro do **período** configurado no
+cadastro do usuário — avaliado no fuso horário **do destinatário**. A
+severidade da mídia é ignorada (menção não tem severidade).
+
+Limites conhecidos: o envio acontece durante o save da nota, com timeout curto
+(2s/5s) e **teto de 5 envios por nota** — o que passar disso fica só no banner.
+Media type do tipo "Script" não é suportado.
+
 ## Rollback
 
 Enquanto as pastas antigas existirem nos frontends, o rollback é rápido:

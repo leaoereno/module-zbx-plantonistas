@@ -1021,6 +1021,70 @@ checagem e gravam dois documentos, driblando o "refechar exige Admin+". O
 append-only torna o estrago barato; fechar de verdade exigiria `SELECT ... FOR
 UPDATE`.
 
+### Menção notifica pelo media type do usuário (2026-08-19, issue #6)
+
+A menção só existia no banner da tela do Repasse: quem fosse mencionado às 3h e
+estivesse em outra tela (ou nem logado) não ficava sabendo. Agora o módulo
+avisa pelo media type que a pessoa já configurou.
+
+**A premissa que estava errada.** A nota interna dizia que "a tabela `alerts`
+não pode ser usada por módulo, o jeito é `exec()` + `curl` no relay SMTP".
+Conferido no fonte do Zabbix 7.0, está errado nas duas metades:
+
+- Inserir em `alerts` realmente não serve, mas por outro motivo: `actionid` e
+  `eventid` são NOT NULL com FK ON DELETE CASCADE (seria preciso emprestar uma
+  Ação e um evento reais, que o housekeeper apaga depois levando a linha
+  junto), e o `alertid` é alocado por um **contador em memória do server**, não
+  pela tabela `ids` do frontend — dois alocadores para a mesma coluna, a mesma
+  classe de incidente do `role_rule`/`fcorr`.
+- Existe via oficial frontend→server: o request de socket **`alert.send`**,
+  exposto por `CZabbixServer::testMediaType()` — o que o botão "Test" de Tipos
+  de mídia usa. Não grava em `alerts`, não cria task, é síncrono.
+
+Não há task de "enviar mensagem" (`ZBX_TM_TASK_*` não tem nada disso) e a API
+JSON-RPC só expõe `alert.get`.
+
+**As duas contrapartidas, e como estão tratadas** (`actions/ZbxAlertSender.php`,
+isolado nos moldes do `ZbxDb` — a rota é interna do Zabbix e pode mudar):
+
+- **Exige Super Admin**, validado no server. Como quem escreve a nota é
+  analista, a sessão dele não serve: é um token de API na env
+  `PLANTONISTAS_ALERT_TOKEN`. **Sem token o módulo não notifica e nada
+  quebra** — o banner continua. É por isso que `token-ausente` não vai para o
+  log: é o estado normal de quem não ligou o recurso.
+- **A janela de notificação não vem de graça**: quem avalia `media.period` e
+  `active` é o escalonador, ao inserir em `alerts`; o `alert.send` recebe
+  `sendto`/`mediatypeid` prontos e manda. O filtro foi replicado em PHP
+  (`matchesPeriod()`), e é avaliado no **fuso do destinatário** (`users.timezone`)
+  — no frontend o fuso do PHP é o do usuário logado, ou seja o AUTOR, e usá-lo
+  deslocaria a janela de um colega em outro fuso. Terceiro lugar em que esse
+  mesmo bug de fuso apareceu.
+
+`media.severity` é ignorado de propósito: é bitmask de severidade de trigger, e
+uma menção não tem severidade.
+
+**O que a revisão pegou e valeu a implementação inteira:**
+
+- **Webhook exige mapa `nome => valor`**, não lista de `{name, value}` — no
+  formato errado o server não acha parâmetro nenhum e o webhook roda vazio. E
+  as macros `{ALERT.SENDTO}`/`{ALERT.SUBJECT}`/`{ALERT.MESSAGE}` **não são
+  expandidas** por esta rota (na tela de teste é o operador que digita o valor
+  real no lugar da macro), então a substituição é nossa — sem ela o Telegram
+  receberia literalmente `{ALERT.SENDTO}` como destinatário.
+- **O envio síncrono podia travar o save da nota por minutos.** Cada envio é um
+  socket novo, e o timeout default do teste de media type é **65s** — pensado
+  para quem clicou em "Test" e sabe que vai esperar. Uma nota mencionando 10
+  pessoas com 2 mídias seriam 20 sockets em série. Agora são timeouts próprios
+  (2s/5s) e teto de 5 envios por save; o que passar fica só no banner. A fila
+  por cron seria melhor ainda — está no backlog.
+- **Link do e-mail montado com `$_SERVER['HTTP_HOST']` era vetor de phishing**:
+  o Host é controlado por quem faz a requisição, então quem escreve a nota
+  poderia mandar um link para domínio próprio *pelo canal legítimo do Zabbix*.
+  Sem a URL configurada em Administração → Geral, o link vai **relativo**.
+- Media type "Script" (type 1) ficou de fora: o `alert.send` espera os
+  parâmetros dele em outro formato (lista plana, sem sendto/subject), e mandar
+  errado falharia só no log.
+
 ### Backlog conhecido
 
 - Salvar vínculo analista→turno em massa (hoje é um clique por analista) —
@@ -1058,6 +1122,15 @@ UPDATE`.
   `PlantaoHistory`). Corrigir exige trazer `name`/`surname` separados e
   montar o label em PHP com `formatUserLabel()` — feito só onde o defeito
   estava visível/persistido; o resto ficou pra quando incomodar.
+- Notificação de menção é síncrona, dentro do save da nota (teto de 5 envios,
+  timeouts de 2s/5s). O certo seria fila + cron, como o presence tracker: o
+  CLI não tem ninguém esperando, e aí caem o teto e os timeouts curtos. Exige
+  reimplementar o socket do `alert.send` sem `CZabbixServer` (classe de
+  frontend, indisponível em CLI) e uma coluna `notified_at` em
+  `module_plantonistas_mentions`.
+- Notificação de menção sem dedupe: 10 menções à mesma pessoa = 10 avisos. Dá
+  para suprimir quem está online usando `module_plantonistas_user_sessions`,
+  que já existe.
 - Editor rico do Diário de Bordo: sem suporte a colar imagem/anexo (só texto
   formatado + menções). Sem histórico de menções lidas (só as pendentes
   aparecem — decisão consciente, ver seção acima).
