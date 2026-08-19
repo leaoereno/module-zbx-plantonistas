@@ -54,7 +54,7 @@ class PlantaoExport extends CController {
 
         $entries = [];
         $res = DBselect(
-            'SELECT DATE_FORMAT(s.schedule_date,\'%Y-%m-%d\') AS dt,' .
+            'SELECT ' . SqlFn::dateIso('s.schedule_date') . ' AS dt,' .
             '  u.name, u.surname, u.username,' .
             '  COALESCE(pm.phone,\'\') AS phone,' .
             '  COALESCE(ur.name,\'\') AS r_name,' .

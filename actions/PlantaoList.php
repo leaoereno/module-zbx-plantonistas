@@ -106,7 +106,7 @@ class PlantaoList extends CController {
             // day_map[data][shift_id] = entrada. shift_id=0 é o modo legado
             // (sem turno); grupos com turnos podem ter várias entradas por dia.
             $res_sched = DBselect(
-                'SELECT DATE_FORMAT(s.schedule_date, \'%Y-%m-%d\') AS sched_date,' .
+                'SELECT ' . SqlFn::dateIso('s.schedule_date') . ' AS sched_date,' .
                 '  s.scheduleid, s.shift_id, s.userid,' .
                 '  u.name, u.surname, u.username,' .
                 '  COALESCE(pm.phone, \'\') AS phone,' .

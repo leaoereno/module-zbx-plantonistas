@@ -143,7 +143,7 @@ class PhonesImport extends CController {
             $ok = DBexecute(
                 'INSERT INTO module_plantonistas_phones (userid, phone)' .
                 ' VALUES (' . (int)$allowed[$ukey] . ', ' . zbx_dbstr($digits) . ')' .
-                ' ON DUPLICATE KEY UPDATE phone = ' . zbx_dbstr($digits)
+                SqlFn::upsert('userid', ['phone'])
             );
 
             if ($ok) {

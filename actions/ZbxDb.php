@@ -43,6 +43,11 @@ class ZbxDb {
     /** Mensagem do último erro, espelhando $mysqli->error. */
     public string $error = '';
 
+    /** O backend é PostgreSQL? Delegado ao SqlFn, que é quem decide dialeto. */
+    private static function isPgsql(): bool {
+        return SqlFn::isPgsql();
+    }
+
     /**
      * Compatibilidade com $mysqli->prepare().
      *
@@ -103,16 +108,22 @@ class ZbxDb {
      * vezes (`if ($db->insert_id > 0) { … $db->insert_id … }` custa dois
      * SELECT). Os dois usos do módulo já fazem isso.
      *
-     * PONTO DE ATENÇÃO PARA A ISSUE #1 (PostgreSQL): LAST_INSERT_ID() é
-     * MySQL. No PG o equivalente é `INSERT ... RETURNING id` ou currval().
-     * Está isolado aqui de propósito — é um lugar só para mudar. O resto do
-     * SQL do módulo continua MySQL-only (DATE_FORMAT, FROM_UNIXTIME, IF(),
-     * TIMESTAMPDIFF, INTERVAL, ON DUPLICATE KEY UPDATE): esta classe tira o
-     * bloqueio da conexão paralela, não o do dialeto.
+     * O dialeto é escolhido aqui (LAST_INSERT_ID no MySQL, lastval() no
+     * PostgreSQL) — é um lugar só para mudar. As demais funções de dialeto do
+     * módulo vivem no SqlFn.
      */
     public function __get(string $name) {
         if ($name === 'insert_id') {
-            $row = \DBfetch(\DBselect('SELECT LAST_INSERT_ID() AS id'));
+            // LAST_INSERT_ID() é MySQL; no PostgreSQL o equivalente por sessão
+            // é lastval(), que devolve o último valor gerado por qualquer
+            // sequence nesta conexão. Vale o mesmo cuidado dos dois lados: ler
+            // logo depois do INSERT, sem outra escrita no meio.
+            $sql = self::isPgsql()
+                ? 'SELECT lastval() AS id'
+                : 'SELECT LAST_INSERT_ID() AS id';
+
+            $row = \DBfetch(\DBselect($sql), false);
+
             return $row ? (int) $row['id'] : 0;
         }
 

@@ -39,7 +39,7 @@ class PlantaoDelete extends CController {
         $sched = DBfetch(DBselect(
             'SELECT s.scheduleid, s.usrgrpid, s.userid, s.userid_reserva, s.shift_id,' .
             '  COALESCE(cs.name, \'\') AS shift_name,' .
-            '  DATE_FORMAT(s.schedule_date,\'%Y-%m-%d\') AS schedule_date' .
+            '  ' . SqlFn::dateIso('s.schedule_date') . ' AS schedule_date' .
             ' FROM module_plantonistas_schedule s' .
             ' LEFT JOIN module_plantonistas_shifts cs ON cs.id = s.shift_id' .
             ' WHERE s.scheduleid=' . $scheduleid

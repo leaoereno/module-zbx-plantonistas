@@ -1149,9 +1149,27 @@ no PG elas ficam sem auto-atualização, e isso está registrado no `Schema.php`
 `DATE_FORMAT`, `FROM_UNIXTIME`, `TIMESTAMPDIFF` nem devolve booleano cru — e
 comparação de texto com valor digitado por gente leva `LOWER()`.
 
-O que **falta** para rodar em PG está no ROADMAP: o DDL das 9 tabelas (que hoje
-vive duplicado no `Module.php` e no `sql/schema.sql`), as funções de data/hora,
-`ON CONFLICT`, `lastval()` e os dois crons em PDO.
+**Funções de dialeto num lugar só** (2026-08-19): `actions/SqlFn.php` gera
+`DATE_FORMAT`/`to_char`, `FROM_UNIXTIME`/`to_timestamp`,
+`TIMESTAMPDIFF`/`EXTRACT(EPOCH…)`, `INTERVAL` e o upsert
+(`ON DUPLICATE KEY UPDATE`/`ON CONFLICT`) conforme o banco. As ~20 consultas
+que usavam essas funções passaram a chamar o helper — nenhuma tem `if` de
+dialeto dentro. O `insert_id` do `ZbxDb` escolhe entre `LAST_INSERT_ID()` e
+`lastval()`.
+
+Duas armadilhas que o helper documenta porque custariam caro:
+
+- No `to_char` do PostgreSQL, **`HH` é relógio de 12 horas** — usá-lo faria as
+  14h virarem `02` em silêncio. O certo é `HH24`.
+- O módulo converte epoch somando o offset do PHP (`ev.clock + $tzOffset`) e só
+  então formatando, o que **pressupõe banco em UTC**. A premissa não é nova; o
+  que é novo é estar escrita. No ramo PG ela virou explícita com
+  `AT TIME ZONE 'UTC'`, senão o `to_timestamp()` seria renderizado no fuso da
+  sessão e o valor mudaria conforme a configuração do servidor.
+
+O que **falta** para rodar em PG está no ROADMAP: as migrações de coluna do
+`migrateColumns()` (`AFTER`, `MODIFY`, `ADD/DROP INDEX`) e os dois crons, que
+rodam em CLI com mysqli e precisam de PDO.
 
 ### Backlog conhecido
 
