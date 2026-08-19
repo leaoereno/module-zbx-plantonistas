@@ -4,8 +4,39 @@ Módulo único de gestão de plantonistas para Zabbix 7.0 LTS. Unifica os antigo
 `module-zbx-escala-plantao` (v3.0.1) e `module-zbx-repasse-plantao` (v2.5.0)
 em um só módulo, menu e repositório.
 
-**Versão:** 4.0.0 · **Autor:** Rafael M. A. Leão Ereno (MALE)
+**Versão:** 4.1.0 · **Autor:** Rafael M. A. Leão Ereno (MALE)
 Forks de origem: [pandradee/zabbix-escala-de-plantao](https://github.com/pandradee/zabbix-escala-de-plantao) e [JohnnyIver/zabbix-report-module](https://github.com/JohnnyIver/zabbix-report-module)
+
+## Novidades da 4.1.0
+
+Fecha 5 das 6 issues abertas. Decisões e modos de falha de cada uma estão
+detalhados no `CLAUDE.md`; o estado por issue, no `ROADMAP.md`.
+
+| O quê | Issue | Precisa de configuração? |
+|---|---|---|
+| **Escala alimenta o escalonamento do Zabbix** — `cron_sync_oncall.php` mantém um grupo por equipe com o plantonista do turno corrente, e a Ação nativa notifica esse grupo | [#5](https://github.com/leaoereno/module-zbx-plantonistas/issues/5) | **Sim** — criar os grupos e agendar o cron |
+| **Fechar turno** — o repasse vira documento imutável, com os números do momento em que o turno acabou (imune ao housekeeper) | [#2](https://github.com/leaoereno/module-zbx-plantonistas/issues/2) | Não |
+| **Menção notifica pelo media type** do usuário, além do banner na tela | [#6](https://github.com/leaoereno/module-zbx-plantonistas/issues/6) | **Sim** — token de API; opcional |
+| **CSRF ligado** nas 10 actions que escrevem no banco | [#3](https://github.com/leaoereno/module-zbx-plantonistas/issues/3) | Não |
+| **Cron de presença sem a API do Zabbix** — some o TLS sem verificação e o token | [#4](https://github.com/leaoereno/module-zbx-plantonistas/issues/4) | Limpeza: tirar `ZABBIX_*` do cron e revogar o token |
+| **Fim da conexão mysqli própria** — o módulo passa pela camada de banco do Zabbix (fundação do suporte a PostgreSQL) | [#1](https://github.com/leaoereno/module-zbx-plantonistas/issues/1), passo 1 | Não |
+
+Correções que vieram junto: fuso do PHP × fuso do banco duplicando presença no
+turno da noite; nome em branco de conta de serviço; nome longo descartando a
+linha de presença; nome com apóstrofo quebrando o botão "remover" da Escala;
+duplo clique gerando dois POSTs.
+
+**Requisito de runtime:** PHP 8.0+ nos frontends.
+
+### Ao atualizar da 4.0.0
+
+1. `git pull` + `chown -R apache:apache .` + `systemctl restart php-fpm` **nos dois frontends**.
+2. Abrir qualquer tela uma vez — o `Module::init()` faz as migrações de schema
+   (entre elas, `report_json` para `LONGTEXT`, se o schema antigo deixou `TEXT`).
+3. Conferir as 6 telas, exercitando salvar/remover/importar/escrever nota: o
+   CSRF e a troca da camada de banco tocaram todas elas.
+4. Opcional: configurar o cron de escalonamento (#5) e a notificação de
+   menção (#6) — as duas seções estão mais abaixo.
 
 ## ⚠️ Banco de dados: MySQL / MariaDB (por enquanto)
 
