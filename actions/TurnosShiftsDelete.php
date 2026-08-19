@@ -18,10 +18,6 @@ class TurnosShiftsDelete extends CController {
 
     use TurnosReportBase;
 
-    protected function init(): void {
-        $this->disableCsrfValidation();
-    }
-
     protected function checkInput(): bool {
         return $this->validateInput([
             'id' => 'required|string',

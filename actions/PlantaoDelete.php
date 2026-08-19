@@ -6,8 +6,6 @@ use CController, CControllerResponseRedirect, CUrl, CWebUser;
 
 class PlantaoDelete extends CController {
 
-    public function init(): void { $this->disableCsrfValidation(); }
-
     protected function checkInput(): bool {
         return $this->validateInput([
             'scheduleid' => 'required|int32',

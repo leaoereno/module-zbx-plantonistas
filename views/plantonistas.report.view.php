@@ -470,6 +470,9 @@ const SEV_DATA = <?= $sev_data ?>;
 const NOTE_SHIFT = '<?= $shift ?>';
 const NOTE_DATE = '<?= $date ?>';
 const CALENDAR_DATA = <?= $calendar_json ?>;
+// Tokens CSRF das duas actions de escrita chamadas por esta tela.
+const CSRF_NOTES_SAVE    = <?= json_encode($data['csrf_notes_save'] ?? '') ?>;
+const CSRF_MENTIONS_READ = <?= json_encode($data['csrf_mentions_read'] ?? '') ?>;
 
 // ── Charts ──
 const maxMtta = Math.max(...MTTA_DATA);
@@ -880,8 +883,18 @@ if (noteForm && editor) {
         st.textContent='Salvando...'; st.style.color='#666';
         fetch('zabbix.php?action=plantonistas.report.notes.save', {
             method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},
-            body:new URLSearchParams({note:noteHtml,shift:NOTE_SHIFT,shift_date:NOTE_DATE})
-        }).then(r=>r.json()).then(j=>{
+            body:new URLSearchParams({note:noteHtml,shift:NOTE_SHIFT,shift_date:NOTE_DATE,_csrf_token:CSRF_NOTES_SAVE})
+        }).then(function(r){
+            // Falha de CSRF (sessão expirada com a aba aberta o turno inteiro,
+            // caso nada raro nesta tela) responde HTML de "Acesso negado", não
+            // JSON — sem esta guarda o usuário só veria "Erro de conexão".
+            const ct = r.headers.get('content-type') || '';
+            if (!r.ok || ct.indexOf('json') === -1) {
+                return { success:false,
+                    message:'Sessão expirada ou acesso negado. Copie o texto, recarregue a página (F5) e cole de novo.' };
+            }
+            return r.json();
+        }).then(j=>{
             if(j.success){
                 st.textContent=j.message; st.style.color='#2e7d32'; editor.innerHTML='';
                 let list = document.querySelector('.rp-notes-list');
@@ -908,7 +921,7 @@ document.querySelectorAll('.rp-mention-dismiss').forEach(function (btn) {
         const item = btn.closest('.rp-mention-item');
         fetch('zabbix.php?action=plantonistas.report.mentions.read', {
             method: 'POST', headers: {'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},
-            body: new URLSearchParams({mention_id: id})
+            body: new URLSearchParams({mention_id: id, _csrf_token: CSRF_MENTIONS_READ})
         }).catch(function(){});
         if (item) item.remove();
     });
@@ -916,7 +929,9 @@ document.querySelectorAll('.rp-mention-dismiss').forEach(function (btn) {
 document.querySelectorAll('.rp-mention-view-link').forEach(function (a) {
     a.addEventListener('click', function () {
         const id = a.dataset.mentionId;
-        const body = new URLSearchParams({mention_id: id});
+        // sendBeacon com URLSearchParams envia form-urlencoded, então o token
+        // chega no $_POST igual ao do fetch.
+        const body = new URLSearchParams({mention_id: id, _csrf_token: CSRF_MENTIONS_READ});
         if (navigator.sendBeacon) {
             navigator.sendBeacon('zabbix.php?action=plantonistas.report.mentions.read', body);
         } else {

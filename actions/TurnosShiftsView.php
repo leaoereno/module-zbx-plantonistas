@@ -56,6 +56,7 @@ class TurnosShiftsView extends CController {
                 'groups'   => [],
                 'is_superadmin' => false,
                 'legacy_shifts' => [],
+                'csrf_tokens'   => $this->csrfTokens(),
             ];
             $response = new CControllerResponseData($data);
             $response->setTitle(_('Gerenciar Turnos'));
@@ -85,10 +86,35 @@ class TurnosShiftsView extends CController {
             'groups'        => $groups,
             'is_superadmin' => $ctx['is_superadmin'],
             'legacy_shifts' => $this->legacyShiftLabels(),
+            'csrf_tokens'   => $this->csrfTokens(),
         ];
 
         $response = new CControllerResponseData($data);
         $response->setTitle(_('Gerenciar Turnos'));
         $this->setResponse($response);
+    }
+
+    /**
+     * Tokens CSRF das actions de escrita chamadas por esta tela.
+     *
+     * O token do Zabbix é por sessão E por action. Em módulo
+     * (`Modules\...`), o `CController::checkCsrfToken()` confere contra a
+     * action COMPLETA — diferente do core, que agrupa pelo primeiro segmento
+     * (`host` cobre `host.edit`, `host.delete`...). Por isso cada action
+     * precisa do seu, e o JS escolhe pelo nome.
+     */
+    private function csrfTokens(): array {
+        $actions = [
+            'plantonistas.shifts.save',
+            'plantonistas.shifts.delete',
+            'plantonistas.usershift.save',
+        ];
+
+        $tokens = [];
+        foreach ($actions as $a) {
+            $tokens[$a] = \CCsrfTokenHelper::get($a);
+        }
+
+        return $tokens;
     }
 }

@@ -198,6 +198,11 @@ class PlantaoList extends CController {
             'usrgrpid'      => $usrgrpid,
             'success'       => $this->getInput('success', ''),
             'error'         => $this->getInput('error', ''),
+            // Token CSRF por action: em módulo o Zabbix confere contra a
+            // action completa, então cada form desta tela tem o seu.
+            'csrf_save'     => \CCsrfTokenHelper::get('plantonistas.save'),
+            'csrf_delete'   => \CCsrfTokenHelper::get('plantonistas.delete'),
+            'csrf_import'   => \CCsrfTokenHelper::get('plantonistas.import'),
         ]);
         $response->setTitle('Escala de Plantao');
         $this->setResponse($response);

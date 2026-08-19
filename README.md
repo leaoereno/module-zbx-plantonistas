@@ -158,16 +158,22 @@ Atenção a três coisas que já causaram tabela de presença vazia em produçã
   `zbx-repasse-plantao.disabled` silenciosamente (é assim que se desativa).
 - **As variáveis `DB_HOST`/`DB_PORT`/`DB_NAME`/`DB_USER`/`DB_PASS` são
   obrigatórias no arquivo de cron**: em CLI não existe `$GLOBALS['DB']`, e sem
-  elas o script tenta `localhost`. `ZABBIX_API_TOKEN` e `ZABBIX_URL` idem —
-  `ZABBIX_URL` é o endpoint da API, não a URL do frontend.
+  elas o script tenta `localhost`. São as **únicas** env necessárias — desde a
+  v5 o script lê tudo do banco e não chama mais a API do Zabbix, então
+  `ZABBIX_API_TOKEN` e `ZABBIX_URL` podem sair do arquivo de cron (e o token
+  ser revogado no Zabbix).
 - **Rodar em UM frontend só** — grava no banco compartilhado; nos dois
-  duplica escrita e consumo da API.
+  duplica escrita sem ganho nenhum.
+
+O script **não cria tabela**: se `module_plantonistas_user_sessions` não
+existir, ele encerra pedindo que o módulo seja habilitado uma vez no frontend
+(é o `Module::init()` que provisiona e migra o schema).
 
 Teste manual antes de esperar o cron (as aspas simples do arquivo protegem o
 `$` da senha):
 
 ```bash
-set -a; source <(grep -E "^(ZABBIX|DB)_" /etc/cron.d/plantonistas-presence); set +a
+set -a; source <(grep -E "^DB_" /etc/cron.d/plantonistas-presence); set +a
 php /usr/share/zabbix/modules/module-zbx-plantonistas/scripts/cron_presence_tracker.php
 ```
 
@@ -176,6 +182,76 @@ Telefones, Repasse Plantão, Gerenciar Turnos), com `catch_workers_output = yes`
 no pool e `tail -f` no log do PHP-FPM. Conferir se a escala do mês e as notas
 do diário de bordo estão lá (estarão — as tabelas são as mesmas, só de nome
 novo).
+
+## Escalonamento: mandar o alerta para quem está de plantão
+
+`scripts/cron_sync_oncall.php` mantém, para cada equipe, um grupo de usuários
+do Zabbix contendo **só o plantonista do turno corrente**. A Ação nativa do
+Zabbix escala para esse grupo — o módulo não reimplementa notificação.
+
+**1. Criar os grupos**, um por equipe, em Usuários → Grupos de utilizadores.
+O nome segue a convenção `Plantonista de Hoje - <nome da equipe>`:
+
+| Equipe (grupo que aparece na Escala) | Grupo a criar |
+|---|---|
+| `NOC` | `Plantonista de Hoje - NOC` |
+| `Redes` | `Plantonista de Hoje - Redes` |
+
+Criar **vazio, com Status = Habilitado** e sem permissões de host. O cron
+cuida dos membros. O prefixo pode ser trocado pela env `ONCALL_GROUP_PREFIX`
+(o `" - "` é acrescentado se você não puser um separador).
+
+⚠️ **O grupo precisa estar Habilitado.** O status de um usuário no Zabbix é
+`MAX(users_status)` sobre todos os grupos dele: se este grupo estiver como
+Desabilitado, incluir o plantonista nele **desabilita a conta dele** — ele
+para de logar, some das telas do próprio módulo e deixa de ser notificado, que
+é o oposto do que se quer. O script recusa o grupo nesse caso, com aviso no
+log.
+
+**O script nunca cria grupo** — criar exige reservar `usrgrpid` na tabela `ids`
+do Zabbix, e escrever ID na mão em tabela do core já custou caro aqui (ver a
+seção da tabela `ids` no CLAUDE.md).
+
+**2. Agendar**, no mesmo frontend do rastreador de presença:
+
+```bash
+cat > /etc/cron.d/plantonistas-oncall <<'EOF'
+DB_HOST=172.18.190.21
+DB_NAME=zabbix
+DB_USER=zabbix
+DB_PASS=<senha>
+*/5 * * * * apache php /usr/share/zabbix/modules/module-zbx-plantonistas/scripts/cron_sync_oncall.php >> /var/log/plantonistas-oncall.log 2>&1
+EOF
+chmod 600 /etc/cron.d/plantonistas-oncall
+```
+
+`chmod 600` porque o arquivo tem senha. **Um frontend só**: em dois, duas
+execuções simultâneas disputam a mesma reserva de ID.
+
+**3. Conferir antes de valer**, sem gravar nada:
+
+```bash
+set -a; source <(grep -E "^DB_" /etc/cron.d/plantonistas-oncall); set +a
+DRY_RUN=1 php /usr/share/zabbix/modules/module-zbx-plantonistas/scripts/cron_sync_oncall.php
+```
+
+**4. Apontar a Ação** (Alertas → Ações) para o grupo `Plantonista de Hoje - …`
+em vez da lista fixa de destinatários.
+
+Dois comportamentos que valem saber:
+
+- **Dia ou turno sem ninguém escalado não esvazia o grupo** — quem estava
+  continua até alguém ser escalado. Esvaziar significaria alerta sem
+  destinatário justamente de madrugada. Sai um `INFO:` no log toda vez.
+- **Só o titular entra.** O reserva (que só existe em grupo sem turnos) fica
+  de fora: reserva não está de plantão, está disponível.
+- A virada de turno leva até 5 minutos para refletir no grupo, mais o config
+  sync do Zabbix server (~1 min). E um escalonamento já em andamento
+  re-resolve o grupo a cada passo, então o destinatário pode trocar no meio de
+  uma escalada — é o comportamento nativo do Zabbix, não do módulo.
+- O script sai com código **1** se alguma equipe falhou (grupo inexistente,
+  plantonista removido do Zabbix, turnos ilegíveis). Dá para monitorar o cron
+  por isso; o log traz `WARN:` com o motivo em cada caso.
 
 **6. Limpeza** (alguns dias depois, com tudo estável) — nos dois frontends:
 

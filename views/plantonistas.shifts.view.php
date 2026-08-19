@@ -169,12 +169,30 @@ $legacyShifts = $data['legacy_shifts'] ?? [];
 
 <script>
 (function(){
+    // Token CSRF por action (o Zabbix valida um token diferente para cada
+    // uma em módulos — ver TurnosShiftsView::csrfTokens()).
+    const CSRF_TOKENS = <?= json_encode($data['csrf_tokens'] ?? [], JSON_UNESCAPED_UNICODE) ?>;
+
     function post(action, params) {
+        const body = new URLSearchParams(params);
+        body.append('_csrf_token', CSRF_TOKENS[action] || '');
+
         return fetch('zabbix.php?action=' + action, {
             method: 'POST',
             headers: {'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8'},
-            body: new URLSearchParams(params)
-        }).then(r => r.json());
+            body: body
+        }).then(function (r) {
+            // Falha de CSRF/permissão não volta em JSON: o Zabbix responde a
+            // página HTML "Acesso negado" (actions com layout.javascript caem
+            // no default do ZBase::denyPageAccess()). Sem esta guarda o
+            // r.json() estoura um erro de parse sem explicação nenhuma.
+            const ct = r.headers.get('content-type') || '';
+            if (!r.ok || ct.indexOf('json') === -1) {
+                return { success: false,
+                    message: 'Sessão expirada ou acesso negado. Recarregue a página (F5) e tente de novo.' };
+            }
+            return r.json();
+        });
     }
 
     // Trava/destrava um conjunto de botões enquanto uma chamada assíncrona

@@ -107,6 +107,10 @@ class PhonesList extends CController {
             'users'   => array_values($users),
             'success' => $this->getInput('success', ''),
             'error'   => $this->getInput('error', ''),
+            // Token CSRF por action: em módulo o Zabbix confere contra a
+            // action completa, então save e import têm tokens diferentes.
+            'csrf_save'   => \CCsrfTokenHelper::get('plantonistas.phones.save'),
+            'csrf_import' => \CCsrfTokenHelper::get('plantonistas.phones.import'),
         ]);
         $response->setTitle('Telefones de Plantão');
         $this->setResponse($response);
