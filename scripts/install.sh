@@ -74,9 +74,9 @@ install_docker() {
     ok "Módulo copiado para ${target}"
 
     step "2/3" "Criando tabelas no banco de dados..."
-    if confirm "Banco NOVO, sem os módulos antigos (plantao/turnos)? Rodar schema.sql"; then
-        docker exec -i "$db_container" mysql -u"$db_user" -p"$db_pass" "$db_name" < "${MODULE_SRC}/sql/schema.sql" \
-            || die "Falha ao executar schema.sql. Verifique as credenciais."
+    if confirm "Banco NOVO, sem os módulos antigos (plantao/turnos)? Rodar schema.mysql.sql"; then
+        docker exec -i "$db_container" mysql -u"$db_user" -p"$db_pass" "$db_name" < "${MODULE_SRC}/sql/schema.mysql.sql" \
+            || die "Falha ao executar schema.mysql.sql. Verifique as credenciais."
         ok "Tabelas criadas com sucesso"
     else
         info "Pulado — migração de módulos antigos: o módulo renomeia as tabelas sozinho ao ser habilitado."
@@ -84,7 +84,9 @@ install_docker() {
 
     step "3/3" "Configurando cron de presença (opcional)..."
     if confirm "Deseja configurar o cron de presença dentro do container?"; then
-        local cron_line="*/5 * * * * php ${target}/scripts/cron_presence_tracker.php >> /var/log/zabbix_presence.log 2>&1"
+        # env inline: crontab de usuário não tem arquivo de ambiente próprio,
+        # e sem as DB_* o script cai no default localhost.
+        local cron_line="*/5 * * * * DB_HOST=${db_host} DB_NAME=${db_name} DB_USER=${db_user} DB_PASS='${db_pass}' php ${target}/scripts/cron_presence_tracker.php >> /var/log/zabbix_presence.log 2>&1"
         docker exec "$web_container" bash -c "echo '${cron_line}' | crontab -" 2>/dev/null \
             && ok "Cron configurado no container" \
             || warn "Não foi possível configurar o cron automaticamente. Configure manualmente."
@@ -125,9 +127,9 @@ install_allinone() {
     ok "Módulo copiado para ${target} (owner: ${web_user})"
 
     step "2/4" "Criando tabelas no banco de dados..."
-    if confirm "Banco NOVO, sem os módulos antigos (plantao/turnos)? Rodar schema.sql"; then
-        mysql -h "$db_host" -u "$db_user" -p"$db_pass" "$db_name" < "${MODULE_SRC}/sql/schema.sql" \
-            || die "Falha ao executar schema.sql."
+    if confirm "Banco NOVO, sem os módulos antigos (plantao/turnos)? Rodar schema.mysql.sql"; then
+        mysql -h "$db_host" -u "$db_user" -p"$db_pass" "$db_name" < "${MODULE_SRC}/sql/schema.mysql.sql" \
+            || die "Falha ao executar schema.mysql.sql."
         ok "Tabelas criadas"
     else
         info "Pulado — migração de módulos antigos: o módulo renomeia as tabelas sozinho ao ser habilitado."
@@ -136,11 +138,21 @@ install_allinone() {
     step "3/4" "Configurando cron de presença (opcional)..."
     if confirm "Deseja configurar o cron de presença?"; then
         local cron_file="/etc/cron.d/plantonistas-presence"
-        echo "*/5 * * * * ${web_user} /usr/bin/php ${target}/scripts/cron_presence_tracker.php >> /var/log/zabbix_presence.log 2>&1" \
-            > "$cron_file"
-        chmod 644 "$cron_file"
-        ok "Cron configurado em ${cron_file}"
-        warn "Edite as credenciais da API em: ${target}/scripts/cron_presence_tracker.php"
+        # As env DB_* são OBRIGATÓRIAS: o cron roda em CLI, onde não existe
+        # $GLOBALS['DB'], e sem elas o script tenta localhost e não acha o
+        # banco. Antes este arquivo saía sem env nenhuma e o cron gerado
+        # simplesmente não funcionava.
+        {
+            echo "DB_HOST=${db_host}"
+            echo "DB_NAME=${db_name}"
+            echo "DB_USER=${db_user}"
+            echo "DB_PASS=${db_pass}"
+            echo "*/5 * * * * ${web_user} /usr/bin/php ${target}/scripts/cron_presence_tracker.php >> /var/log/zabbix_presence.log 2>&1"
+        } > "$cron_file"
+        # 600, não 644: o arquivo tem a senha do banco.
+        chmod 600 "$cron_file"
+        ok "Cron configurado em ${cron_file} (com as credenciais do banco, chmod 600)"
+        warn "Rode em UM frontend só — o script grava no banco compartilhado."
     fi
 
     step "4/4" "Verificando permissões finais..."
@@ -189,9 +201,9 @@ install_segmented() {
     ok "Módulo copiado (owner: ${web_user})"
 
     step "3/4" "Criando tabelas no banco remoto..."
-    if confirm "Banco NOVO, sem os módulos antigos (plantao/turnos)? Rodar schema.sql"; then
-        mysql -h "$db_host" -P "$db_port" -u "$db_user" -p"$db_pass" "$db_name" < "${MODULE_SRC}/sql/schema.sql" \
-            || die "Falha ao executar schema.sql."
+    if confirm "Banco NOVO, sem os módulos antigos (plantao/turnos)? Rodar schema.mysql.sql"; then
+        mysql -h "$db_host" -P "$db_port" -u "$db_user" -p"$db_pass" "$db_name" < "${MODULE_SRC}/sql/schema.mysql.sql" \
+            || die "Falha ao executar schema.mysql.sql."
         ok "Tabelas criadas no banco remoto"
     else
         info "Pulado — migração de módulos antigos: o módulo renomeia as tabelas sozinho ao ser habilitado."
@@ -200,11 +212,21 @@ install_segmented() {
     step "4/4" "Cron de presença (opcional)..."
     if confirm "Deseja configurar o cron de presença neste servidor web?"; then
         local cron_file="/etc/cron.d/plantonistas-presence"
-        echo "*/5 * * * * ${web_user} /usr/bin/php ${target}/scripts/cron_presence_tracker.php >> /var/log/zabbix_presence.log 2>&1" \
-            > "$cron_file"
-        chmod 644 "$cron_file"
-        ok "Cron configurado em ${cron_file}"
-        warn "Edite as credenciais da API e o host do DB em: ${target}/scripts/cron_presence_tracker.php"
+        # As env DB_* são OBRIGATÓRIAS: o cron roda em CLI, onde não existe
+        # $GLOBALS['DB'], e sem elas o script tenta localhost e não acha o
+        # banco. Antes este arquivo saía sem env nenhuma e o cron gerado
+        # simplesmente não funcionava.
+        {
+            echo "DB_HOST=${db_host}"
+            echo "DB_NAME=${db_name}"
+            echo "DB_USER=${db_user}"
+            echo "DB_PASS=${db_pass}"
+            echo "*/5 * * * * ${web_user} /usr/bin/php ${target}/scripts/cron_presence_tracker.php >> /var/log/zabbix_presence.log 2>&1"
+        } > "$cron_file"
+        # 600, não 644: o arquivo tem a senha do banco.
+        chmod 600 "$cron_file"
+        ok "Cron configurado em ${cron_file} (com as credenciais do banco, chmod 600)"
+        warn "Rode em UM frontend só — o script grava no banco compartilhado."
     fi
 
     finish_message
