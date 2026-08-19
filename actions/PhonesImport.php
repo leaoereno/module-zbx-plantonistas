@@ -14,7 +14,7 @@ use CController, CControllerResponseRedirect, CUrl, CWebUser;
  * `users.username`, que é único e não muda com correção de cadastro.
  *
  * Permissão: a MESMA da edição individual (PhonesSave) — Super Admin altera
- * qualquer um; os demais só quem compartilha grupo E tem o mesmo papel. Linha
+ * qualquer um; os demais só quem compartilha pelo menos um grupo. Linha
  * de usuário fora do alcance é recusada e reportada, não aplicada em silêncio.
  *
  * Telefone vazio na planilha NÃO apaga o cadastro: o CSV exportado traz todos
@@ -25,6 +25,8 @@ use CController, CControllerResponseRedirect, CUrl, CWebUser;
  * Mantido por Rafael M. A. Leão Ereno (MALE)
  */
 class PhonesImport extends CController {
+
+    use SpreadsheetReader;
 
     use PhonesFormat;
 
@@ -68,9 +70,37 @@ class PhonesImport extends CController {
             return;
         }
 
-        $rows = $this->readCsv($content);
+        // XLSX passou a ser aceito junto com CSV: o leitor já existia no
+        // módulo (era privado no PlantaoImport) e agora vive no trait. Como o
+        // conteúdo chega em base64, o XLSX precisa ir para um arquivo
+        // temporário — o ZipArchive só abre caminho, não string.
+        //
+        // `.xls` (o formato binário antigo do Excel) fica de fora de
+        // propósito: o ZipArchive não o abre, e sem esta checagem o operador
+        // receberia a mensagem genérica de arquivo ilegível sem entender que
+        // o problema é o formato.
+        if (preg_match('/\.xls$/i', $fname)) {
+            $this->err($redirect, 'Formato .xls (Excel antigo) não é lido. '
+                . 'Salve como .xlsx ou CSV e importe de novo.');
+            return;
+        }
+
+        if (preg_match('/\.xlsx$/i', $fname)) {
+            $tmp = tempnam(sys_get_temp_dir(), 'plt_phones_');
+            if ($tmp === false) {
+                $this->err($redirect, 'Não foi possível criar arquivo temporário.');
+                return;
+            }
+            file_put_contents($tmp, $content);
+            $rows = $this->readXlsxFile($tmp);
+            @unlink($tmp);
+        }
+        else {
+            $rows = $this->readCsvContent($content);
+        }
+
         if ($rows === null || count($rows) < 2) {
-            $this->err($redirect, 'Arquivo vazio ou ilegível. Use o CSV gerado por "Exportar Usuários".');
+            $this->err($redirect, 'Arquivo vazio ou ilegível. Use o CSV/XLSX gerado por "Exportar Usuários".');
             return;
         }
 
@@ -89,7 +119,7 @@ class PhonesImport extends CController {
         // ── Alvos permitidos: username → userid ──────────────────────────
         $allowed = $this->buildAllowedMap($current_userid, $is_super);
         if (!$allowed) {
-            $this->err($redirect, 'Nenhum usuário na sua estrutura (grupo + papel) para atualizar.');
+            $this->err($redirect, 'Nenhum usuário na sua estrutura (grupo) para atualizar.');
             return;
         }
 
@@ -138,8 +168,8 @@ class PhonesImport extends CController {
                 continue;
             }
 
-            // ON DUPLICATE KEY UPDATE (userid é PK): uma ida ao banco, sem a
-            // janela de corrida do SELECT-then-INSERT que o PhonesSave tem.
+            // Upsert (userid é PK): uma ida ao banco, sem a janela de corrida
+            // do SELECT-then-INSERT. O PhonesSave usa a mesma forma.
             $ok = DBexecute(
                 'INSERT INTO module_plantonistas_phones (userid, phone)' .
                 ' VALUES (' . (int)$allowed[$ukey] . ', ' . zbx_dbstr($digits) . ')' .
@@ -174,30 +204,6 @@ class PhonesImport extends CController {
 
     // ── Helpers ──────────────────────────────────────────────────────────
 
-    /**
-     * Lê o CSV detectando o separador pela 1ª linha. `;` é o padrão (é o que a
-     * exportação gera, e o que o Excel pt-BR usa), mas aceita TAB e vírgula
-     * porque planilha salva em qualquer um deles dependendo do locale.
-     */
-    private function readCsv(string $content): ?array {
-        $content = ltrim($content, "\xEF\xBB\xBF"); // BOM do Excel
-
-        $lines = preg_split('/\r\n|\r|\n/', $content);
-        $lines = array_values(array_filter($lines, fn($l) => trim($l) !== ''));
-        if (!$lines) return null;
-
-        $first = $lines[0];
-        $sep   = ';';
-        if (substr_count($first, "\t") > substr_count($first, ';') &&
-            substr_count($first, "\t") > substr_count($first, ',')) {
-            $sep = "\t";
-        } elseif (substr_count($first, ',') > substr_count($first, ';')) {
-            $sep = ',';
-        }
-
-        return array_map(fn($l) => str_getcsv($l, $sep, '"', ''), $lines);
-    }
-
     /** @return array{0:int,1:int} índices das colunas de usuário e telefone */
     private function detectColumns(array $header): array {
         $col_user  = -1;
@@ -230,24 +236,27 @@ class PhonesImport extends CController {
 
     /**
      * username (minúsculo) → userid dos usuários que este operador pode
-     * alterar. Repete a regra do PhonesSave: Super Admin vê todos; os demais,
-     * só grupo compartilhado E mesmo roleid.
+     * alterar. Repete a regra do PhonesSave: Super Admin altera todos; os
+     * demais, só quem compartilha grupo E não tem papel mais alto que o seu.
+     *
+     * A guarda de papel vale só para a ESCRITA. Enxergar o telefone de todo
+     * mundo do grupo é o objetivo da tela; alterar o cadastro de um Super
+     * Admin não é.
      */
     private function buildAllowedMap(int $current_userid, bool $is_super): array {
         if ($is_super) {
-            $sql = 'SELECT userid, username FROM users WHERE username != ' . zbx_dbstr('guest');
+            $sql = "SELECT userid, username FROM users WHERE LOWER(username) <> 'guest'";
         } else {
-            $roleid = 0;
-            $row = DBfetch(DBselect('SELECT roleid FROM users WHERE userid = ' . $current_userid));
-            if ($row) $roleid = (int)$row['roleid'];
+            $meu_tipo = (int) CWebUser::$data['type'];
 
             $sql =
                 'SELECT DISTINCT u.userid, u.username' .
                 ' FROM users u' .
                 ' JOIN users_groups ug1 ON ug1.userid = u.userid' .
                 ' JOIN users_groups ug2 ON ug2.usrgrpid = ug1.usrgrpid' .
+                ' LEFT JOIN role r ON r.roleid = u.roleid' .
                 ' WHERE ug2.userid = ' . $current_userid .
-                '   AND u.roleid   = ' . $roleid;
+                '   AND COALESCE(r.type, 1) <= ' . $meu_tipo;
         }
 
         $map = [];
