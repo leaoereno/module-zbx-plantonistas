@@ -6,12 +6,15 @@ use CController, CControllerResponseRedirect, CUrl, CWebUser;
 
 class PlantaoDelete extends CController {
 
+    use AjaxRedirect;
+
     protected function checkInput(): bool {
         return $this->validateInput([
             'scheduleid' => 'required|int32',
             'usrgrpid'   => 'int32',
             'month'      => 'int32',
             'year'       => 'int32',
+            'plt_ajax'   => 'string',   // marcador de request AJAX
         ]);
     }
 
@@ -46,19 +49,15 @@ class PlantaoDelete extends CController {
         ));
 
         if (!$sched) {
-            $this->setResponse(new CControllerResponseRedirect(
-                (clone $redirect)->setArgument('error', 'Entrada de plantão não encontrada.')
-            ));
+            $this->respondErr($redirect, 'Entrada de plantão não encontrada.');
             return;
         }
 
         // ── Proteção: não remover plantão do dia corrente ─────────────────
         if ($sched['schedule_date'] === $today) {
-            $this->setResponse(new CControllerResponseRedirect(
-                (clone $redirect)->setArgument('error',
-                    'Não é permitido remover o plantão do dia atual (' .
-                    date('d/m/Y') . '). Reatribua a outro técnico se necessário.')
-            ));
+            $this->respondErr($redirect,
+                'Não é permitido remover o plantão do dia atual (' . date('d/m/Y') .
+                '). Reatribua a outro técnico se necessário.');
             return;
         }
 
@@ -69,10 +68,8 @@ class PlantaoDelete extends CController {
                 ' WHERE userid=' . $current_userid . ' AND usrgrpid=' . (int)$sched['usrgrpid']
             ));
             if (!$perm) {
-                $this->setResponse(new CControllerResponseRedirect(
-                    (clone $redirect)->setArgument('error',
-                        'Permissão negada: você não pertence ao grupo deste plantão.')
-                ));
+                $this->respondErr($redirect,
+                    'Permissão negada: você não pertence ao grupo deste plantão.');
                 return;
             }
         }
@@ -94,8 +91,6 @@ class PlantaoDelete extends CController {
 
         DBexecute('DELETE FROM module_plantonistas_schedule WHERE scheduleid=' . $scheduleid);
 
-        $this->setResponse(new CControllerResponseRedirect(
-            $redirect->setArgument('success', 'Plantão removido.')
-        ));
+        $this->respondOk($redirect, 'Plantão removido.');
     }
 }

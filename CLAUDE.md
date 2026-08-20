@@ -1401,18 +1401,17 @@ lugar: em caso de recusa aparece um aviso e tudo continua preenchido.
 
 Dois pontos registrados no código:
 
-- **Custo aceito**: com `redirect: 'follow'` o fetch baixa a página de destino
-  e a descarta, e o `location.href` seguinte a baixa de novo — dois renders por
-  salvamento. `redirect: 'manual'` evitaria, mas devolve resposta opaca, sem a
-  URL — e é nela que viajam as mensagens (vão por argumento de URL, não por
-  sessão). Resolver de vez exige as actions responderem JSON em request AJAX.
+- **O custo do redirect seguido** (dois renders por salvamento) foi eliminado
+  em 2026-08-20: as actions passaram a responder JSON — ver "Actions de escrita
+  respondem JSON em AJAX".
 - **O "remover" precisa de `alert`**: ele parte de uma célula do calendário, e o
   `#plt-post-hint` fica dentro do formulário lá embaixo, fora da viewport. Sem
   o alert a falha seria invisível — a página não muda e o clique parece não ter
   efeito.
 
-Os dois **imports** continuam com `form.submit()` nativo: ali o que se perde é a
-seleção do arquivo, não texto digitado.
+Os dois **imports** também passaram a usar `fetch` (2026-08-20): antes o
+`form.submit()` nativo levava para a página "Acesso negado" e a seleção do
+arquivo se perdia.
 
 ### Histórico de menções, e um SQL que nunca funcionou (2026-08-19)
 
@@ -1514,6 +1513,61 @@ Regra daqui em diante: **cor nova entra no `_theme.php`**, nunca em hex dentro
 da view. E `var(--x, fallback)` sem a variável definida é bug silencioso —
 declarar a variável é o que garante que o tema escuro a sobrescreva.
 
+### Actions de escrita respondem JSON em AJAX (2026-08-20)
+
+O envio por `fetch` resolveu a perda do que foi digitado, mas as actions
+continuavam respondendo **redirect** — e a única forma de o JS saber se deu
+certo era seguir esse redirect, o que faz o navegador baixar a página de
+destino inteira e descartá-la, para baixá-la de novo no `location.href`. Dois
+renders por salvamento. Além disso, erro de validação recarregava a tela, que
+é exatamente o que se queria evitar.
+
+`actions/AjaxRedirect.php` dá às cinco actions de escrita (`PlantaoSave`,
+`PlantaoDelete`, `PhonesSave`, `PlantaoImport`, `PhonesImport`) três desfechos:
+
+| método | JSON | navega? |
+|---|---|---|
+| `respondOk` | `success:true` + `redirect` | sim |
+| `respondPartial` | `success:false`, `warning:true` + `redirect` | sim |
+| `respondErr` | `success:false`, **sem** `redirect` | não |
+
+**O modo é escolhido por um campo do POST (`plt_ajax=1`), não pelo cabeçalho
+`X-Requested-With`** — e essa foi a correção mais importante da revisão. Com
+cabeçalho, o modo de falha seria péssimo neste ambiente: o frontend fica atrás
+de um F5, proxy remove cabeçalho com facilidade, e sem ele a action responderia
+302, o fetch seguiria, viria HTML, e o JS diria **"sessão expirada, nada foi
+salvo" para uma operação que deu certo**. Em `plantonistas.delete` isso vira
+"Entrada não encontrada" logo após uma remoção bem-sucedida; no import, histórico
+duplicado por reenvio. Corpo de POST nenhum proxy reescreve. O cabeçalho ficou
+como segunda via, e o JS ainda trata `r.redirected` como sucesso.
+
+`plt_ajax` foi **declarado no `validateInput()`** das três actions que validam
+entrada. Não é zelo: parâmetro não declarado pode ser recusado dependendo da
+versão do Zabbix, e aí a action inteira responderia "Parâmetros inválidos".
+
+**`respondPartial` existe por causa do desfecho mais comum de uma importação
+real**: "30 linhas importadas. Avisos (3): …". Tratado como erro puro, a tela
+não recarregaria e as linhas gravadas ficariam invisíveis até um F5 manual —
+com cara de importação que falhou inteira. O `PlantaoSave` usa o mesmo caminho
+no `catch` do laço de gravação, que roda dia a dia: uma exceção no meio deixa
+parte da escala gravada.
+
+Outras três coisas que a revisão apontou e valem como regra:
+
+- **`json_encode` sem `JSON_INVALID_UTF8_SUBSTITUTE` devolvia `false`**, e
+  `echo false` imprime string VAZIA com content-type de JSON — o usuário veria
+  "erro de conexão" para algo que gravou. O caminho é concreto: as mensagens de
+  erro do import ecoam bytes crus do arquivo, o leitor de CSV não converte
+  encoding, e planilha salva como ANSI no Excel pt-BR é Latin-1 puro.
+- **Rejeição tratada como segundo argumento do `.then`, não como `.catch` no
+  fim da cadeia.** Com `.catch`, um `TypeError` do bloco de sucesso viraria
+  "erro de conexão, nada foi salvo" — afirmação que o navegador não tem como
+  sustentar depois de o POST ter chegado ao servidor.
+- **O botão de importar só é reabilitado quando reenviar o mesmo arquivo pode
+  dar certo** (rede, sessão). Em erro de conteúdo o arquivo é limpo: reenviar
+  daria o mesmo erro, e o `logHistory()` do import grava linha nova a cada
+  passada.
+
 ### Backlog conhecido
 
 - ~~Salvar vínculo analista→turno em massa~~ — **resolvido em 2026-08-19**:
@@ -1559,11 +1613,10 @@ declarar a variável é o que garante que o tema escuro a sobrescreva.
 - Editor rico do Diário de Bordo: imagem e anexo **não são suportados por
   decisão** e agora são bloqueados explicitamente, com aviso. ~~Sem histórico
   de menções lidas~~ — resolvido em 2026-08-19 (painel no Repasse).
-- Salvamento de Escala/Telefones renderiza a página de destino duas vezes
-  (fetch segue o redirect e o `location.href` repete). Some quando as actions
-  responderem JSON em request AJAX. Ver "Salvar Escala e Telefones".
-- Os dois imports (Escala e Telefones) ainda usam `form.submit()` nativo: com
-  token expirado caem na página "Acesso negado" e a seleção do arquivo se perde.
+- ~~Salvamento de Escala/Telefones renderiza a página de destino duas vezes~~
+  e ~~os dois imports ainda usam `form.submit()` nativo~~ — **resolvidos em
+  2026-08-20**: as cinco actions de escrita respondem JSON em request AJAX;
+  ver "Actions de escrita respondem JSON em AJAX".
 
 ---
 
