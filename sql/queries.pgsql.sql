@@ -172,4 +172,37 @@ WHERE cus.lastaccess BETWEEN (to_timestamp(:ts_start) AT TIME ZONE 'UTC')
 GROUP BY cus.userid, cus.username, cus.name, cus.noc_context
 ORDER BY first_seen ASC;
 
+-- ── Crescimento do Diário de Bordo ──────────────────────────
+--
+-- O módulo NÃO expira notas: é histórico permanente, por decisão. Esta
+-- consulta existe para a tabela não crescer sem ninguém olhar. Só vira
+-- assunto quando o tamanho incomodar de verdade — arquivar é decisão de
+-- quem opera.
+
+SELECT
+    COUNT(*)                                      AS notas,
+    MIN(n.created_at)                             AS mais_antiga,
+    MAX(n.created_at)                             AS mais_recente,
+    -- octet_length (bytes), não length (caracteres): tem de ser comparável
+    -- com o `mb` em disco da consulta abaixo.
+    ROUND(SUM(octet_length(n.notes))::numeric / 1048576, 2) AS mb_de_texto
+FROM module_plantonistas_shift_notes n;
+
+-- Tamanho real em disco (dados + índices), para as 9 tabelas do módulo
+SELECT c.relname AS table_name,
+       -- GREATEST(...,0): a partir do PG 14 o reltuples de tabela que nunca
+       -- sofreu ANALYZE é -1, e numa instalação nova (o caso do lab) as nove
+       -- linhas sairiam com -1, parecendo defeito.
+       GREATEST(c.reltuples, 0)::bigint AS table_rows,
+       ROUND(pg_total_relation_size(c.oid)::numeric / 1048576, 2) AS mb
+FROM pg_class c
+JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE n.nspname = current_schema()
+  AND c.relkind = 'r'
+  -- Barra SIMPLES: com standard_conforming_strings ligado (default do PG),
+  -- '\\_' seria barra literal + curinga e não escaparia o underscore. No MySQL
+  -- é o contrário — lá a mesma linha leva barra dupla.
+  AND c.relname LIKE 'module\_plantonistas\_%'
+ORDER BY pg_total_relation_size(c.oid) DESC;
+
 -- ============================================================

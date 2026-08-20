@@ -70,7 +70,20 @@ class PlantaoImport extends CController {
             $this->err($redirect, 'Falha ao decodificar o arquivo. Tente novamente.'); return;
         }
 
-        $ext = pathinfo($fname, PATHINFO_EXTENSION);
+        // `.xls` (binário antigo do Excel) recusado com mensagem própria: o
+        // ZipArchive não o abre, e sem esta guarda o arquivo caía no leitor de
+        // CSV e voltava "Arquivo vazio ou formato não reconhecido" — ou, pior,
+        // "Coluna data não encontrada. Cabeçalho: <bytes ilegíveis>". Mesma
+        // guarda que o PhonesImport já tinha; as duas telas divergiam.
+        if (preg_match('/\.xls$/i', $fname)) {
+            $this->err($redirect, 'Formato .xls (Excel antigo) não é lido. '
+                . 'Salve como .xlsx ou CSV e importe de novo.');
+            return;
+        }
+
+        // Case-insensitive: `ESCALA.XLSX` vindo do Windows caía no leitor de
+        // CSV com a comparação estrita que estava aqui.
+        $eh_xlsx = (bool) preg_match('/\.xlsx$/i', $fname);
 
         $tmp = tempnam(sys_get_temp_dir(), 'plt_');
         if ($tmp === false) {
@@ -78,7 +91,7 @@ class PlantaoImport extends CController {
         }
         file_put_contents($tmp, $content);
 
-        if ($ext === 'xlsx') {
+        if ($eh_xlsx) {
             $rows = $this->readXlsxFile($tmp);
         } else {
             $rows = $this->readCsvFile($tmp);
