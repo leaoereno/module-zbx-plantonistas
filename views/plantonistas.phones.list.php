@@ -133,22 +133,51 @@ function phnSubmitImport() {
     var reader = new FileReader();
     reader.onload = function(e) {
         hint.textContent = '⏳ Enviando…';
-        // Mesmo padrão do import da Escala: base64 em campo hidden, porque a
-        // rota do Zabbix nesta action não trata multipart.
-        var form = document.createElement('form');
-        form.method = 'post';
-        form.action = 'zabbix.php?action=plantonistas.phones.import';
-        form.style.display = 'none';
-        var add = function(name, val) {
-            var i = document.createElement('input');
-            i.type = 'hidden'; i.name = name; i.value = val;
-            form.appendChild(i);
+        // Mesmo padrão do import da Escala: base64 em campo, porque a rota do
+        // Zabbix nesta action não trata multipart. E por fetch, não por
+        // form.submit() nativo — com o token expirado o submit levava para a
+        // página "Acesso negado" e a seleção do arquivo se perdia.
+        var dados = new FormData();
+        dados.append('import_file_b64',  e.target.result.split(',')[1]);
+        dados.append('import_file_name', f.name);
+        dados.append('_csrf_token',      PHN_CSRF_IMPORT);
+        dados.append('plt_ajax',         '1');
+
+        // Só reabilita o botão quando reenviar o MESMO arquivo pode dar certo.
+        // Erro de conteúdo dá o mesmo erro de novo — e o upsert de telefone é
+        // inócuo, mas repetir sem entender não ajuda ninguém.
+        var falhaImport = function (msg, reenviar) {
+            hint.style.color = 'var(--plt-danger)';
+            hint.textContent = msg;
+            if (reenviar) {
+                btn.disabled = false;
+            } else {
+                document.getElementById('phn-import-file').value = '';
+                document.getElementById('phn-import-filename').textContent = 'Escolher arquivo…';
+            }
         };
-        add('import_file_b64',  e.target.result.split(',')[1]);
-        add('import_file_name', f.name);
-        add('_csrf_token',      PHN_CSRF_IMPORT);
-        document.body.appendChild(form);
-        form.submit();
+
+        fetch('zabbix.php?action=plantonistas.phones.import', { method: 'POST', body: dados })
+            .then(function (r) {
+                if (r.redirected) { location.href = r.url; return null; }
+
+                var ct = r.headers.get('content-type') || '';
+                if (ct.indexOf('json') === -1) {
+                    falhaImport(r.status === 403 || r.ok
+                        ? 'Sessão expirada ou acesso negado. Recarregue a página (F5) e importe de novo.'
+                        : 'O servidor respondeu ' + r.status + '. Confira o log do PHP-FPM.', true);
+                    return null;
+                }
+                return r.json();
+            })
+            .then(function (d) {
+                if (!d) return;
+                // Navega também na importação parcial (gravou e tem aviso).
+                if (d.redirect) { location.href = d.redirect; return; }
+                falhaImport(d.message || 'Não foi possível importar.', false);
+            }, function () {
+                falhaImport('Erro de conexão. Nada foi importado.', true);
+            });
     };
     reader.onerror = function() {
         hint.style.color = 'var(--plt-danger)';
@@ -256,27 +285,53 @@ function phnSubmitImport() {
 // Zabbix devolve a página "Acesso negado" e a tela inteira some. Com fetch, a
 // página fica onde está e o campo continua preenchido.
 //
-// A action responde **redirect** nos dois desfechos normais (salvou / erro de
-// permissão), então `r.redirected` distingue sucesso de recusa por CSRF, que
-// devolve HTML sem redirecionar. Mesma abordagem da tela de Escala.
+// A action responde JSON quando o request traz `X-Requested-With` (ver
+// actions/AjaxRedirect.php): sucesso devolve a URL de destino e o JS navega;
+// erro de permissão devolve a mensagem e a tela NÃO recarrega.
 function phnPost(form) {
-    const btn = form.querySelector('button[type=submit]');
-    const inp = form.querySelector('input[name=phone]');
+    const btn   = form.querySelector('button[type=submit]');
+    const inp   = form.querySelector('input[name=phone]');
     const antes = btn.textContent;
     btn.disabled = true;
     btn.textContent = '…';
 
-    fetch(form.action, { method: 'POST', body: new FormData(form), redirect: 'follow' })
+    function falhou(msg) {
+        btn.disabled = false;
+        btn.textContent = antes;
+        inp.style.borderColor = 'var(--plt-danger)';
+        inp.title = msg;
+        alert(msg);
+    }
+
+    const dados = new FormData(form);
+    // Campo no CORPO, não cabeçalho: é o que faz a action responder JSON, e
+    // corpo de POST nenhum proxy reescreve (ver actions/AjaxRedirect.php).
+    dados.append('plt_ajax', '1');
+
+    fetch(form.action, { method: 'POST', body: dados })
         .then(function (r) {
-            if (r.redirected) { location.href = r.url; return; }
-            btn.disabled = false;
-            btn.textContent = antes;
-            inp.style.borderColor = 'var(--plt-danger)';
-            inp.title = 'Sessão expirada ou acesso negado. Recarregue a página (F5) e salve de novo.';
-            alert('Sessão expirada ou acesso negado.\n\nRecarregue a página (F5) e salve de novo — '
-                + 'o número que você digitou continua no campo.');
+            // Redirect seguido = modo antigo, e deu certo: navega em vez de
+            // dizer que não salvou.
+            if (r.redirected) { location.href = r.url; return null; }
+
+            // CSRF falha ANTES do doAction() e responde HTML, não JSON.
+            const ct = r.headers.get('content-type') || '';
+            if (ct.indexOf('json') === -1) {
+                falhou(r.status === 403 || r.ok
+                    ? 'Sessão expirada ou acesso negado.\n\nRecarregue a página (F5) e '
+                    + 'salve de novo — o número que você digitou continua no campo.'
+                    : 'O servidor respondeu ' + r.status + '. Confira o log do PHP-FPM.');
+                return null;
+            }
+            return r.json();
         })
-        .catch(function () {
+        .then(function (d) {
+            if (!d) return;
+            if (d.redirect) { location.href = d.redirect; return; }
+            falhou(d.message || 'Não foi possível salvar.');
+        }, function () {
+            // Rejeição do fetch, não `.catch` no fim: assim um erro de JS do
+            // bloco acima não vira "erro de conexão, nada foi salvo".
             btn.disabled = false;
             btn.textContent = antes;
             alert('Erro de conexão. Nada foi salvo; tente de novo.');

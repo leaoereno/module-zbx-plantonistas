@@ -20,6 +20,8 @@ use CController, CControllerResponseRedirect, CUrl, CWebUser;
  */
 class PlantaoSave extends CController {
 
+    use AjaxRedirect;
+
     protected function checkInput(): bool {
         return $this->validateInput([
             'schedule_dates'    => 'required|string',
@@ -29,6 +31,11 @@ class PlantaoSave extends CController {
             'usrgrpid'          => 'required|int32',
             'month'             => 'int32',
             'year'              => 'int32',
+            // Marcador de request AJAX (ver AjaxRedirect). Declarado, e não
+            // deixado como campo extra: parâmetro não declarado pode ser
+            // recusado pelo validateInput dependendo da versão do Zabbix, e
+            // aí a action inteira responderia "Parâmetros inválidos".
+            'plt_ajax'          => 'string',
         ]);
     }
 
@@ -153,7 +160,12 @@ class PlantaoSave extends CController {
                 }
             }
         } catch (\Exception $e) {
-            $this->err($redirect, 'Erro ao salvar: ' . $e->getMessage());
+            // respondPartial, não err(): o laço grava dia a dia, então uma
+            // exceção no meio deixa parte da escala JÁ gravada. Sem recarregar
+            // a tela, o operador não veria o que entrou e reescalaria por cima
+            // achando que nada tinha sido salvo.
+            $this->respondPartial($redirect, 'Erro ao salvar: ' . $e->getMessage()
+                . ' Parte da escala pode ter sido gravada — confira o calendário.');
             return;
         }
 
@@ -163,11 +175,9 @@ class PlantaoSave extends CController {
             $valid_dates
         ));
 
-        $this->setResponse(new CControllerResponseRedirect(
-            (clone $redirect)->setArgument('success',
-                ($count === 1 ? '1 dia salvo' : $count . ' dias salvos') . ': ' . $fmt . '.'
-            )
-        ));
+        $this->respondOk($redirect,
+            ($count === 1 ? '1 dia salvo' : $count . ' dias salvos') . ': ' . $fmt . '.'
+        );
     }
 
     /**
@@ -258,9 +268,8 @@ class PlantaoSave extends CController {
     }
 
     private function err(CUrl $redirect, string $msg): void {
-        $this->setResponse(new CControllerResponseRedirect(
-            (clone $redirect)->setArgument('error', $msg)
-        ));
+        // Em AJAX responde JSON e não recarrega a tela — ver AjaxRedirect.
+        $this->respondErr($redirect, $msg);
     }
 
     private function inGroup(int $uid, int $gid): bool {

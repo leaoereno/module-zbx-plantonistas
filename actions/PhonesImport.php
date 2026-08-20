@@ -26,6 +26,8 @@ use CController, CControllerResponseRedirect, CUrl, CWebUser;
  */
 class PhonesImport extends CController {
 
+    use AjaxRedirect;
+
     use SpreadsheetReader;
 
     use PhonesFormat;
@@ -193,13 +195,13 @@ class PhonesImport extends CController {
             if (count($warn) > 5) {
                 $detail .= ' … e mais ' . (count($warn) - 5) . ' aviso(s).';
             }
-            $this->err($redirect, $msg . ' Avisos (' . count($warn) . '): ' . $detail);
+            // respondPartial, não err(): ver o comentário equivalente no
+            // PlantaoImport — com aviso quase sempre houve gravação.
+            $this->respondPartial($redirect, $msg . ' Avisos (' . count($warn) . '): ' . $detail);
             return;
         }
 
-        $this->setResponse(new CControllerResponseRedirect(
-            (clone $redirect)->setArgument('success', $msg)
-        ));
+        $this->respondOk($redirect, $msg);
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────
@@ -269,8 +271,7 @@ class PhonesImport extends CController {
     }
 
     private function err(CUrl $redirect, string $msg): void {
-        $this->setResponse(new CControllerResponseRedirect(
-            (clone $redirect)->setArgument('error', $msg)
-        ));
+        // Em AJAX responde JSON e não recarrega a tela — ver AjaxRedirect.
+        $this->respondErr($redirect, $msg);
     }
 }

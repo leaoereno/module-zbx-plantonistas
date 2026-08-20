@@ -6,6 +6,8 @@ use CController, CControllerResponseRedirect, CUrl, CWebUser;
 
 class PlantaoImport extends CController {
 
+    use AjaxRedirect;
+
     use UserLabel;
 
     // readCsv/readXlsx/colRefToIndex saíram daqui para o trait: o readCsv
@@ -259,13 +261,14 @@ class PlantaoImport extends CController {
         if ($skipped) {
             $detail = implode(' | ', array_slice($skipped, 0, 5));
             if (count($skipped) > 5) $detail .= ' … e mais ' . (count($skipped) - 5) . ' avisos.';
-            $this->err($redirect, $msg . ' Avisos (' . count($skipped) . '): ' . $detail);
+            // respondPartial, não err(): importação com aviso é o desfecho mais
+            // comum, e quase sempre gravou linhas. Tratada como erro puro, a
+            // tela não recarregaria e o que entrou ficaria invisível.
+            $this->respondPartial($redirect, $msg . ' Avisos (' . count($skipped) . '): ' . $detail);
             return;
         }
 
-        $this->setResponse(new CControllerResponseRedirect(
-            (clone $redirect)->setArgument('success', $msg)
-        ));
+        $this->respondOk($redirect, $msg);
     }
 
 
@@ -426,8 +429,7 @@ class PlantaoImport extends CController {
     }
 
     private function err(CUrl $redirect, string $msg): void {
-        $this->setResponse(new CControllerResponseRedirect(
-            (clone $redirect)->setArgument('error', $msg)
-        ));
+        // Em AJAX responde JSON e não recarrega a tela — ver AjaxRedirect.
+        $this->respondErr($redirect, $msg);
     }
 }

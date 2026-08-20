@@ -9,10 +9,13 @@ use CController,
 
 class PhonesSave extends CController {
 
+    use AjaxRedirect;
+
     protected function checkInput(): bool {
         $fields = [
             'userid' => 'required|string',
             'phone'  => 'required|string',
+            'plt_ajax' => 'string',     // marcador de request AJAX
         ];
         return $this->validateInput($fields);
     }
@@ -45,10 +48,8 @@ class PhonesSave extends CController {
             ));
 
             if (!$ok) {
-                $this->setResponse(new CControllerResponseRedirect(
-                    $redirect->setArgument('error',
-                        'Permissão negada: o usuário não pertence a nenhum grupo seu.')
-                ));
+                $this->respondErr($redirect,
+                    'Permissão negada: o usuário não pertence a nenhum grupo seu.');
                 return;
             }
 
@@ -66,17 +67,15 @@ class PhonesSave extends CController {
             ));
 
             if ($alvo && (int) $alvo['type'] > (int) CWebUser::$data['type']) {
-                $this->setResponse(new CControllerResponseRedirect(
-                    $redirect->setArgument('error',
-                        'Permissão negada: este usuário tem papel mais alto que o seu.')
-                ));
+                $this->respondErr($redirect,
+                    'Permissão negada: este usuário tem papel mais alto que o seu.');
                 return;
             }
         }
 
         if (empty($phone)) {
             DBexecute('DELETE FROM module_plantonistas_phones WHERE userid = ' . $userid);
-            $redirect->setArgument('success', 'Telefone removido.');
+            $msg = 'Telefone removido.';
         } else {
             // Upsert numa ida ao banco, em vez do SELECT-then-UPDATE-or-INSERT
             // que estava aqui: entre o SELECT e o INSERT havia uma janela em
@@ -88,10 +87,10 @@ class PhonesSave extends CController {
                 ' VALUES (' . $userid . ', ' . zbx_dbstr($phone) . ')' .
                 SqlFn::upsert('userid', ['phone'])
             );
-            $redirect->setArgument('success', 'Telefone atualizado.');
+            $msg = 'Telefone atualizado.';
         }
 
-        $this->setResponse(new CControllerResponseRedirect($redirect));
+        $this->respondOk($redirect, $msg);
     }
 
 }

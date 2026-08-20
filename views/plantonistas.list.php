@@ -618,8 +618,11 @@ function pltDelete(scheduleid, label) {
     // #plt-post-hint fica lá embaixo, dentro do formulário de escalar — fora
     // da viewport. Sem o alert, a falha seria invisível: a página não muda,
     // o usuário clica de novo e nada acontece.
-    pltPost(document.getElementById('plt-del-form'), null, true);
-    setTimeout(function () { pltDeleting = false; }, 4000);
+    // Libera o guard quando o fetch termina. Antes era um setTimeout de 4s às
+    // cegas: com a página ficando de pé (não navega mais em caso de erro), o
+    // operador via a falha e clicava de novo sem nada acontecer.
+    pltPost(document.getElementById('plt-del-form'), null, true)
+        .then(function () { pltDeleting = false; });
 }
 
 // Listener na fase de CAPTURA: o link de remover fica dentro de um <td> com
@@ -769,17 +772,14 @@ function pltValidate() {
 // Com fetch, a página não sai do lugar: em caso de falha aparece um aviso e
 // tudo continua ali para reenviar depois do F5.
 //
-// Como distinguir sucesso de recusa sem mudar o PHP: a action responde
-// **redirect** nos dois desfechos normais (salvou / erro de validação), então
-// `r.redirected` é verdadeiro e basta seguir para `r.url`. A recusa por CSRF
-// não redireciona — devolve HTML de "Acesso negado" com status 200 ou 403.
+// Sucesso devolve `{success: true, redirect: <url>}` e o JS navega; erro de
+// validação devolve `{success: false, message: ...}` e a tela NÃO recarrega.
 //
-// CUSTO CONHECIDO E ACEITO: com `redirect: 'follow'` o fetch BAIXA a página de
-// destino inteira e a descarta, e o `location.href` seguinte a baixa de novo —
-// dois renders por salvamento. `redirect: 'manual'` evitaria isso, mas devolve
-// uma resposta opaca, sem a URL de destino, e é nela que viajam as mensagens
-// de sucesso/erro (vão por argumento de URL, não por sessão). Resolver de vez
-// exige as actions responderem JSON quando o request for AJAX.
+// A action responde JSON quando o request traz `X-Requested-With`
+// (actions/AjaxRedirect.php), então o fetch NÃO precisa seguir redirect: uma
+// versão anterior seguia, e aí o navegador baixava a página de destino inteira
+// só para descartá-la e baixá-la de novo no `location.href` — dois renders por
+// salvamento.
 function pltPost(form, hintId, alerta) {
     var hint = document.getElementById(hintId || 'plt-post-hint');
     var btns = form.querySelectorAll('button[type=submit]');
@@ -795,13 +795,44 @@ function pltPost(form, hintId, alerta) {
         if (alerta) alert(msg);
     }
 
-    fetch(form.action, { method: 'POST', body: new FormData(form), redirect: 'follow' })
+    var dados = new FormData(form);
+    // É este campo que faz a action responder JSON em vez de redirect (ver
+    // actions/AjaxRedirect.php). Vai no CORPO, não em cabeçalho: o frontend
+    // fica atrás de um F5, e cabeçalho é o que proxy remove.
+    dados.append('plt_ajax', '1');
+
+    return fetch(form.action, { method: 'POST', body: dados })
         .then(function (r) {
-            if (r.redirected) { location.href = r.url; return; }
-            falhou('Sessão expirada ou acesso negado. Recarregue a página (F5) '
-                 + 'e salve de novo — nada do que você preencheu foi perdido.');
+            // Redirect seguido = a action respondeu no modo antigo (o campo
+            // não chegou). Deu certo: navega, em vez de mentir "não salvou".
+            if (r.redirected) { location.href = r.url; return null; }
+
+            // Falha de CSRF acontece ANTES do doAction(), no roteador do
+            // Zabbix, que responde a página HTML "Acesso negado". Sem esta
+            // checagem o r.json() estouraria erro de parse.
+            var ct = r.headers.get('content-type') || '';
+            if (ct.indexOf('json') === -1) {
+                falhou(r.status === 403 || r.ok
+                    ? 'Sessão expirada ou acesso negado. Recarregue a página (F5) e '
+                    + 'salve de novo — nada do que você preencheu foi perdido.'
+                    : 'O servidor respondeu ' + r.status + '. Confira o log do PHP-FPM.');
+                return null;
+            }
+            return r.json();
         })
-        .catch(function () {
+        .then(function (d) {
+            if (!d) return;
+            // Navega sempre que vier destino — inclusive no sucesso PARCIAL
+            // (gravou e tem aviso), que sem isso deixaria invisível o que foi
+            // gravado. Erro de validação não traz destino e fica na tela, com
+            // tudo ainda preenchido.
+            if (d.redirect) { location.href = d.redirect; return; }
+            falhou(d.message || 'Não foi possível salvar.');
+        }, function () {
+            // Handler de rejeição do PRÓPRIO fetch, não `.catch` no fim da
+            // cadeia: com `.catch` um TypeError do bloco de sucesso acima
+            // viraria "erro de conexão, nada foi salvo" — afirmação que o
+            // navegador não tem como sustentar depois de o POST ter chegado.
             falhou('Erro de conexão. Nada foi salvo; tente de novo.');
         });
 }
@@ -934,25 +965,64 @@ function pltSubmitImport() {
     var reader = new FileReader();
     reader.onload = function(e) {
         hint.textContent = '⏳ Enviando…';
-        // Extrair só o base64 (remover prefixo "data:...;base64,")
+        // Só o base64 (fora o prefixo "data:...;base64,"). O upload vai por
+        // campo, não por multipart: a rota do Zabbix nesta action não trata
+        // multipart.
         var b64 = e.target.result.split(',')[1];
-        // Criar form normal (application/x-www-form-urlencoded não suporta binário,
-        // mas multipart via form dinâmico sim — e o submit nativo funciona)
-        var form = document.createElement('form');
-        form.method = 'post';
-        form.action = 'zabbix.php?action=plantonistas.import&usrgrpid=<?=$usrgrpid?>&month=<?=$month?>&year=<?=$year?>';
-        form.style.display = 'none';
 
-        var addField = function(name, val) {
-            var inp = document.createElement('input');
-            inp.type = 'hidden'; inp.name = name; inp.value = val;
-            form.appendChild(inp);
+        var dados = new FormData();
+        dados.append('import_file_b64',  b64);
+        dados.append('import_file_name', f.name);
+        dados.append('_csrf_token',      PLT_CSRF_IMPORT);
+        dados.append('plt_ajax',         '1');
+
+        // Por fetch, e não por form.submit() nativo: com o token expirado o
+        // submit nativo levava para a página "Acesso negado" do Zabbix e a
+        // seleção do arquivo se perdia — o operador tinha que escolher tudo
+        // de novo sem entender o que aconteceu. Aqui o modal fica aberto e o
+        // arquivo continua escolhido.
+        // `reenviar`: só reabilita o botão quando repetir o MESMO arquivo pode
+        // dar certo (rede, sessão). Num erro de conteúdo — cabeçalho não
+        // reconhecido, técnico inexistente — reenviar dá o mesmo erro, e com o
+        // arquivo ainda selecionado o operador clicaria de novo. Pior: o
+        // logHistory do import grava linha nova a cada passada.
+        var falhaImport = function (msg, reenviar) {
+            hint.style.color = 'var(--plt-danger)';
+            hint.textContent = msg;
+            if (reenviar) {
+                btn.disabled = false;
+            } else {
+                document.getElementById('plt-import-file').value = '';
+                document.getElementById('plt-import-filename').textContent = 'Escolher arquivo…';
+            }
         };
-        addField('import_file_b64',  b64);
-        addField('import_file_name', f.name);
-        addField('_csrf_token',      PLT_CSRF_IMPORT);
-        document.body.appendChild(form);
-        form.submit();
+
+        fetch('zabbix.php?action=plantonistas.import&usrgrpid=<?=$usrgrpid?>&month=<?=$month?>&year=<?=$year?>', {
+            method: 'POST',
+            body: dados
+        })
+            .then(function (r) {
+                if (r.redirected) { location.href = r.url; return null; }
+
+                var ct = r.headers.get('content-type') || '';
+                if (ct.indexOf('json') === -1) {
+                    falhaImport(r.status === 403 || r.ok
+                        ? 'Sessão expirada ou acesso negado. Recarregue a página (F5) e importe de novo.'
+                        : 'O servidor respondeu ' + r.status + '. Confira o log do PHP-FPM.', true);
+                    return null;
+                }
+                return r.json();
+            })
+            .then(function (d) {
+                if (!d) return;
+                // Navega sempre que vier destino — inclusive na importação
+                // PARCIAL ("30 linhas importadas. Avisos (3): …"), que é o
+                // desfecho mais comum e precisa mostrar o que entrou.
+                if (d.redirect) { location.href = d.redirect; return; }
+                falhaImport(d.message || 'Não foi possível importar.', false);
+            }, function () {
+                falhaImport('Erro de conexão. Nada foi importado.', true);
+            });
     };
     reader.onerror = function() {
         hint.style.color = 'var(--plt-danger)';
