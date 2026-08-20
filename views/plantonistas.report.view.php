@@ -66,7 +66,55 @@ $sev_data = json_encode([
 $calendar_json = json_encode($data['calendar']);
 ?>
 
-<script src="modules/module-zbx-plantonistas/assets/js/chart.min.js"></script>
+<?php
+// ── Chart.js: arquivo estático, com modo inline de reserva ──────────────
+//
+// Este é o ÚNICO .js estático do módulo. Todo o resto do JavaScript é inline
+// porque o F5 BIG-IP que fica na frente dos frontends bloqueia arquivo .js —
+// e se ele bloquear este também, os dois gráficos do Repasse simplesmente não
+// renderizam. Silenciosamente: `new Chart(...)` estoura no console e o resto
+// da tela continua de pé.
+//
+// O padrão continua sendo o <script src>, que o navegador cacheia entre
+// páginas — inlinear 204 KB em toda carga do Repasse seria pior no caso normal,
+// que é o F5 deixando passar.
+//
+// Se ele NÃO deixar, não é preciso mexer em código: basta ligar a env
+// `PLANTONISTAS_CHART_INLINE=1` no pool do PHP-FPM (mesmo lugar das outras
+// opções do módulo) e a biblioteca passa a ser embutida na página. Está no
+// README.
+$chart_file = __DIR__ . '/../assets/js/chart.min.js';
+$chart_quer = in_array(
+    strtolower(trim((string) getenv('PLANTONISTAS_CHART_INLINE'))),
+    ['1', 'on', 'true', 'yes'], true
+);
+
+// Ligado mas ilegível: sem este log o fallback seria silencioso E enganoso —
+// voltaria para o <script src> do MESMO arquivo, o navegador tomaria 403, e a
+// tela mandaria o operador ligar a env que ele já ligou. Causa mais provável:
+// `git pull` como root sem o `chown -R apache:apache` depois.
+if ($chart_quer && !is_readable($chart_file)) {
+    error_log('[plantonistas] PLANTONISTAS_CHART_INLINE ligado, mas ' . $chart_file
+            . ' não é legível pelo PHP (dono/permissão?) — usando <script src>.');
+}
+
+$chart_inline = $chart_quer && is_readable($chart_file);
+
+if ($chart_inline) {
+    // Embutir só é seguro porque este arquivo não contém `</script` nem
+    // `<!--` — os dois fechariam o bloco no parser HTML. Conferido nesta
+    // build (0 ocorrências de cada); TROCAR A VERSÃO DO CHART.JS EXIGE
+    // conferir de novo:
+    //   grep -c '</script' assets/js/chart.min.js
+    //   grep -c '<!--'     assets/js/chart.min.js
+    echo "<script>\n";
+    readfile($chart_file);
+    echo "\n</script>\n";
+}
+else {
+    echo '<script src="modules/module-zbx-plantonistas/assets/js/chart.min.js"></script>' . "\n";
+}
+?>
 <link rel="stylesheet" href="modules/module-zbx-plantonistas/assets/fontawesome/css/all.min.css"/>
 
 <?php
@@ -543,6 +591,27 @@ const REPORT_LIMIT       = <?= json_encode((string)($data['limit'] ?? '5')) ?>;
 const ALREADY_CLOSED     = <?= !empty($data['closed_report']) ? 'true' : 'false' ?>;
 
 // ── Charts ──
+//
+// Se a biblioteca não carregou (F5 bloqueando o .js), a falha NÃO pode ser
+// silenciosa: sem esta guarda o `new Chart(...)` estoura no console, os dois
+// cards ficam vazios, e ninguém liga uma coisa à outra.
+if (typeof Chart === 'undefined') {
+    ['chartMtta', 'chartSev'].forEach(function (id) {
+        var c = document.getElementById(id);
+        if (!c || !c.parentElement) return;
+        c.parentElement.classList.add('rp-chart-off');
+        c.parentElement.innerHTML =
+            '<div class="rp-empty">Gráficos indisponíveis: a biblioteca de gráficos '
+          + 'não carregou. Se o frontend está atrás de um proxy que bloqueia arquivos '
+          + '.js, ligue <code>PLANTONISTAS_CHART_INLINE=1</code> no PHP-FPM (ver README).</div>';
+    });
+    // O botão "mudar formato" fica no cabeçalho do card, que é IRMÃO do corpo
+    // substituído acima — sem isto ele sobrevive ao lado da mensagem de erro
+    // como um botão que não faz nada (o toggle tem guarda e não quebra, mas
+    // confunde).
+    document.querySelectorAll('.rp-chart-btn').forEach(function (b) { b.hidden = true; });
+}
+
 const maxMtta = Math.max(...MTTA_DATA);
 const mttaSuggestedMax = (maxMtta > 0 && maxMtta < 3600) ? 3600 : undefined;
 

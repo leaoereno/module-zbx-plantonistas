@@ -145,4 +145,33 @@ WHERE cus.lastaccess BETWEEN FROM_UNIXTIME(@ts_start) AND FROM_UNIXTIME(@ts_end)
 GROUP BY cus.userid, cus.username, cus.name, cus.noc_context
 ORDER BY first_seen ASC;
 
+-- ── Crescimento do Diário de Bordo ──────────────────────────
+--
+-- O módulo NÃO expira notas: é histórico permanente, por decisão. Esta
+-- consulta existe para a tabela não crescer sem ninguém olhar. Só vira
+-- assunto quando o tamanho incomodar de verdade — arquivar é decisão de
+-- quem opera.
+
+SELECT
+    COUNT(*)                                   AS notas,
+    MIN(n.created_at)                          AS mais_antiga,
+    MAX(n.created_at)                          AS mais_recente,
+    -- LENGTH (bytes), não CHAR_LENGTH (caracteres): o número tem de ser
+    -- comparável com o `mb` em disco da consulta abaixo, e texto PT-BR com
+    -- acento ocupa mais bytes que caracteres em UTF-8.
+    ROUND(SUM(LENGTH(n.notes)) / 1048576, 2) AS mb_de_texto
+FROM module_plantonistas_shift_notes n;
+
+-- Tamanho real em disco (dados + índices), para as 9 tabelas do módulo
+SELECT table_name,
+       table_rows,
+       ROUND((data_length + index_length) / 1048576, 2) AS mb
+FROM information_schema.tables
+WHERE table_schema = DATABASE()
+  -- BASE TABLE espelha o `relkind = 'r'` do arquivo do PostgreSQL: uma view
+  -- com este prefixo apareceria com data_length nulo.
+  AND table_type = 'BASE TABLE'
+  AND table_name LIKE 'module\\_plantonistas\\_%'
+ORDER BY (data_length + index_length) DESC;
+
 -- ============================================================

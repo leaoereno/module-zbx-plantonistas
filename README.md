@@ -294,13 +294,64 @@ rm -rf /usr/share/zabbix/modules/module-zbx-escala-plantao
 rm -rf /usr/share/zabbix/modules/module-zbx-repasse-plantao
 ```
 
-Depois Scan directory de novo (os dois somem da lista). Limpeza opcional de
-lixo no banco:
+Depois Scan directory de novo (os dois somem da lista).
+
+### Limpeza opcional de `role_rule` órfãs
+
+**Na maioria das instalações não há nada para limpar** — e é importante saber
+por quê, senão o SELECT volta vazio e fica a dúvida se rodou certo.
+
+Permissão de módulo no Zabbix 7.0 **não** guarda nome de action. O
+`CRole::RULE_TYPE_MODULE` grava a regra como `name = 'modules.module.N'` com o
+módulo referenciado por **`value_moduleid`**, que é FK para `module.moduleid`.
+Ou seja: quem liberou os módulos antigos pela UI (Papéis de utilizador) não
+gerou linha nenhuma com nome de action, e ao remover o módulo do `module`
+(Scan directory depois do `rm -rf`) a FK tende a levar a regra junto. Nesse
+caminho, a limpeza é ainda mais desnecessária do que parece.
+
+O campo `value_str` é usado por `api.method.N` e por tag de serviço. Nome de
+action aparece ali só quando **alguém inseriu a regra à mão por SQL** — que é
+exatamente o padrão do módulo `fcorr` que causou a colisão de `ids` descrita
+acima. Se foi assim neste ambiente, a consulta (a) devolve algo; se não foi,
+volta vazia e está tudo certo.
+
+**Confira ANTES de apagar**, pelos dois caminhos:
 
 ```sql
-DELETE FROM role_rule WHERE value_str LIKE 'plantao.%'
-   OR value_str LIKE 'phones.%' OR value_str LIKE 'turnos.%';
+-- (a) regras inseridas à mão por SQL (padrão fcorr) — nome de action em value_str
+SELECT rr.role_ruleid, r.name AS papel, rr.type, rr.name, rr.value_str
+  FROM role_rule rr
+  JOIN role r ON r.roleid = rr.roleid
+ WHERE rr.value_str LIKE 'plantao.%'
+    OR rr.value_str LIKE 'phones.%'
+    OR rr.value_str LIKE 'turnos.%'
+ ORDER BY r.name, rr.value_str;
+
+-- (b) o caminho OFICIAL: regra de módulo apontando por value_moduleid.
+--     Linha com m.moduleid NULL = o módulo já saiu da tabela `module`.
+SELECT rr.role_ruleid, r.name AS papel, rr.name, m.relative_path
+  FROM role_rule rr
+  JOIN role r        ON r.roleid   = rr.roleid
+  LEFT JOIN module m ON m.moduleid = rr.value_moduleid
+ WHERE rr.value_moduleid IS NOT NULL
+   AND (m.moduleid IS NULL
+        OR m.relative_path LIKE '%escala-plantao%'
+        OR m.relative_path LIKE '%repasse-plantao%')
+ ORDER BY r.name;
 ```
+
+O `LIKE` de (a) é amplo de propósito: num Zabbix com outros módulos ele pode
+casar regra que não é sua — `turnos.%` e `phones.%` não têm dono garantido.
+Por isso o DELETE vai **pelos IDs que você acabou de ver**, nunca repetindo o
+`LIKE`:
+
+```sql
+DELETE FROM role_rule WHERE role_ruleid IN (/* os ids dos SELECTs */);
+```
+
+Apagar não mexe na tabela `ids` — o contador só anda para frente, e ficar à
+frente do `MAX` é normal. Não confundir com o problema **oposto**, o de `ids`
+atrasada, que impede salvar papel (ver o aviso na seção de instalação).
 
 ## Notificar menção do Diário de Bordo (opcional)
 
@@ -435,9 +486,26 @@ valendo e está documentado no topo deste README.
 ## Notas de operação
 
 - **F5 BIG-IP bloqueia `.js` estático.** Todo o JS das telas é inline nas
-  views. Os arquivos em `assets/js/` são o Chart.js (usado só pelo Repasse;
-  se o gráfico não carregar atrás do F5, é isso) e um stub exigido pelo
-  manifest.
+  views. Sobram dois arquivos em `assets/js/`: o **Chart.js**, que os dois
+  gráficos do Repasse usam de verdade, e um **stub de 231 bytes** exigido pelo
+  `manifest.json` (o Zabbix pede o arquivo, o conteúdo não faz nada — se o F5
+  bloquear esse, não acontece nada).
+
+  O Chart.js continua sendo carregado por `<script src>`, que o navegador
+  cacheia entre páginas — embutir 204 KB em toda carga do Repasse seria pior no
+  caso normal, que é o F5 deixando passar. **Se os gráficos não aparecerem**, a
+  tela agora diz isso em vez de ficar em branco, e a correção não exige mexer
+  em código: ligue a env no pool do PHP-FPM (`/etc/php-fpm.d/zabbix.conf`) e
+  reinicie —
+
+  ```ini
+  env[PLANTONISTAS_CHART_INLINE] = 1
+  ```
+
+  A biblioteca passa a ser embutida na página, e o único `.js` que o F5 ainda
+  vê é o stub inofensivo. Se a env estiver ligada e o arquivo não for legível
+  pelo PHP (típico de `git pull` como root sem o `chown` depois), sai
+  `[plantonistas]` no log do FPM em vez de falhar calado.
 - **Sempre atualize e reinicie o php-fpm NOS DOIS frontends** — o F5 serve
   código velho de nó não atualizado de forma intermitente.
 - `git pull` como root deixa arquivos com dono root: rode
@@ -447,3 +515,9 @@ valendo e está documentado no topo deste README.
 - O módulo não tem onInstall/onUninstall (o Zabbix nunca chama esses hooks);
   todo o provisionamento/migração é idempotente dentro do `init()`, e o
   módulo nunca dropa tabela com dados.
+- **O Diário de Bordo não expira** — é histórico permanente, por decisão. As
+  únicas limpezas automáticas do módulo são as sessões de presença (7 dias) e
+  os vínculos analista→turno quando o turno é removido. Se um dia a tabela
+  incomodar, a consulta de tamanho está em `sql/queries.<banco>.sql`
+  ("Crescimento do Diário de Bordo"); arquivar é decisão de quem opera, não
+  algo que o módulo faça sozinho.

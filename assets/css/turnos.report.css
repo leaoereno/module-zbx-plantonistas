@@ -365,6 +365,17 @@
     height: 260px;
 }
 
+/* A altura acima é fixa por causa do canvas. Quando o Chart.js não carrega, o
+   wrapper recebe uma mensagem no lugar do canvas — sem isto ela ficaria colada
+   no topo de uma caixa de 260px. A classe é posta pelo JS, e não por
+   `:not(:has(canvas))`, porque `:has()` é recente demais para navegador
+   travado por política de empresa. */
+.rp-chart-wrap.rp-chart-off {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
 /* ── Cards ─────────────────────────────────────────────── */
 .rp-card {
     background: var(--rp-white);

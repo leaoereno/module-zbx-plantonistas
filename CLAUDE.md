@@ -1568,6 +1568,92 @@ Outras três coisas que a revisão apontou e valem como regra:
   daria o mesmo erro, e o `logHistory()` do import grava linha nova a cada
   passada.
 
+### Backlog fechado: Chart.js, role_rule e o que sobrou do TTL (2026-08-20)
+
+**Chart.js continua estático, agora com reserva e sem falha silenciosa.**
+É o único `.js` do módulo que faz alguma coisa (o outro em `assets/js/` é um
+stub de 231 bytes exigido pelo manifest). Inlinar sempre custaria 204 KB em
+toda carga do Repasse, sem cache — pior no caso normal, que é o F5 deixando
+passar. Então: `<script src>` por padrão, e a env `PLANTONISTAS_CHART_INLINE`
+(aceita `1`/`on`/`true`/`yes`) faz o PHP embutir a biblioteca. Nenhuma linha de
+código para mexer se o bloqueio aparecer em produção.
+
+Três coisas que a implementação exigiu:
+
+- **A falha deixou de ser silenciosa.** Sem `Chart`, o `new Chart(...)` estourava
+  no console e os dois cards ficavam vazios — ninguém ligava uma coisa à outra.
+  Agora os canvas viram uma mensagem que já diz qual é a env. O botão "mudar
+  formato" some junto: ele fica no **cabeçalho** do card, que é irmão do corpo
+  substituído, e sobreviveria como botão que não faz nada.
+- **Env ligada + arquivo ilegível vai para o log.** O fallback voltaria para o
+  `<script src>` do MESMO arquivo, o navegador tomaria 403, e a tela mandaria
+  ligar a env que já estava ligada. Causa provável: `git pull` como root sem o
+  `chown`.
+- **Embutir só é seguro porque o arquivo não contém `</script` nem `<!--`** —
+  os dois fechariam o bloco no parser HTML. Conferido (0 ocorrências de cada) e
+  anotado no código: trocar a versão do Chart.js exige conferir de novo.
+
+**`role_rule`: o README estava factualmente errado.** Ele dizia que as regras
+que liberavam as actions dos módulos antigos ficavam em `value_str`, e mandava
+apagar por `LIKE 'plantao.%'`. Permissão de módulo no Zabbix 7.0 não guarda
+nome de action: `CRole::RULE_TYPE_MODULE` grava `name = 'modules.module.N'` com
+o módulo em **`value_moduleid`**, FK para `module.moduleid` — e remover o módulo
+da tabela `module` tende a levar a regra junto. `value_str` é de `api.method.N`
+e tag de serviço.
+
+Ou seja, o SELECT antigo voltaria **vazio** em instalação normal, e o leitor
+concluiria "não tem lixo" sem saber que estava olhando a coluna errada. O que o
+`LIKE` de fato pega é regra **inserida à mão por SQL** — o padrão `fcorr` que
+causou a colisão de `ids`. O README agora traz os dois SELECTs, explica quando
+cada um devolve algo, e o DELETE vai por ID em vez de repetir o `LIKE`.
+
+**Diário de Bordo continua sem TTL, por decisão** — é histórico permanente. O
+que faltava era visibilidade: `sql/queries.<banco>.sql` ganhou "Crescimento do
+Diário de Bordo" (contagem, MB de texto, tamanho em disco das 9 tabelas).
+Arquivar segue sendo decisão de quem opera.
+
+Detalhes que a revisão apontou nessas consultas e valem como regra:
+
+- **`LENGTH`/`octet_length`, não `CHAR_LENGTH`/`length`**: o número tem de ser
+  comparável com o tamanho em disco, e texto PT-BR com acento ocupa mais bytes
+  que caracteres.
+- **`GREATEST(reltuples, 0)` no PG**: a partir do 14, tabela que nunca sofreu
+  ANALYZE tem `reltuples = -1`, e numa instalação nova as nove linhas sairiam
+  com -1 parecendo defeito.
+- **Escape de underscore no `LIKE` é assimétrico**: `'\\_'` no MySQL, `'\_'` no
+  PostgreSQL (com `standard_conforming_strings`, que é o default). Está
+  comentado nos dois arquivos.
+
+**Guarda de `.xls` replicada para a Escala.** Existia só no `PhonesImport`; no
+`PlantaoImport` um `.xls` binário caía no leitor de CSV e voltava "Arquivo vazio
+ou formato não reconhecido" — ou, pior, "Coluna data não encontrada. Cabeçalho:
+<bytes ilegíveis>". Junto, o teste de extensão virou case-insensitive: o
+`$ext === 'xlsx'` estrito mandava `ESCALA.XLSX` do Windows para o leitor de CSV.
+
+**`CHECKLIST-LAB.md`** reúne o que falta homologar. Dois itens dele nasceram
+errados e foram corrigidos na revisão, e o motivo vale registrar:
+
+- O passo de PostgreSQL mandava usar `scripts/install.sh`, que **não tem
+  caminho PG** — os três blocos chamam `mysql` incondicionalmente. Virou
+  `psql -f sql/schema.pgsql.sql`. (O `install.sh` só cobrir MySQL é limitação
+  conhecida; o `Module::init()` cria as tabelas nos dois bancos.)
+- O comando para carregar as env do cron era `set -a; source <(grep ...)`. O
+  cron lê `/etc/cron.d/` **literalmente** depois do `=`; o bash não. Senha com
+  `$`, espaço ou crase seria expandida — truncada no melhor caso, executada no
+  pior. Virou laço `read -r` que atribui sem interpretar.
+
+**Sobre o `php -l` do lab**: ele NÃO prova compatibilidade com PHP 8.0. O lab
+roda 8.4, e o lint valida contra o interpretador que executa — `const` em trait
+e afins passam limpos ali e explodem no RHEL. O checklist diz isso e oferece o
+comando com `php:8.0-cli` em container. Aqui os 47 arquivos foram verificados
+com um parser fixado no nível 8.0.
+
+**O que ficou de propósito**: `manifest.json` declara `"view"` para
+`plantonistas.report.pdf`, que faz `echo`/`die()` e nunca renderiza view. É
+configuração morta e inofensiva; remover teria mais risco (tela em branco sem
+erro nem log é o modo de falha clássico de action sem view) do que a confusão
+que causa a quem audita o manifest.
+
 ### Backlog conhecido
 
 - ~~Salvar vínculo analista→turno em massa~~ — **resolvido em 2026-08-19**:
@@ -1580,14 +1666,21 @@ Outras três coisas que a revisão apontou e valem como regra:
   (Correção de registro: uma versão anterior desta nota dizia que o
   `install.sh` não existia mais no repo. Existe — está em `scripts/`, não na
   raiz, que foi onde procurei.)
-- Chart.js estático vs F5 (embutir inline se os gráficos falharem em produção).
-- Limpeza opcional de `role_rule` órfãs dos módulos antigos (SQL no README).
+- ~~Chart.js estático vs F5~~ — **resolvido em 2026-08-20**: a env
+  `PLANTONISTAS_CHART_INLINE` embute a biblioteca, e a falha deixou de ser
+  silenciosa.
+- ~~Limpeza opcional de `role_rule` órfãs~~ — **o SQL do README estava errado e
+  foi corrigido em 2026-08-20** (a coluna é `value_moduleid`, não `value_str`).
+- `scripts/install.sh` só tem caminho MySQL. Em PostgreSQL, use
+  `psql -f sql/schema.pgsql.sql` ou deixe o `Module::init()` criar as tabelas.
 - ~~Unificação visual das duas famílias~~ — **resolvido em 2026-08-19**: as
   duas seguem o tema do Zabbix, paleta única em `views/_theme.php`.
 - ~~CSV import/export da Escala não sabe de turnos~~ — **resolvido em
   2026-08-19**: coluna Turno nos dois sentidos, arquivo antigo continua
   importando em modo legado com aviso.
-- Diário de Bordo sem expiração — avaliar TTL/arquivamento se a tabela crescer muito.
+- Diário de Bordo sem expiração — **decisão: não expira**, é histórico
+  permanente. A consulta de crescimento está em `sql/queries.<banco>.sql`;
+  arquivar é decisão de quem opera, não algo que o módulo faça sozinho.
 - ~~Conexão mysqli própria (`getDb()`) reconectando a cada request~~ —
   **resolvido em 2026-08-19** pelo `ZbxDb` (ver "Fim da conexão mysqli
   própria").
