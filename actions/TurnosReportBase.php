@@ -610,6 +610,63 @@ trait TurnosReportBase {
         return $rows;
     }
 
+    /**
+     * Nomes e cores REAIS de severidade — Administração > Geral > Opções de
+     * exibição de acionadores (tabela `config`, colunas severity_name_0..5 /
+     * severity_color_0..5). Antes disso a tela usava rótulos e cores FIXOS
+     * escritos no PHP/CSS ("Minor"/"Major"/"Critical" para as severidades
+     * 3/4/5, quando o padrão de fábrica do próprio Zabbix já é "Average"/
+     * "High"/"Disaster") — e nem o padrão de fábrica refletia, quanto mais um
+     * ambiente com os nomes/cores customizados (ex.: em PT-BR).
+     *
+     * `config` é tabela do core do Zabbix, sempre com exatamente 1 linha —
+     * sem WHERE. Falha (linha ausente, sem permissão) cai no default de
+     * fábrica: a tela continua funcionando, só sem refletir customização.
+     */
+    private function querySeverities(ZbxDb $db): array {
+        $default = [
+            0 => ['name' => 'Not classified', 'color' => '97AAB3'],
+            1 => ['name' => 'Information',    'color' => '7499FF'],
+            2 => ['name' => 'Warning',        'color' => 'FFC859'],
+            3 => ['name' => 'Average',        'color' => 'FFA059'],
+            4 => ['name' => 'High',           'color' => 'E97659'],
+            5 => ['name' => 'Disaster',       'color' => 'E45959'],
+        ];
+
+        try {
+            $stmt = $db->prepare(
+                'SELECT severity_name_0, severity_name_1, severity_name_2, severity_name_3,' .
+                '       severity_name_4, severity_name_5,' .
+                '       severity_color_0, severity_color_1, severity_color_2, severity_color_3,' .
+                '       severity_color_4, severity_color_5' .
+                ' FROM config'
+            );
+            $stmt->execute();
+            $row = $stmt->get_result()->fetch_assoc();
+            if (!$row) {
+                return $default;
+            }
+
+            $out = [];
+            for ($i = 0; $i <= 5; $i++) {
+                $name  = trim((string) ($row['severity_name_'  . $i] ?? ''));
+                $color = trim((string) ($row['severity_color_' . $i] ?? ''));
+                $out[$i] = [
+                    'name'  => $name !== '' ? $name : $default[$i]['name'],
+                    // 6 hex chars, sem '#' — é o formato que o Zabbix grava
+                    // em `config`. Qualquer outra coisa (linha corrompida,
+                    // upgrade a meio caminho) cai no default em vez de virar
+                    // "background:#" quebrado no CSS.
+                    'color' => preg_match('/^[0-9A-Fa-f]{6}$/', $color) ? $color : $default[$i]['color'],
+                ];
+            }
+            return $out;
+        } catch (\Throwable $e) {
+            error_log('[plantonistas] querySeverities() falhou: ' . $e->getMessage());
+            return $default;
+        }
+    }
+
     private function queryCalendarHeatmap(ZbxDb $db, string $hostFilter = ''): array {
         $ts30     = (int)strtotime('-30 days 00:00:00');
         $tsNow    = (int)time();

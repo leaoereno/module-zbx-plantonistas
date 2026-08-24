@@ -4,7 +4,7 @@ Módulo único de gestão de plantonistas para Zabbix 7.0 LTS. Unifica os antigo
 `module-zbx-escala-plantao` (v3.0.1) e `module-zbx-repasse-plantao` (v2.5.0)
 em um só módulo, menu e repositório.
 
-**Versão:** 5.0.0 · **Autor:** Rafael M. A. Leão Ereno (MALE)
+**Versão:** 5.1.0 · **Autor:** Rafael M. A. Leão Ereno (MALE)
 Forks de origem: [pandradee/zabbix-escala-de-plantao](https://github.com/pandradee/zabbix-escala-de-plantao) e [JohnnyIver/zabbix-report-module](https://github.com/JohnnyIver/zabbix-report-module)
 
 **Requisitos:** Zabbix 7.0 LTS · PHP 8.0+ nos frontends · MySQL 5.7+/8.0,
@@ -70,6 +70,18 @@ MariaDB 10.x **ou** PostgreSQL.
 - **Rollback documentado** para os módulos antigos, sem perda de dados.
 
 ---
+
+## Novidades da 5.1.0
+
+Rodada de correções e revisão pré-produção, em cima da 5.0.0:
+
+| O quê | Precisa de configuração? |
+|---|---|
+| **Repasse usa as cores e nomes REAIS de severidade** de Administração > Geral > Opções de exibição de acionadores, em vez de rótulos/cores fixos no PHP e no CSS (que nem batiam com o padrão de fábrica do Zabbix) | Não |
+| **Escala: reserva sem nome no hover/card** quando o cadastro não tinha `name`/`surname` preenchido — faltava o `username` como reserva (a Visão Geral já fazia certo) | Não |
+| **`<select>` desalinhado** no cabeçalho do Repasse e em Gerenciar Turnos — Zabbix vencia a disputa de altura/padding contra a classe do módulo | Não |
+| **`install.sh` detecta o caminho certo do módulo e o dialeto MySQL/PostgreSQL sozinho**, e funciona em host sem `/etc/cron.d` (Amazon Linux 2023 e afins) — cai para `crontab` do usuário e, na ausência dele, gera timer systemd. Passa a oferecer os 3 crons (presença, escalonamento, menções) na instalação, não só o de presença | Não |
+| **Suíte de testes automatizados** (`tests/`, ver seção própria abaixo) | Não |
 
 ## O que mudou na 5.0.0
 
@@ -559,7 +571,9 @@ Enquanto as pastas antigas existirem nos frontends, o rollback é rápido:
 ## Instalação nova (lab / ambiente limpo)
 
 Pré-requisito: Zabbix 7.0 LTS com backend **MySQL 5.7+/8.0, MariaDB 10.x ou
-PostgreSQL**, e PHP 8.0+ no frontend.
+PostgreSQL**, e PHP 8.0+ no frontend. PostgreSQL segue com homologação
+pendente — ver a nota em [Banco de dados](#banco-de-dados-mysqlmariadb-e-postgresql)
+acima antes de usar em produção.
 
 ```bash
 cd /usr/share/zabbix/modules
@@ -582,8 +596,34 @@ psql -h <host-do-banco> -U <usuario-do-banco> -d zabbix \
 
 Zabbix UI → Administration → General → Modules → Scan directory → habilitar
 "Plantonistas". O `scripts/install.sh` interativo também funciona (Docker,
-all-in-one ou segmentado) e pergunta se o banco é novo antes de rodar o
-schema.
+all-in-one ou segmentado), detecta MySQL/PostgreSQL sozinho (ou pergunta, se
+não conseguir ler `zabbix.conf.php`), detecta se o host tem `/etc/cron.d`
+(caindo para `crontab` do usuário ou timer systemd quando não tem — caso do
+Amazon Linux 2023) e pergunta se o banco é novo antes de rodar o schema.
+
+## Testes automatizados
+
+```bash
+php tests/run.php
+```
+
+Sem dependência (nada de PHPUnit/Composer — o módulo não tem `vendor/`, e
+instalar isso só pra rodar 4 arquivos de teste seria mais atrito que valor).
+Sai com código `0` se tudo passou (ou só pulou) e `1` se algo falhou — dá pra
+plugar num pipeline de CI ou num hook de pre-commit local.
+
+Cobre só a lógica **pura**, sem o framework do Zabbix carregado:
+`UserLabel`/`formatUserLabel()` (dedup de nome duplicado), `PhonesFormat`
+(máscara de telefone brasileira), `SqlFn` (dialeto MySQL × PostgreSQL) e
+`TurnosReportBase::sanitizeNoteHtml()` (sanitização do Diário de Bordo,
+incluindo o bypass aninhado `<iframe><span onclick>` e os esquemas
+`javascript:`/`data:`). Os controllers (`Plantao*`, `Turnos*Save` etc.) e as
+consultas que dependem de `ZbxDb`/`\DBselect` continuam só verificáveis no
+lab — não tem como isso ser unitário sem simular o Zabbix inteiro; ver
+`CHECKLIST-LAB.md`.
+
+Requer PHP 8.0+ com a extensão `dom` (para os testes de sanitização — sem
+ela, aquela suíte é pulada com aviso, o resto roda normal).
 
 ---
 

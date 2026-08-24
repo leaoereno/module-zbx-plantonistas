@@ -37,11 +37,15 @@ class TurnosReportPdf extends CController {
 
     // ── Helpers de formatação ────────────────────────────────
 
-    private function sevLabel(int $s): string {
-        // Nomes de severidade alinhados à regra de negócio (Administração > Geral
-        // > Opções de exibição de acionadores). TODO: buscar dinamicamente de
-        // config.severity_name_0..5 em vez de fixo aqui.
-        return [0=>'Not classified',1=>'Information',2=>'Warning',3=>'Minor',4=>'Major',5=>'Critical'][$s] ?? 'N/A';
+    private function sevLabel(int $s, array $severities = []): string {
+        // Nome REAL de Administração > Geral > Opções de exibição de
+        // acionadores (ver TurnosReportBase::querySeverities()). O array
+        // abaixo só entra se a consulta falhar, e mesmo assim é o default de
+        // fábrica do Zabbix — nunca foi "Minor"/"Major"/"Critical".
+        if (isset($severities[$s]['name']) && $severities[$s]['name'] !== '') {
+            return $severities[$s]['name'];
+        }
+        return [0=>'Not classified',1=>'Information',2=>'Warning',3=>'Average',4=>'High',5=>'Disaster'][$s] ?? 'N/A';
     }
 
     private function sevClass(int $s): string {
@@ -100,7 +104,11 @@ class TurnosReportPdf extends CController {
             // autor têm que caber nos do leitor. O documento congela a visão
             // de UMA pessoa — entregá-lo a quem enxerga menos furaria a
             // segmentação da tela.
-            $closed = $this->loadClosedReport($db, $reportId, $userid, $isSuperadmin, $nocCtx);
+            $closed     = $this->loadClosedReport($db, $reportId, $userid, $isSuperadmin, $nocCtx);
+            // Cor/nome de severidade não é dado do turno fechado — é
+            // preferência de exibição atual. Busca ao vivo mesmo aqui, antes
+            // de fechar a conexão.
+            $severities = $this->querySeverities($db);
             $db->close();
 
             if ($closed === null) {
@@ -162,6 +170,7 @@ class TurnosReportPdf extends CController {
             $top_triggers = $this->queryTopTriggers($db, $ts_start, $ts_end, $limit, $hostFilter);
             $totals       = $this->queryEventTotals($db, $ts_start, $ts_end, $hostFilter);
             $notes        = $this->queryNotes($db, $date, $shift, $userid, $isSuperadmin);
+            $severities   = $this->querySeverities($db);
             $db->close();
 
             $gmtta   = $this->calcGlobalMTTA($mtta);
@@ -186,10 +195,25 @@ class TurnosReportPdf extends CController {
             . ' — ' . $this->shiftLabel($shift, $shiftOptions)
             . ' — ' . str_replace('/', '-', $this->formatDateBr($date));
 
+        // Cores REAIS de severidade por cima do fallback fixo do CSS estático
+        // — mesma técnica da tela normal (ver plantonistas.report.view.php).
+        $sevClassByIndex = [0=>'notclass',1=>'info',2=>'warn',3=>'avg',4=>'high',5=>'disaster'];
+        $sevColorOverride = '';
+        if ($severities) {
+            $sevColorOverride = ':root{';
+            foreach ($sevClassByIndex as $sevIdx => $sevCls) {
+                $sevHex = $severities[$sevIdx]['color'] ?? '';
+                if ($sevHex !== '') {
+                    $sevColorOverride .= '--sev-' . $sevCls . ':#' . $sevHex . ';';
+                }
+            }
+            $sevColorOverride .= '}';
+        }
+
         // ── HTML ─────────────────────────────────────────────
         echo '<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8">';
         echo '<title>' . htmlspecialchars($pdfTitle) . '</title>';
-        echo '<style>' . file_get_contents(__DIR__ . '/../assets/css/turnos.report.css') . '
+        echo '<style>' . file_get_contents(__DIR__ . '/../assets/css/turnos.report.css') . $sevColorOverride . '
             body{background:#fff!important;font-size:11px}
             .rp-native-container{max-width:100%;padding:20px 30px}
             .rp-native-header{background:#2b3c51!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}
@@ -264,7 +288,7 @@ class TurnosReportPdf extends CController {
                 $sc = $this->sevClass((int)$r['severity']);
                 echo '<tr class="row-' . $sc . '">';
                 echo '<td class="td-mono">' . date('d/m H:i', (int)$r['clock']) . '</td>';
-                echo '<td><span class="rp-sev sev-' . $sc . '">' . $this->sevLabel((int)$r['severity']) . '</span></td>';
+                echo '<td><span class="rp-sev sev-' . $sc . '">' . htmlspecialchars($this->sevLabel((int)$r['severity'], $severities)) . '</span></td>';
                 echo '<td>' . htmlspecialchars($r['host']) . '</td>';
                 echo '<td>' . htmlspecialchars($r['trigger_desc']) . '</td>';
                 echo '<td class="td-bold">' . $this->fmtDuration((int)$r['age_seconds']) . '</td></tr>';
@@ -280,7 +304,7 @@ class TurnosReportPdf extends CController {
                 $sc = $this->sevClass((int)$r['severity']);
                 echo '<tr class="row-' . $sc . '">';
                 echo '<td class="td-mono">' . date('H:i:s', (int)$r['clock']) . '</td>';
-                echo '<td><span class="rp-sev sev-' . $sc . '">' . $this->sevLabel((int)$r['severity']) . '</span></td>';
+                echo '<td><span class="rp-sev sev-' . $sc . '">' . htmlspecialchars($this->sevLabel((int)$r['severity'], $severities)) . '</span></td>';
                 echo '<td>' . htmlspecialchars($r['host']) . '</td>';
                 echo '<td>' . htmlspecialchars($r['trigger_desc']) . '</td></tr>';
             }
@@ -298,7 +322,7 @@ class TurnosReportPdf extends CController {
                 echo '<tr><td class="td-center">' . $i++ . '</td>';
                 echo '<td>' . htmlspecialchars($r['host']) . '</td>';
                 echo '<td class="td-center td-bold">' . (int)$r['event_count'] . '</td>';
-                echo '<td><span class="rp-sev sev-' . $sc . '">' . $this->sevLabel((int)$r['max_severity']) . '</span></td></tr>';
+                echo '<td><span class="rp-sev sev-' . $sc . '">' . htmlspecialchars($this->sevLabel((int)$r['max_severity'], $severities)) . '</span></td></tr>';
             }
             echo '</tbody></table></div>';
         }
@@ -311,7 +335,7 @@ class TurnosReportPdf extends CController {
                 echo '<tr><td class="td-center">' . $i++ . '</td>';
                 echo '<td>' . htmlspecialchars($r['description']) . '</td>';
                 echo '<td class="td-center td-bold">' . (int)$r['event_count'] . '</td>';
-                echo '<td><span class="rp-sev sev-' . $sc . '">' . $this->sevLabel((int)$r['severity']) . '</span></td></tr>';
+                echo '<td><span class="rp-sev sev-' . $sc . '">' . htmlspecialchars($this->sevLabel((int)$r['severity'], $severities)) . '</span></td></tr>';
             }
             echo '</tbody></table></div>';
         }

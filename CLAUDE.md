@@ -2,7 +2,7 @@
 
 Contexto, memória e instruções de trabalho deste projeto. Portável: serve como
 knowledge de projeto no Claude.ai e como contexto de agente ao trabalhar neste
-repositório. Atualizado em 2026-08-17.
+repositório. Atualizado em 2026-08-24.
 
 ---
 
@@ -1654,6 +1654,131 @@ configuração morta e inofensiva; remover teria mais risco (tela em branco sem
 erro nem log é o modo de falha clássico de action sem view) do que a confusão
 que causa a quem audita o manifest.
 
+### Cores/nomes de severidade reais no Repasse (2026-08-20/24, v5.1.0)
+
+O Repasse tinha rótulo e cor de severidade **hardcoded** em 4 lugares
+independentes, todos já marcados com `TODO buscar dinamicamente` no código:
+`rp_sevLabel()`/`rp_sevClass()` na view, a cópia duplicada `sevLabel()`/
+`sevClass()` no `TurnosReportPdf`, o `SEV_LABELS`/`sevBgColors` do gráfico de
+rosca (JS), e os valores padrão do bloco `:root` do `turnos.report.css`. Nenhum
+dos quatro lia `config.severity_name_0..5`/`severity_color_0..5` — a tabela que
+Administração → Geral → Opções de exibição de acionadores realmente grava.
+
+**Achado no caminho, e corrigido junto**: o fallback hardcoded de 3 dos 4
+lugares (`sevLabel`/`rp_sevLabel`/PDF) usava os nomes errados —
+`Minor`/`Major`/`Critical` em vez dos nomes reais do Zabbix
+(`Average`/`High`/`Disaster`) — e o CSS padrão do `--sev-*` estava **um nível
+deslocado**: `--sev-info` era `#00FFFF` (devia ser o azul `#7499FF` de
+"Information"), `--sev-warn` tinha o azul (devia ter o amarelo `#FFC859` de
+"Warning"), e assim em cascata até `--sev-high`. Sem instalação alguma essa
+cor errada apareceria — mas nenhum código lia `config` ainda, então o CSS
+estático sempre valia.
+
+`TurnosReportBase::querySeverities(ZbxDb $db)` é o método único agora:
+`SELECT severity_name_0..5, severity_color_0..5 FROM config`, com try/catch
+(config indisponível → fallback com os nomes/cores certos, não os antigos
+errados) e validação de cor por regex (`^[0-9A-Fa-f]{6}$`) antes de imprimir —
+`config.severity_color_N` é `varchar` sem CHECK constraint no schema do
+Zabbix, então um valor corrompido não vira CSS quebrado.
+
+**Como a cor chega em cada um dos 4 lugares**, sem duplicar a query:
+
+- **View e PDF**: `rp_sevLabel($sev, $rp_sev)`/`sevLabel($s, $severities)`
+  passaram a receber o array como parâmetro (assinatura com default `[]` —
+  chamador antigo não quebra) em vez de mapear estático; saída sempre por
+  `htmlspecialchars()`.
+- **Cor**: como o CSS estático não pode ser regerado por request (e mesmo que
+  pudesse, perderia o cache do navegador), a cor real entra por um `<style>`
+  inline com `:root{--sev-info:#7499FF;...}` **depois** da folha estática no
+  documento — cascata resolve a favor do inline sem precisar de
+  `!important`. Mesma técnica que o `_theme.php` já usa pra dark mode.
+- **Gráfico de rosca**: `SEV_LABELS`/`SEV_COLORS` (JS) passaram a ser
+  `json_encode()` do mesmo array PHP, com `JSON_HEX_TAG` (evita fechar
+  `</script>` se algum nome de severidade tiver `<`/`>` — improvável no
+  cadastro nativo, mas o mesmo cuidado dos outros pontos do módulo que lidam
+  com string vinda do banco).
+
+`TurnosReportPdf` **não inclui a view compartilhada** — é `echo`/`die()`
+próprio (o `"view"` dele no manifest é config morta, documentado no Backlog) —
+por isso a mesma correção teve que ser aplicada em duplicado ali; é a mesma
+decisão de "3 cópias da mesma regra" já registrada pra `formatUserLabel()`.
+
+### Reserva sem nome/telefone no hover da Escala e Visão Geral (2026-08-24)
+
+Passar o mouse num dia com titular **e** reserva escalados mostrava nome e
+telefone do titular normalmente, mas o campo do reserva vinha em branco —
+mesmo com o cadastro correto em Telefones. Só acontecia com o **reserva**,
+nunca com o titular do mesmo dia.
+
+Causa: `PlantaoOverview` e `PlantaoHistory` já montavam o rótulo do reserva com
+`userLabel($name, $surname, $username)` — nome + sobrenome, com o username
+como reserva final quando os dois campos estão vazios (mesma regra descrita em
+"Nome duplicado: fim dos CONCAT crus"). `PlantaoList` (a action que alimenta a
+Escala e, por extensão, o tooltip da Visão Geral) fazia a MESMA chamada para o
+titular, mas para o reserva passava **string vazia literal** no terceiro
+argumento: `userLabel($row['reserva_name'], $row['reserva_surname'], '')`. Em
+qualquer cadastro onde `name`/`surname` do reserva estejam vazios (comum —
+muita conta antiga só tem `username` preenchido), o rótulo saía vazio, e o
+telefone — buscado depois por esse rótulo/userid — não tinha o que exibir
+junto.
+
+Fix de uma linha na origem: a SQL de `PlantaoList` ganhou
+`COALESCE(ur.username, '') AS reserva_username`, e a chamada de `userLabel()`
+passou a usar essa coluna em vez de `''`. Efeito colateral aceito e
+intencional: reserva com cadastro **removido** (userid órfão) agora aparece
+como `(removido)` em vez de célula em branco no calendário/tooltip — mesmo
+padrão já usado para "Turno removido"; célula vazia sem explicação era pior
+sinal de bug do que um rótulo dizendo o que aconteceu.
+
+### `<select>` desalinhado no Repasse (2026-08-24)
+
+Os campos `<select>` de "Gerenciar Turnos" (`.rp-nh-input`/`.rp-input`)
+herdavam `height`/`padding` de regra pensada para `<input type="text">` — o
+CSS global do tema do Zabbix tem uma regra de maior especificidade para
+elementos de formulário nativos e um `<select>` respeita métricas de caixa
+diferentes de um `<input>` no mesmo bloco de estilo. Resultado: o combobox
+ficava mais baixo/alto que os campos de texto ao lado, na mesma barra. É o
+mesmo conflito de CSS conhecido que a skill `zabbix-module-dev` já documenta
+(Critical Rule #20) — corrigido com o mesmo workaround: `height`/`min-height`/
+`padding`/`box-sizing`/`line-height`/`appearance` explícitos com `!important`,
+escopados a `select.rp-nh-input`/`select.rp-input` (não afeta os `<input>`
+vizinhos, que já estavam certos).
+
+### Testes automatizados (2026-08-24)
+
+Sem `composer.json`/`vendor/` no repo (módulo Zabbix, não pacote Composer) —
+instalar PHPUnit só pra 4 arquivos de teste seria mais atrito que valor, em
+especial perto do `/usr/share/zabbix/modules/` de produção. `tests/bootstrap.php`
+é um runner de ~90 linhas sem dependência (`php tests/run.php`, sai com código
+1 se algo falhou — dá pra plugar em CI/pre-commit).
+
+Só é testável fora do runtime do Zabbix a lógica **pura**, sem
+`\DBselect`/`\CWebUser`/`ZbxDb` reais: `UserLabel`/`formatUserLabel()`
+(dedup de nome), `PhonesFormat` (máscara de telefone), `SqlFn` (dialeto
+MySQL × PostgreSQL — inclusive a regressão documentada do `HH` de 12h no
+`to_char` do PG) e `TurnosReportBase::sanitizeNoteHtml()` (a mesma suíte que
+o CLAUDE.md já citava como "`test_sanitizer.php`, não versionada — rodar de
+novo se mexer nessa função"; agora está versionada em
+`tests/SanitizeNoteHtmlTest.php`, com o bypass aninhado `<iframe><span
+onclick>` e os esquemas `javascript:`/`data:` cobertos). Controllers e
+consultas que dependem de `ZbxDb $db` continuam só verificáveis no lab —
+não tem como isso ser unitário sem simular o Zabbix inteiro.
+
+Técnica usada para testar trait sem carregar o framework: uma classe
+"harness" mínima que só faz `use \Modules\Plantonistas\Actions\<Trait>;` e
+expõe os métodos privados do trait por wrappers públicos — método privado de
+trait vira privado da classe que o compõe, e um wrapper na mesma classe pode
+chamá-lo. `SqlFn::tryLock()`/`releaseLock()` chamam o `\zbx_dbstr()` real do
+Zabbix (função global, não existe fora do framework) — o bootstrap ganhou um
+polyfill guardado (`function_exists('zbx_dbstr')`) só para os testes, nunca
+usado em produção.
+
+**Nota de transparência**: os testes foram escritos e revisados manualmente
+linha a linha contra o código-fonte de cada trait (não há caminho de execução
+automatizada nesta sessão — o shell do ambiente ficou indisponível o tempo
+todo, ver commit/próximos passos). Rodar `php tests/run.php` antes do deploy
+é o passo que falta para confirmar que passam de verdade.
+
 ### Backlog conhecido
 
 - ~~Salvar vínculo analista→turno em massa~~ — **resolvido em 2026-08-19**:
@@ -1671,8 +1796,27 @@ que causa a quem audita o manifest.
   silenciosa.
 - ~~Limpeza opcional de `role_rule` órfãs~~ — **o SQL do README estava errado e
   foi corrigido em 2026-08-20** (a coluna é `value_moduleid`, não `value_str`).
-- `scripts/install.sh` só tem caminho MySQL. Em PostgreSQL, use
-  `psql -f sql/schema.pgsql.sql` ou deixe o `Module::init()` criar as tabelas.
+- ~~`scripts/install.sh` só tem caminho MySQL~~ — **resolvido em 2026-08-24**:
+  o script agora lê `zabbix.conf.php` e detecta o dialeto sozinho (ou
+  pergunta, se não conseguir ler), com `psql`/`mysql` escolhidos conforme o
+  banco. PostgreSQL continua **não homologado** (ver Roadmap) — o script
+  aceita, mas o passo 7 da issue #1 segue pendente.
+- ~~Caminho de instalação do módulo defasado (`/usr/share/zabbix/ui/modules`
+  hardcoded)~~ — **resolvido em 2026-08-24**: `detect_frontend_dir()` testa
+  `/usr/share/zabbix/modules` (caminho real de produção deste projeto, ver
+  seção 1) antes de `/usr/share/zabbix/ui/modules` (layout dos pacotes
+  oficiais do Zabbix 7.0 mais recentes) — os dois são aceitos, sem exigir
+  resposta manual.
+- ~~Cron não agenda em Amazon Linux (sem `/etc/cron.d`)~~ — **resolvido em
+  2026-08-24**: `install_scheduled_job()` cai para `crontab` do usuário e,
+  na ausência dos dois, gera unidades systemd (`.service`+`.timer`) —
+  cobre os três crons do módulo (presença, sincronismo de escalonamento,
+  fila de menções), não só o de presença.
+- Suíte de testes automatizados (`tests/`) foi escrita e revisada
+  manualmente linha a linha contra o código-fonte, mas **ainda não foi
+  executada** — o shell desta sessão ficou indisponível o tempo todo
+  (infraestrutura do ambiente, não do módulo). Rodar `php tests/run.php`
+  é o próximo passo antes de confiar nela como regressão.
 - ~~Unificação visual das duas famílias~~ — **resolvido em 2026-08-19**: as
   duas seguem o tema do Zabbix, paleta única em `views/_theme.php`.
 - ~~CSV import/export da Escala não sabe de turnos~~ — **resolvido em

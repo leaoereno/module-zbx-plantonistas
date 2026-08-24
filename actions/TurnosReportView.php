@@ -57,8 +57,18 @@ class TurnosReportView extends CController {
             $current_user
         );
 
-        $db       = $this->getDb();
-        $db_error = null;
+        $db         = $this->getDb();
+        $db_error   = null;
+        // Default de fábrica do Zabbix — sobrescrito abaixo se a conexão
+        // abrir. Nomes/cores REAIS de severidade (ver querySeverities()).
+        $severities = [
+            0 => ['name' => 'Not classified', 'color' => '97AAB3'],
+            1 => ['name' => 'Information',    'color' => '7499FF'],
+            2 => ['name' => 'Warning',        'color' => 'FFC859'],
+            3 => ['name' => 'Average',        'color' => 'FFA059'],
+            4 => ['name' => 'High',           'color' => 'E97659'],
+            5 => ['name' => 'Disaster',       'color' => 'E45959'],
+        ];
 
         $legacyOptions = [
             '24h'   => '24 Horas (Dia Inteiro)',
@@ -93,6 +103,8 @@ class TurnosReportView extends CController {
             $shift            = $this->normalizeShift($shiftRaw, $shiftOptions);
 
             [$ts_start, $ts_end] = $this->getShiftBounds($db, $date, $shift);
+
+            $severities = $this->querySeverities($db);
 
             $mtta = $this->queryMTTA($db, $ts_start, $ts_end, $hostFilter);
             $mtta = $this->restrictMttaByRole($mtta, $roleType, $current_userid);
@@ -153,6 +165,9 @@ class TurnosReportView extends CController {
             'role_type'         => $roleType,
             'can_manage_shifts' => $roleType >= 2,
             'closed_report'     => $closed_report,
+            // Nomes/cores reais de severidade (Administração > Geral) — ver
+            // TurnosReportBase::querySeverities().
+            'severities'        => $severities,
             // Token CSRF por action (em módulo o Zabbix confere contra a
             // action completa, não contra o prefixo — ver CLAUDE.md).
             'csrf_notes_save'    => \CCsrfTokenHelper::get('plantonistas.report.notes.save'),

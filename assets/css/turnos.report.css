@@ -19,19 +19,26 @@
        branca com texto branco. */
     --rp-bg-soft: #fafafa;
 
-    /* Cores de severidade = Administração > Geral > Opções de exibição de
-       acionadores (config.severity_color_0..5). Fixo por enquanto — TODO
-       buscar dinamicamente, igual aos nomes. */
+    /* Fallback ESTÁTICO de severidade — só entra em jogo se a consulta a
+       `config` (Administração > Geral > Opções de exibição de acionadores,
+       colunas severity_color_0..5) falhar; o caminho normal sobrescreve
+       estas variáveis com as cores REAIS via <style> inline, gerado por
+       TurnosReportBase::querySeverities() (ver plantonistas.report.view.php
+       e TurnosReportPdf.php).
+       Valores abaixo = default de FÁBRICA do próprio Zabbix. Estavam
+       deslocados uma severidade para baixo (--sev-info tinha um ciano
+       inventado, --sev-warn tinha a cor real de Information, etc.) — quem
+       via a tela sem nenhum SELECT customizado no Zabbix já via cor errada. */
     --sev-disaster: #E45959;
     --sev-disaster-bg: rgba(228, 89, 89, 0.08);
-    --sev-high: #FFA059;
-    --sev-high-bg: rgba(255, 160, 89, 0.08);
-    --sev-avg: #FFC859;
-    --sev-avg-bg: rgba(255, 200, 89, 0.08);
-    --sev-warn: #7499FF;
-    --sev-warn-bg: rgba(116, 153, 255, 0.08);
-    --sev-info: #00FFFF;
-    --sev-info-bg: rgba(0, 255, 255, 0.08);
+    --sev-high: #E97659;
+    --sev-high-bg: rgba(233, 118, 89, 0.08);
+    --sev-avg: #FFA059;
+    --sev-avg-bg: rgba(255, 160, 89, 0.08);
+    --sev-warn: #FFC859;
+    --sev-warn-bg: rgba(255, 200, 89, 0.08);
+    --sev-info: #7499FF;
+    --sev-info-bg: rgba(116, 153, 255, 0.08);
     --sev-notclass: #97AAB3;
     --sev-notclass-bg: rgba(151, 170, 179, 0.08);
 }
@@ -120,6 +127,23 @@
 .rp-nh-input::-webkit-calendar-picker-indicator {
     filter: invert(1);
     cursor: pointer;
+}
+
+/* O CSS nativo do Zabbix aplica altura/padding PRÓPRIOS a <select>, com
+   especificidade maior que uma classe simples — sem !important aqui os dois
+   selects do cabeçalho (turno, Top N) renderizavam mais altos que o
+   <input type="date"> ao lado, mesmo os três usando a mesma .rp-nh-input:
+   texto e caixa "desalinhados" na mesma barra. Ver skill zabbix-module-dev,
+   design system §4 "Form fields" — problema já conhecido, não específico
+   deste módulo. */
+select.rp-nh-input {
+    height: 28px !important;
+    min-height: 28px !important;
+    padding: 0 8px !important;
+    box-sizing: border-box !important;
+    line-height: 26px !important;
+    -webkit-appearance: menulist !important;
+    appearance: menulist !important;
 }
 
 .rp-nh-input option {
@@ -816,10 +840,10 @@ body[class*="dark"] .rp-native-container {
     --rp-text: #e1e8ed;
     --rp-text-muted: #8c9ba5;
     --sev-disaster-bg: rgba(228, 89, 89, 0.2);
-    --sev-high-bg: rgba(255, 160, 89, 0.2);
-    --sev-avg-bg: rgba(255, 200, 89, 0.2);
-    --sev-warn-bg: rgba(116, 153, 255, 0.2);
-    --sev-info-bg: rgba(0, 255, 255, 0.2);
+    --sev-high-bg: rgba(233, 118, 89, 0.2);
+    --sev-avg-bg: rgba(255, 160, 89, 0.2);
+    --sev-warn-bg: rgba(255, 200, 89, 0.2);
+    --sev-info-bg: rgba(116, 153, 255, 0.2);
     --sev-notclass-bg: rgba(151, 170, 179, 0.2);
     --rp-bg-soft: #22303f;
 }
@@ -922,6 +946,21 @@ body[class*="dark"] .rp-note-content {
 .rp-input:focus {
     border-color: var(--rp-blue);
     box-shadow: 0 0 0 3px rgba(2, 117, 184, 0.1);
+}
+
+/* .rp-input também vira <select> em Gerenciar Turnos (rp-bulk-shift,
+   rp-user-shift) — mesmo problema do .rp-nh-input acima: o Zabbix vence a
+   disputa de padding/altura contra uma classe simples, e o combobox de turno
+   ficava visualmente maior/desalinhado na linha da tabela, ao lado de texto
+   comum. !important força o tamanho definido aqui, não o do tema nativo. */
+select.rp-input {
+    height: 30px !important;
+    min-height: 30px !important;
+    padding: 5px 8px !important;
+    box-sizing: border-box !important;
+    line-height: 1.4 !important;
+    -webkit-appearance: menulist !important;
+    appearance: menulist !important;
 }
 
 .rp-shift-table td {

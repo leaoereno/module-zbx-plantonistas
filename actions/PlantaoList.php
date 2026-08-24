@@ -120,6 +120,7 @@ class PlantaoList extends CController {
                 '  COALESCE(s.userid_reserva, 0) AS userid_reserva,' .
                 '  COALESCE(ur.name, \'\') AS reserva_name,' .
                 '  COALESCE(ur.surname, \'\') AS reserva_surname,' .
+                '  COALESCE(ur.username, \'\') AS reserva_username,' .
                 '  COALESCE(pr.phone, \'\') AS reserva_phone,' .
                 '  COALESCE(cs.name, \'\') AS shift_name' .
                 ' FROM module_plantonistas_schedule s' .
@@ -147,11 +148,17 @@ class PlantaoList extends CController {
                     // Rótulos prontos: a view não precisa saber da regra de
                     // nome duplicado (ver UserLabel).
                     'label'           => $this->userLabel($row['name'], $row['surname'], $row['username']),
-                    'reserva_label'   => $this->userLabel($row['reserva_name'], $row['reserva_surname'], ''),
+                    // Faltava o username como reserva aqui (só o titular tinha):
+                    // reserva com name/surname vazios no cadastro do Zabbix
+                    // (comum em conta antiga/serviço) virava rótulo "" — a
+                    // "Reserva" aparecia no card e no hover sem nome nenhum.
+                    // PlantaoOverview já fazia certo (r_username); Escala não.
+                    'reserva_label'   => $this->userLabel($row['reserva_name'], $row['reserva_surname'], $row['reserva_username']),
                     'phone'           => $row['phone'],
                     'userid_reserva'  => $row['userid_reserva'],
                     'reserva_name'    => $row['reserva_name'],
                     'reserva_surname' => $row['reserva_surname'],
+                    'reserva_username'=> $row['reserva_username'],
                     'reserva_phone'   => $row['reserva_phone'],
                 ];
             }

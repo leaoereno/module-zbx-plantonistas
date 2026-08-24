@@ -403,7 +403,11 @@ while ($day<=$days_in_month) {
         // Rótulos vêm prontos do controller (UserLabel): concatenar aqui
         // duplicaria o nome de quem tem o nome completo no campo surname.
         $tech_label = $e['label'] ?: $e['username'];
-        $res_label  = $e['userid_reserva'] ? ($e['reserva_label'] ?: '') : '';
+        // '(removido)' e não string vazia: userid_reserva aponta pra um
+        // usuário que existia quando a escala foi salva, mas o LEFT JOIN não
+        // achou mais ninguém (conta excluída do Zabbix) — rótulo em branco
+        // parecia bug de dados faltando, e não "esse usuário não existe mais".
+        $res_label  = $e['userid_reserva'] ? ($e['reserva_label'] ?: '(removido)') : '';
 
         $tt_items[] = [
             'shift'     => $sid > 0 ? $e['shift_name'] : null,
@@ -459,7 +463,7 @@ while ($day<=$days_in_month) {
             echo '<div class="plt-no-phone">sem telefone</div>';
         }
         if ($e['userid_reserva']) {
-            $res_label = $e['reserva_label'] ?: '';
+            $res_label = $e['reserva_label'] ?: '(removido)';
             echo '<div class="plt-res-label">Reserva</div>';
             echo '<div class="plt-res-name">'.htmlspecialchars($res_label).'</div>';
             if ($e['reserva_phone'])

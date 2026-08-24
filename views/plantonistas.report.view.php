@@ -5,11 +5,17 @@
  */
 
 // Helper functions inline
-function rp_sevLabel(int $sev): string {
-    // Nomes de severidade alinhados à regra de negócio (Administração > Geral >
-    // Opções de exibição de acionadores). TODO: buscar dinamicamente de
-    // config.severity_name_0..5 em vez de fixo aqui.
-    return [0=>'Not classified',1=>'Information',2=>'Warning',3=>'Minor',4=>'Major',5=>'Critical'][$sev] ?? 'N/A';
+function rp_sevLabel(int $sev, array $severities = []): string {
+    // Nome REAL de Administração > Geral > Opções de exibição de acionadores
+    // (config.severity_name_0..5, lido em TurnosReportBase::querySeverities()
+    // e passado pelo controller em $data['severities']). O array abaixo só
+    // entra em jogo se a consulta falhar — e mesmo assim é o default de
+    // FÁBRICA do Zabbix, não mais "Minor"/"Major"/"Critical" (que nunca
+    // existiram no Zabbix; o certo sempre foi "Average"/"High"/"Disaster").
+    if (isset($severities[$sev]['name']) && $severities[$sev]['name'] !== '') {
+        return $severities[$sev]['name'];
+    }
+    return [0=>'Not classified',1=>'Information',2=>'Warning',3=>'Average',4=>'High',5=>'Disaster'][$sev] ?? 'N/A';
 }
 function rp_sevClass(int $sev): string {
     return [0=>'notclass',1=>'info',2=>'warn',3=>'avg',4=>'high',5=>'disaster'][$sev] ?? 'info';
@@ -55,6 +61,9 @@ function rp_probLink(?string $h=null): string {
 
 $date  = $data['date'];
 $shift = $data['shift'];
+// Nomes/cores reais de severidade — ver rp_sevLabel() e o bloco de <style>
+// logo abaixo de _theme.php, que sobrescreve --sev-* com as cores de verdade.
+$rp_sev = $data['severities'] ?? [];
 $chart_mtta_labels = json_encode(array_column($data['mtta_timeline'], 'hora'));
 $chart_mtta_data   = json_encode(array_map('intval', array_column($data['mtta_timeline'], 'avg_mtta')));
 $sev_data = json_encode([
@@ -125,6 +134,25 @@ else {
 // parecidas divergiriam num tema customizado, e o menu Plantão voltaria a
 // ficar metade claro, metade escuro.
 include __DIR__ . '/_theme.php';
+?>
+<?php
+// Cores REAIS de severidade por cima do fallback fixo de turnos.report.css —
+// mesma técnica do _theme.php (sobrescrever as CSS custom properties em vez
+// de reescrever o asset estático: um .css não pode ser gerado por request, e
+// mesmo que pudesse, o ganho de cache do <link> se perderia). O nome da
+// classe (--sev-notclass, --sev-info, ...) é estrutural e não muda — só o
+// valor. Sem cores em $rp_sev (consulta falhou), o CSS estático já cobre.
+$rp_sev_class_by_index = [0=>'notclass',1=>'info',2=>'warn',3=>'avg',4=>'high',5=>'disaster'];
+if ($rp_sev) {
+    echo '<style>:root{';
+    foreach ($rp_sev_class_by_index as $rp_idx => $rp_cls) {
+        $rp_hex = $rp_sev[$rp_idx]['color'] ?? '';
+        if ($rp_hex !== '') {
+            echo '--sev-' . $rp_cls . ':#' . $rp_hex . ';';
+        }
+    }
+    echo '}</style>' . "\n";
+}
 ?>
 <div class="rp-native-container" id="rpContainer">
 <script>
@@ -296,7 +324,7 @@ $pview_base = "zabbix.php?action=problem.view&filter_set=1&filter_show=3&from=".
         <div class="rp-kpi-icon txt-blue"><i class="fas fa-info-circle"></i></div>
         <div class="rp-kpi-body"><span class="rp-kpi-val"><?= (int)$data['totals']['total'] ?></span><span class="rp-kpi-label">Total Eventos</span></div>
     </a>
-    <a href="<?= $pview_base ?>&severities[]=4&severities[]=5" target="_blank" class="rp-kpi rp-kpi-link" title="Soma total de eventos Major e Critical.">
+    <a href="<?= $pview_base ?>&severities[]=4&severities[]=5" target="_blank" class="rp-kpi rp-kpi-link" title="Soma total de eventos <?= htmlspecialchars(rp_sevLabel(4, $rp_sev)) ?> e <?= htmlspecialchars(rp_sevLabel(5, $rp_sev)) ?>.">
         <div class="rp-kpi-icon txt-red"><i class="fas fa-exclamation-triangle"></i></div>
         <div class="rp-kpi-body"><span class="rp-kpi-val"><?= (int)$data['totals']['critical'] ?></span><span class="rp-kpi-label">Críticos</span></div>
     </a>
@@ -396,7 +424,7 @@ $pview_base = "zabbix.php?action=problem.view&filter_set=1&filter_show=3&from=".
         <?php foreach ($data['inherited'] as $r): $cls='row-'.rp_sevClass((int)$r['severity']); ?>
         <tr class="<?= $cls ?>">
             <td class="td-mono"><?= date('d/m H:i', (int)$r['clock']) ?></td>
-            <td><span class="rp-sev sev-<?= rp_sevClass((int)$r['severity']) ?>"><?= rp_sevLabel((int)$r['severity']) ?></span></td>
+            <td><span class="rp-sev sev-<?= rp_sevClass((int)$r['severity']) ?>"><?= htmlspecialchars(rp_sevLabel((int)$r['severity'], $rp_sev)) ?></span></td>
             <td><a href="zabbix.php?action=problem.view&filter_set=1&filter_show=3&filter_name=<?= urlencode($r['host']) ?>" target="_blank" class="rp-host-link"><?= htmlspecialchars($r['host']) ?> <i class="fas fa-external-link-alt"></i></a></td>
             <td><a href="zabbix.php?action=problem.view&filter_set=1&filter_show=3&filter_name=<?= urlencode($r['trigger_desc']) ?>" class="rp-trigger-link"><?= htmlspecialchars($r['trigger_desc']) ?></a></td>
             <td class="td-bold"><?= rp_duration((int)$r['age_seconds']) ?></td>
@@ -418,7 +446,7 @@ $pview_base = "zabbix.php?action=problem.view&filter_set=1&filter_show=3&from=".
         <?php foreach ($data['unacked'] as $r): $cls='row-'.rp_sevClass((int)$r['severity']); ?>
         <tr class="<?= $cls ?>">
             <td class="td-mono"><?= date('H:i:s', (int)$r['clock']) ?></td>
-            <td><span class="rp-sev sev-<?= rp_sevClass((int)$r['severity']) ?>"><?= rp_sevLabel((int)$r['severity']) ?></span></td>
+            <td><span class="rp-sev sev-<?= rp_sevClass((int)$r['severity']) ?>"><?= htmlspecialchars(rp_sevLabel((int)$r['severity'], $rp_sev)) ?></span></td>
             <td><a href="zabbix.php?action=problem.view&filter_set=1&filter_show=3&filter_name=<?= urlencode($r['host']) ?>" target="_blank" class="rp-host-link"><?= htmlspecialchars($r['host']) ?></a></td>
             <td><a href="zabbix.php?action=problem.view&filter_set=1&filter_show=3&filter_name=<?= urlencode($r['trigger_desc']) ?>" class="rp-trigger-link"><?= htmlspecialchars($r['trigger_desc']) ?></a></td>
             <td class="td-center"><a href="zabbix.php?action=problem.view&filter_set=1&filter_show=3&filter_name=<?= urlencode($r['trigger_desc']) ?>" target="_blank" class="rp-action" title="Ver no Zabbix"><i class="fas fa-search"></i></a></td>
@@ -441,7 +469,7 @@ $pview_base = "zabbix.php?action=problem.view&filter_set=1&filter_show=3&from=".
                 <td class="td-center td-bold"><?= $i++ ?></td>
                 <td><a href="<?= rp_probLink($r['host']) ?>" target="_blank" class="rp-host-link"><?= htmlspecialchars($r['host']) ?></a></td>
                 <td class="td-center td-bold"><?= $r['event_count'] ?></td>
-                <td><span class="rp-sev sev-<?= rp_sevClass((int)$r['max_severity']) ?>"><?= rp_sevLabel((int)$r['max_severity']) ?></span></td>
+                <td><span class="rp-sev sev-<?= rp_sevClass((int)$r['max_severity']) ?>"><?= htmlspecialchars(rp_sevLabel((int)$r['max_severity'], $rp_sev)) ?></span></td>
             </tr>
             <?php endforeach; ?>
             </tbody></table>
@@ -458,7 +486,7 @@ $pview_base = "zabbix.php?action=problem.view&filter_set=1&filter_show=3&from=".
                 <td class="td-center td-bold"><?= $i++ ?></td>
                 <td><a href="zabbix.php?action=problem.view&filter_set=1&filter_show=3&filter_name=<?= urlencode($r['description']) ?>" target="_blank" class="rp-host-link" title="Pesquisar histórico deste problema no Zabbix"><?= htmlspecialchars($r['description']) ?>&nbsp;<i class="fas fa-external-link-alt" style="font-size:9px;opacity:0.5;"></i></a></td>
                 <td class="td-center td-bold"><?= $r['event_count'] ?></td>
-                <td><span class="rp-sev sev-<?= rp_sevClass((int)$r['severity']) ?>"><?= rp_sevLabel((int)$r['severity']) ?></span></td>
+                <td><span class="rp-sev sev-<?= rp_sevClass((int)$r['severity']) ?>"><?= htmlspecialchars(rp_sevLabel((int)$r['severity'], $rp_sev)) ?></span></td>
             </tr>
             <?php endforeach; ?>
             </tbody></table>
@@ -578,7 +606,21 @@ $pview_base = "zabbix.php?action=problem.view&filter_set=1&filter_show=3&from=".
 const MTTA_LABELS = <?= $chart_mtta_labels ?>;
 const MTTA_DATA = <?= $chart_mtta_data ?>;
 const CURRENT_FULLNAME = '<?= addslashes($data['current_fullname']) ?>';
-const SEV_LABELS = ['Not classified','Information','Warning','Minor','Major','Critical'];
+// Nomes/cores reais (Administração > Geral > Opções de exibição de
+// acionadores) — mesma fonte ($rp_sev) usada nas tabelas acima. Fallback é o
+// default de fábrica do Zabbix, só usado se a consulta a `config` falhar.
+// JSON_HEX_TAG: nome de severidade é texto livre digitado por um Super Admin
+// em Administração > Geral — sem o flag, um nome contendo "</script>" sairia
+// cru dentro do bloco e fecharia a tag no meio do JSON.
+const SEV_LABELS = <?= json_encode([
+    rp_sevLabel(0, $rp_sev), rp_sevLabel(1, $rp_sev), rp_sevLabel(2, $rp_sev),
+    rp_sevLabel(3, $rp_sev), rp_sevLabel(4, $rp_sev), rp_sevLabel(5, $rp_sev),
+], JSON_HEX_TAG) ?>;
+const SEV_COLORS = <?= json_encode([
+    '#' . ($rp_sev[0]['color'] ?? '97AAB3'), '#' . ($rp_sev[1]['color'] ?? '7499FF'),
+    '#' . ($rp_sev[2]['color'] ?? 'FFC859'), '#' . ($rp_sev[3]['color'] ?? 'FFA059'),
+    '#' . ($rp_sev[4]['color'] ?? 'E97659'), '#' . ($rp_sev[5]['color'] ?? 'E45959'),
+]) ?>;
 const SEV_DATA = <?= $sev_data ?>;
 const NOTE_SHIFT = '<?= $shift ?>';
 const NOTE_DATE = '<?= $date ?>';
@@ -635,9 +677,10 @@ if (document.getElementById('chartSev')) {
     // Chart.js v4 bug: doughnut with borderWidth:0 and a single non-zero slice
     // renders blank. Fix: use borderWidth:2 with matching borderColor so the
     // border is invisible but the arc path is correctly stroked and filled.
-    // Cores = config.severity_color_0..5 (Administração > Geral > Opções de
-    // exibição de acionadores). Fixo por enquanto — TODO buscar dinamicamente.
-    const sevBgColors = ['#97AAB3','#00FFFF','#7499FF','#FFC859','#FFA059','#E45959'];
+    // Cores reais = config.severity_color_0..5 (Administração > Geral >
+    // Opções de exibição de acionadores), vindas de SEV_COLORS — ver
+    // TurnosReportBase::querySeverities().
+    const sevBgColors = SEV_COLORS;
     const sevTotal = SEV_DATA.reduce((a,b)=>a+b,0);
     window.sevChart = new Chart(document.getElementById('chartSev'), {
         type:'doughnut', data:{labels:SEV_LABELS, datasets:[{data:SEV_DATA,
