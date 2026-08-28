@@ -1882,6 +1882,73 @@ vezes, uma em cada linguagem — decidiu-se reaproveitar o resultado de
 `queryEventActions()` (ver acima) em vez de introduzir uma segunda fonte de
 verdade para a mesma pergunta.
 
+### Repasse quebrado em produção: `</script>` dentro do próprio comentário que avisava sobre `</script>` (2026-08-28, v5.2.1)
+
+A 5.2.0 (histórico de ações) subiu quebrada: MTTA por Hora, Distribuição por
+Severidade e o heatmap de 30 dias pararam de renderizar, e o fim da página
+mostrava um bloco enorme de texto cru — pedaços do próprio JS do relatório
+aparecendo como conteúdo da tela.
+
+**Causa**: o comentário que documenta por que `SEV_LABELS` usa `JSON_HEX_TAG`
+("sem o flag, um nome contendo `</script>` sairia cru...") está dentro de um
+`<script>` **estático** (fora de `<?php ?>`, a partir da linha 705) — ou seja,
+vai para o navegador exatamente como está escrito no arquivo, comentário e
+tudo. O parser HTML procura a sequência de fechamento de `<script>` em
+QUALQUER lugar do texto, inclusive dentro de comentário JS — ele não sabe (nem
+liga) que `// ...` é comentário. Ao digitar a sequência por extenso dentro do
+próprio aviso, o comentário fechou a tag no meio do arquivo, e tudo que vinha
+depois (o resto do bloco `<script>`, incluindo os dois gráficos Chart.js e o
+IIFE do heatmap) virou texto solto de página em vez de JavaScript executado.
+
+Confirmado por eliminação: `grep -c '</script' views/plantonistas.report.view.php`
+tinha só essa ocorrência fora de um bloco `<?php ?>` — os outros 5 matches no
+arquivo (linhas do comentário sobre o Chart.js e as duas tags de fechamento
+reais) estão todos dentro de `<?php ?>` ou são o fechamento de verdade, então
+nunca chegam ao navegador como texto.
+
+**Lição que fica**: em QUALQUER `<script>` estático deste módulo (fora de
+`<?php ?>`), nunca escrever a sequência de fechamento da tag por extenso — nem
+em comentário, nem em string, nem explicando por que ela é perigosa. Se
+precisar documentar o risco, descrever em prosa ("a tag de fechamento do
+elemento script") em vez de digitar os caracteres. Dado real vindo do banco
+(nome de severidade, mensagem de ACK, etc.) já tinha essa proteção
+(`JSON_HEX_TAG`, `htmlspecialchars()`); o que faltou proteger foi o
+comentário estático escrito à mão pelo próprio desenvolvedor — a fonte do
+risco não precisa ser input de usuário, o código-fonte literal do módulo
+também é "conteúdo dentro de `<script>`".
+
+Fix: reescrita do comentário sem a sequência literal, com um aviso extra
+("ATENÇÃO ao editar") pra não reintroduzir o mesmo bug na próxima explicação.
+
+### Lupa das 4 tabelas de alarme abria a lista geral, não o alarme clicado (2026-08-28, v5.2.1)
+
+O ícone de lupa ("Ver no Zabbix") nas 4 tabelas de alarme (Herdados, Sem ACK,
+Em Tratativas, Resolvidos) linkava para
+`problem.view&filter_name=<trigger_desc>` — busca textual pelo NOME do
+problema, não o alarme específico. Confirmado contra o código-fonte oficial
+(`CControllerProblemView::checkInput()`, Zabbix 7.0): a lista de campos
+aceitos por `problem.view` é `groupids/hostids/triggerids/name/severities/...`
+— não existe parâmetro de eventid ali, então não há como `problem.view` abrir
+UM alarme específico; `filter_name` sempre cai na lista inteira filtrada por
+texto (e dois triggers com descrição parecida, ou o mesmo trigger disparando
+de novo depois, aparecem juntos).
+
+A página nativa certa é `tr_events.php` (`ui/tr_events.php`, ainda presente no
+Zabbix 7.0), que aceita `triggerid`+`eventid` exatos e renderiza "Detalhes do
+evento" — a mesma tela que abre ao clicar num problema na lista nativa do
+Zabbix. `rp_eventLink($triggerid, $eventid)`, nova função na view, monta esse
+link; sem triggerid (linha antiga que não tinha a coluna, ou consulta que
+falhou) cai no link antigo por nome — pior que o ideal, mas não quebra a
+tela. As 4 queries (`queryInheritedAlerts`, `queryUnackedAlerts`,
+`queryInProgressAlerts`, `queryResolvedAlerts`) ganharam `MIN(t.triggerid) AS
+triggerid` — `t.triggerid` já estava no JOIN de todas (`t.triggerid =
+ev.objectid`/`p.objectid`), só não estava no SELECT.
+
+Os links de Host e de Problema (colunas separadas, que abrem `problem.view`
+filtrado por nome) **não foram tocados** — filtrar pelo nome do host/trigger
+pra ver o histórico dele é o uso pretendido ali; só a lupa (que promete "ver
+ESTE alarme") estava linkando errado.
+
 ### Backlog conhecido
 
 - ~~Salvar vínculo analista→turno em massa~~ — **resolvido em 2026-08-19**:

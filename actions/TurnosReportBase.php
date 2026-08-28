@@ -440,6 +440,7 @@ trait TurnosReportBase {
                     REPLACE(MIN(t.description), '{HOST.NAME}', MIN(h.name)) AS trigger_desc,
                     MIN(h.host)  AS host,
                     MIN(h.name)  AS host_name,
+                    MIN(t.triggerid) AS triggerid,
                     (? - p.clock)      AS age_seconds,
                     CASE WHEN EXISTS (
                         SELECT 1 FROM acknowledges ak WHERE ak.eventid = p.eventid
@@ -471,7 +472,8 @@ trait TurnosReportBase {
         $sql = "SELECT ev.eventid, ev.clock, ev.severity,
                     REPLACE(MIN(t.description), '{HOST.NAME}', MIN(h.name)) AS trigger_desc,
                     MIN(h.host) AS host,
-                    MIN(h.name) AS host_name
+                    MIN(h.name) AS host_name,
+                    MIN(t.triggerid) AS triggerid
                 FROM events ev
                 INNER JOIN triggers t  ON t.triggerid = ev.objectid
                 INNER JOIN functions f ON f.triggerid  = t.triggerid
@@ -509,7 +511,8 @@ trait TurnosReportBase {
         $sql = "SELECT ev.eventid, ev.clock, ev.severity,
                     REPLACE(MIN(t.description), '{HOST.NAME}', MIN(h.name)) AS trigger_desc,
                     MIN(h.host) AS host,
-                    MIN(h.name) AS host_name
+                    MIN(h.name) AS host_name,
+                    MIN(t.triggerid) AS triggerid
                 FROM events ev
                 INNER JOIN triggers t  ON t.triggerid = ev.objectid
                 INNER JOIN functions f ON f.triggerid  = t.triggerid
@@ -556,6 +559,7 @@ trait TurnosReportBase {
                     REPLACE(MIN(t.description), '{HOST.NAME}', MIN(h.name)) AS trigger_desc,
                     MIN(h.host)  AS host,
                     MIN(h.name)  AS host_name,
+                    MIN(t.triggerid) AS triggerid,
                     (p.r_clock - p.clock) AS resolve_seconds
                 FROM problem p
                 INNER JOIN triggers t       ON t.triggerid = p.objectid

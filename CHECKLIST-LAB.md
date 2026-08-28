@@ -231,6 +231,26 @@ uma Ação configurada — pra ver os 5 tipos de chip de uma vez.
 - [ ] Abrir um fechamento **antigo** (de antes desta atualização, se houver
       algum) → não quebra; as 2 tabelas novas aparecem vazias
 
+### Correções de bug da 5.2.1 (Repasse quebrado + lupa errada)
+
+A 5.2.0 subiu com um bug que quebrava a tela inteira — este item confirma que
+o conserto pegou.
+
+- [ ] Abrir o Repasse → **MTTA por Hora** e **Distribuição por Severidade**
+      renderizam normalmente (não ficam em branco)
+- [ ] **Volume de Alertas — Últimos 30 Dias** (heatmap) aparece preenchido,
+      não vazio
+- [ ] Rolar até o fim da página → **nenhum texto solto/código aparecendo**
+      abaixo do rodapé
+- [ ] Ver código-fonte da página (Ctrl+U) → só um `</script>` de fechamento
+      por bloco de script, nenhum meio de comentário cortando a tag
+- [ ] Clicar na **lupa** ("Ver no Zabbix") em qualquer linha de Herdados, Sem
+      ACK, Em Tratativas ou Resolvidos → abre **Detalhes do evento**
+      (`tr_events.php`) do alarme clicado, não a lista geral de Alarmes
+- [ ] Os links de **Host** e de **Problema** (colunas separadas, não a lupa)
+      continuam abrindo a lista geral filtrada por nome — isso não mudou, é
+      esperado
+
 ---
 
 ## 7. Gerenciar Turnos

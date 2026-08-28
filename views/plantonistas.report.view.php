@@ -59,6 +59,24 @@ function rp_probLink(?string $h=null): string {
     return $h ? $u.'&filter_name='.urlencode($h) : $u;
 }
 /**
+ * Link para o alarme ESPECÍFICO (não a lista geral filtrada por nome).
+ * `problem.view` só aceita filtro por groupids/hostids/triggerids/name — não
+ * existe parâmetro de eventid ali, então `filter_name` sempre caía numa busca
+ * textual (o "Ver no Zabbix" abria a lista inteira de Alarmes, não o alarme
+ * clicado). `tr_events.php` é a página nativa "Detalhes do evento", presente
+ * no Zabbix 7.0 (ui/tr_events.php), que aceita `triggerid`+`eventid` exatos.
+ * Sem triggerid (linha antiga sem a coluna, ou consulta que falhou), cai no
+ * link antigo por nome — pior que o ideal, mas não quebra a tela.
+ */
+function rp_eventLink(?string $triggerid, $eventid): string {
+    $tid = (int)($triggerid ?? 0);
+    $eid = (int)$eventid;
+    if ($tid > 0 && $eid > 0) {
+        return 'tr_events.php?triggerid=' . $tid . '&eventid=' . $eid;
+    }
+    return rp_probLink();
+}
+/**
  * Renderiza a coluna Ações das 4 tabelas de alarme (Herdados, Sem ACK, Em
  * Tratativas, Resolvidos) a partir de $data['actions'][$eventid]['items'],
  * já montado por TurnosReportBase::queryEventActions() — a view só formata,
@@ -480,7 +498,7 @@ $pview_base = "zabbix.php?action=problem.view&filter_set=1&filter_show=3&from=".
             <td class="td-bold"><?= rp_duration((int)$r['age_seconds']) ?></td>
             <td class="td-center"><?= $r['has_ack'] ? '<i class="fas fa-check-circle rp-ack-yes"></i>' : '<i class="fas fa-times-circle rp-ack-no"></i>' ?></td>
             <td><?= rp_actionChips($rp_actions[(int)$r['eventid']]['items'] ?? [], $rp_sev) ?></td>
-            <td class="td-center"><a href="zabbix.php?action=problem.view&filter_set=1&filter_show=3&filter_name=<?= urlencode($r['trigger_desc']) ?>" target="_blank" class="rp-action" title="Ver no Zabbix"><i class="fas fa-search"></i></a></td>
+            <td class="td-center"><a href="<?= rp_eventLink($r['triggerid'] ?? null, $r['eventid']) ?>" target="_blank" class="rp-action" title="Ver no Zabbix"><i class="fas fa-search"></i></a></td>
         </tr>
         <?php endforeach; ?>
         </tbody></table>
@@ -501,7 +519,7 @@ $pview_base = "zabbix.php?action=problem.view&filter_set=1&filter_show=3&from=".
             <td><a href="zabbix.php?action=problem.view&filter_set=1&filter_show=3&filter_name=<?= urlencode($r['host']) ?>" target="_blank" class="rp-host-link"><?= htmlspecialchars($r['host']) ?></a></td>
             <td><a href="zabbix.php?action=problem.view&filter_set=1&filter_show=3&filter_name=<?= urlencode($r['trigger_desc']) ?>" class="rp-trigger-link"><?= htmlspecialchars($r['trigger_desc']) ?></a></td>
             <td><?= rp_actionChips($rp_actions[(int)$r['eventid']]['items'] ?? [], $rp_sev) ?></td>
-            <td class="td-center"><a href="zabbix.php?action=problem.view&filter_set=1&filter_show=3&filter_name=<?= urlencode($r['trigger_desc']) ?>" target="_blank" class="rp-action" title="Ver no Zabbix"><i class="fas fa-search"></i></a></td>
+            <td class="td-center"><a href="<?= rp_eventLink($r['triggerid'] ?? null, $r['eventid']) ?>" target="_blank" class="rp-action" title="Ver no Zabbix"><i class="fas fa-search"></i></a></td>
         </tr>
         <?php endforeach; ?>
         </tbody></table>
@@ -523,7 +541,7 @@ $pview_base = "zabbix.php?action=problem.view&filter_set=1&filter_show=3&from=".
             <td><a href="zabbix.php?action=problem.view&filter_set=1&filter_show=3&filter_name=<?= urlencode($r['host']) ?>" target="_blank" class="rp-host-link"><?= htmlspecialchars($r['host']) ?></a></td>
             <td><a href="zabbix.php?action=problem.view&filter_set=1&filter_show=3&filter_name=<?= urlencode($r['trigger_desc']) ?>" class="rp-trigger-link"><?= htmlspecialchars($r['trigger_desc']) ?></a></td>
             <td><?= rp_actionChips($rp_actions[(int)$r['eventid']]['items'] ?? [], $rp_sev) ?></td>
-            <td class="td-center"><a href="zabbix.php?action=problem.view&filter_set=1&filter_show=3&filter_name=<?= urlencode($r['trigger_desc']) ?>" target="_blank" class="rp-action" title="Ver no Zabbix"><i class="fas fa-search"></i></a></td>
+            <td class="td-center"><a href="<?= rp_eventLink($r['triggerid'] ?? null, $r['eventid']) ?>" target="_blank" class="rp-action" title="Ver no Zabbix"><i class="fas fa-search"></i></a></td>
         </tr>
         <?php endforeach; ?>
         </tbody></table>
@@ -549,7 +567,7 @@ $pview_base = "zabbix.php?action=problem.view&filter_set=1&filter_show=3&from=".
             <td class="td-bold"><?= rp_duration((int)$r['resolve_seconds']) ?></td>
             <td><?= rp_resolvedBy($closedBy) ?></td>
             <td><?= rp_actionChips($rp_actions[(int)$r['eventid']]['items'] ?? [], $rp_sev) ?></td>
-            <td class="td-center"><a href="zabbix.php?action=problem.view&filter_set=1&filter_show=3&filter_name=<?= urlencode($r['trigger_desc']) ?>" target="_blank" class="rp-action" title="Ver no Zabbix"><i class="fas fa-search"></i></a></td>
+            <td class="td-center"><a href="<?= rp_eventLink($r['triggerid'] ?? null, $r['eventid']) ?>" target="_blank" class="rp-action" title="Ver no Zabbix"><i class="fas fa-search"></i></a></td>
         </tr>
         <?php endforeach; ?>
         </tbody></table>
@@ -710,8 +728,19 @@ const CURRENT_FULLNAME = '<?= addslashes($data['current_fullname']) ?>';
 // acionadores) — mesma fonte ($rp_sev) usada nas tabelas acima. Fallback é o
 // default de fábrica do Zabbix, só usado se a consulta a `config` falhar.
 // JSON_HEX_TAG: nome de severidade é texto livre digitado por um Super Admin
-// em Administração > Geral — sem o flag, um nome contendo "</script>" sairia
-// cru dentro do bloco e fecharia a tag no meio do JSON.
+// em Administração > Geral — sem o flag, um nome contendo a tag de fechamento
+// do elemento <script> (barra + a palavra "script" entre sinais de menor/maior)
+// sairia cru dentro do bloco e fecharia a tag no meio do JSON.
+//
+// ATENÇÃO ao editar este comentário: ele fica dentro de um <script> estático
+// (fora de <?php ?>), então é enviado ao navegador exatamente como está
+// escrito aqui. O parser HTML procura a sequência de fechamento da tag em
+// QUALQUER lugar do texto — inclusive dentro de comentário JS — e ignora que
+// é comentário. Uma versão anterior deste aviso continha a sequência por
+// extenso e quebrava a própria tela que explicava o problema: os gráficos e
+// o heatmap paravam de rodar e o restante do script aparecia como texto cru
+// no fim da página. Nunca escrever a sequência literal aqui, nem em nenhum
+// outro comentário dentro de um <script> estático deste módulo.
 const SEV_LABELS = <?= json_encode([
     rp_sevLabel(0, $rp_sev), rp_sevLabel(1, $rp_sev), rp_sevLabel(2, $rp_sev),
     rp_sevLabel(3, $rp_sev), rp_sevLabel(4, $rp_sev), rp_sevLabel(5, $rp_sev),

@@ -4,7 +4,7 @@ Módulo único de gestão de plantonistas para Zabbix 7.0 LTS. Unifica os antigo
 `module-zbx-escala-plantao` (v3.0.1) e `module-zbx-repasse-plantao` (v2.5.0)
 em um só módulo, menu e repositório.
 
-**Versão:** 5.2.0 · **Autor:** Rafael M. A. Leão Ereno (MALE)
+**Versão:** 5.2.1 · **Autor:** Rafael M. A. Leão Ereno (MALE)
 Forks de origem: [pandradee/zabbix-escala-de-plantao](https://github.com/pandradee/zabbix-escala-de-plantao) e [JohnnyIver/zabbix-report-module](https://github.com/JohnnyIver/zabbix-report-module)
 
 **Requisitos:** Zabbix 7.0 LTS · PHP 8.0+ nos frontends · MySQL 5.7+/8.0,
@@ -70,6 +70,15 @@ MariaDB 10.x **ou** PostgreSQL.
 - **Rollback documentado** para os módulos antigos, sem perda de dados.
 
 ---
+
+## Novidades da 5.2.1
+
+Correção de dois bugs que a 5.2.0 introduziu no Repasse de Plantão:
+
+| O quê | Precisa de configuração? |
+|---|---|
+| **MTTA por Hora, Distribuição por Severidade e Volume de Alertas (30 dias) pararam de renderizar**, com um bloco de texto cru no fim da página. Um comentário do JavaScript continha, por extenso, a própria sequência de fechamento do `<script>` que ele explicava ser perigosa — o navegador fechou a tag ali e jogou o resto do script como texto | Não |
+| **Lupa "Ver no Zabbix"** nas 4 tabelas de alarme (Herdados, Sem ACK, Em Tratativas, Resolvidos) abria a lista geral de Alarmes filtrada por nome, não o alarme clicado — agora abre a página nativa "Detalhes do evento" (`tr_events.php`) direto no evento | Não |
 
 ## Novidades da 5.2.0
 
