@@ -86,6 +86,88 @@ class TurnosReportPdf extends CController {
         return '<div class="rp-act-list">' . implode('', $chips) . '</div>';
     }
 
+    /**
+     * Sub-linha de detalhe das ações — EXCLUSIVA do PDF.
+     *
+     * Na tela ao vivo o conteúdo da ação (mensagem do ACK, severidade
+     * antiga → nova, status da notificação) vive no atributo `title` do chip,
+     * ou seja, só aparece no hover. Tooltip não existe em papel: no PDF o
+     * chip sozinho mostrava apenas o NOME da ação e o conteúdo se perdia.
+     *
+     * Em vez de espremer mais uma coluna numa tabela que já tem até 7 em A4
+     * paisagem, o detalhe sai numa linha própria logo abaixo do alarme, com
+     * colspan na largura toda — comporta mensagem longa sem quebrar o
+     * alinhamento das colunas de cima.
+     *
+     * Não consulta banco nem redecodifica bitmask: consome o mesmo
+     * $actions[$eventid]['items'] que actionChips() (ver
+     * TurnosReportBase::queryEventActions()). Se o evento não tem ação,
+     * devolve string vazia e nenhuma linha extra é impressa.
+     *
+     * @param int $colspan número de <th> da tabela em que a linha entra —
+     *        6 Herdados, 5 Sem ACK, 5 Em Tratativas, 7 Resolvidos.
+     */
+    private function actionDetailRow(array $items, array $severities, int $colspan, string $sevCls): string {
+        if (empty($items)) {
+            return '';
+        }
+
+        $lines = [];
+        foreach ($items as $it) {
+            $type = (string)($it['type'] ?? '');
+
+            // Conteúdo propriamente dito da ação. Cada tipo guarda o seu em
+            // campo diferente — ver queryEventActions().
+            $body = '';
+            if ($type === 'severity') {
+                $body = $this->sevLabel((int)($it['old_severity'] ?? 0), $severities)
+                      . ' → ' . $this->sevLabel((int)($it['new_severity'] ?? 0), $severities);
+                $body = htmlspecialchars($body);
+            }
+            elseif (trim((string)($it['message'] ?? '')) !== '') {
+                // nl2br: mensagem de ACK vem com quebra de linha do textarea
+                // do Zabbix e sem isso vira um parágrafo só no papel.
+                $body = nl2br(htmlspecialchars(trim((string)$it['message'])));
+            }
+
+            // Ação sem conteúdo (ACK puro, supressão) não gera linha de
+            // detalhe — o chip acima já diz tudo, repetir só ocuparia papel.
+            if ($body === '') {
+                continue;
+            }
+
+            // Notificação BEM-SUCEDIDA também não entra: um único evento pode
+            // ter dezenas de alertas em `alerts`, e "Enviada" repetido 30
+            // vezes enterraria a mensagem do analista, que é o que interessa
+            // em quem está pegando o turno. Falha de envio fica — essa o
+            // próximo plantonista precisa saber.
+            if ($type === 'notify' && stripos($body, 'Falhou') !== 0) {
+                continue;
+            }
+
+            $meta = [];
+            if (!empty($it['who'])) {
+                $meta[] = htmlspecialchars((string)$it['who']);
+            }
+            $meta[] = date('d/m/Y H:i', (int)($it['when'] ?? 0));
+
+            $lines[] = '<div class="rp-actd-item">'
+                     . '<span class="rp-act rp-act-' . htmlspecialchars($type) . '">'
+                     . htmlspecialchars((string)($it['label'] ?? '')) . '</span>'
+                     . '<span class="rp-actd-meta">' . implode(' — ', $meta) . '</span>'
+                     . '<div class="rp-actd-body">' . $body . '</div>'
+                     . '</div>';
+        }
+
+        if (empty($lines)) {
+            return '';
+        }
+
+        return '<tr class="rp-actd-row"><td colspan="' . (int)$colspan . '"'
+             . ' style="border-left:3px solid var(--sev-' . htmlspecialchars($sevCls) . ')">'
+             . implode('', $lines) . '</td></tr>';
+    }
+
     private function resolvedBy(?string $closedBy): string {
         return $closedBy !== null
             ? '<span class="rp-resolve-manual"><i class="fas fa-user-check"></i> ' . htmlspecialchars($closedBy) . '</span>'
@@ -273,6 +355,19 @@ class TurnosReportPdf extends CController {
             .rp-card{break-inside:avoid;box-shadow:none;border:1px solid #ccc}
             .rp-noc-badge{display:inline-block;padding:2px 10px;border-radius:12px;
                 background:#3b5998;color:#fff;font-size:10px;font-weight:600;margin-left:10px}
+
+            /* Sub-linha com o conteúdo das ações — ver actionDetailRow().
+               Estilo mora AQUI e não em turnos.report.css porque o CSS é
+               compartilhado com a tela ao vivo, que continua com tooltip. */
+            .rp-actd-row > td{background:#fafbfc;padding:6px 10px 8px 12px;
+                border-top:none;break-inside:avoid;page-break-inside:avoid;
+                -webkit-print-color-adjust:exact;print-color-adjust:exact}
+            .rp-actd-item{margin:3px 0 5px}
+            .rp-actd-item:last-child{margin-bottom:0}
+            .rp-actd-meta{font-size:9px;color:#6b7785;margin-left:6px}
+            .rp-actd-body{font-size:10px;color:#2b3c51;margin:2px 0 0 2px;
+                padding-left:8px;border-left:2px solid #dfe4ea;
+                white-space:normal;word-break:break-word}
             @page{size:A4 landscape;margin:10mm}
         </style>';
         echo '<link rel="stylesheet" href="modules/module-zbx-plantonistas/assets/fontawesome/css/all.min.css"/>';
@@ -343,6 +438,8 @@ class TurnosReportPdf extends CController {
                 echo '<td>' . htmlspecialchars($r['trigger_desc']) . '</td>';
                 echo '<td class="td-bold">' . $this->fmtDuration((int)$r['age_seconds']) . '</td>';
                 echo '<td>' . $this->actionChips($actions[(int)$r['eventid']]['items'] ?? [], $severities) . '</td></tr>';
+                // 6 colunas: Início, Severidade, Host, Problema, Idade, Ações.
+                echo $this->actionDetailRow($actions[(int)$r['eventid']]['items'] ?? [], $severities, 6, $sc);
             }
             echo '</tbody></table></div>';
         }
@@ -351,6 +448,8 @@ class TurnosReportPdf extends CController {
         if ($unacked) {
             echo '<div class="rp-card"><div class="rp-card-head"><i class="fas fa-exclamation-triangle"></i> Alertas Sem ACK</div>';
             echo '<table class="rp-table"><thead><tr><th>Hora</th><th>Severidade</th><th>Host</th><th>Problema</th><th>Ações</th></tr></thead><tbody>';
+            // 5 colunas: Hora, Severidade, Host, Problema, Ações.
+            $acDetailCols = 5;
             foreach ($unacked as $r) {
                 $sc = $this->sevClass((int)$r['severity']);
                 echo '<tr class="row-' . $sc . '">';
@@ -359,6 +458,7 @@ class TurnosReportPdf extends CController {
                 echo '<td>' . htmlspecialchars($r['host']) . '</td>';
                 echo '<td>' . htmlspecialchars($r['trigger_desc']) . '</td>';
                 echo '<td>' . $this->actionChips($actions[(int)$r['eventid']]['items'] ?? [], $severities) . '</td></tr>';
+                echo $this->actionDetailRow($actions[(int)$r['eventid']]['items'] ?? [], $severities, $acDetailCols, $sc);
             }
             echo '</tbody></table></div>';
         }
@@ -367,6 +467,8 @@ class TurnosReportPdf extends CController {
         if ($in_progress) {
             echo '<div class="rp-card"><div class="rp-card-head"><i class="fas fa-tools"></i> Alarmes em Tratativas</div>';
             echo '<table class="rp-table"><thead><tr><th>Hora</th><th>Severidade</th><th>Host</th><th>Problema</th><th>Ações</th></tr></thead><tbody>';
+            // 5 colunas: Hora, Severidade, Host, Problema, Ações.
+            $acDetailCols = 5;
             foreach ($in_progress as $r) {
                 $sc = $this->sevClass((int)$r['severity']);
                 echo '<tr class="row-' . $sc . '">';
@@ -375,6 +477,7 @@ class TurnosReportPdf extends CController {
                 echo '<td>' . htmlspecialchars($r['host']) . '</td>';
                 echo '<td>' . htmlspecialchars($r['trigger_desc']) . '</td>';
                 echo '<td>' . $this->actionChips($actions[(int)$r['eventid']]['items'] ?? [], $severities) . '</td></tr>';
+                echo $this->actionDetailRow($actions[(int)$r['eventid']]['items'] ?? [], $severities, $acDetailCols, $sc);
             }
             echo '</tbody></table></div>';
         }
@@ -394,6 +497,9 @@ class TurnosReportPdf extends CController {
                 echo '<td class="td-bold">' . $this->fmtDuration((int)$r['resolve_seconds']) . '</td>';
                 echo '<td>' . $this->resolvedBy($closedBy) . '</td>';
                 echo '<td>' . $this->actionChips($actions[(int)$r['eventid']]['items'] ?? [], $severities) . '</td></tr>';
+                // 7 colunas: Resolvido, Severidade, Host, Problema, MTTR,
+                // Resolvido por, Ações.
+                echo $this->actionDetailRow($actions[(int)$r['eventid']]['items'] ?? [], $severities, 7, $sc);
             }
             echo '</tbody></table></div>';
         }
