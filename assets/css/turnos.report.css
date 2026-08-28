@@ -282,7 +282,12 @@ select.rp-nh-input {
 /* ── KPI Grid ─────────────────────────────────────────── */
 .rp-kpi-grid {
     display: grid;
-    grid-template-columns: repeat(6, 1fr);
+    /* auto-fit em vez de repeat(6, 1fr) fixo: com as tabelas de Em
+       Tratativas/Resolvidos (2026-08-28) o grid passou de 5 para 7 cards, e
+       um contador fixo deixava a última linha com 1 card sozinho e o resto
+       vazio. auto-fit acomoda esse número (e qualquer outro no futuro) sem
+       precisar editar aqui de novo. */
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
     gap: 10px;
     margin-bottom: 16px;
 }
@@ -333,6 +338,22 @@ select.rp-nh-input {
 .txt-purple {
     color: #9c27b0;
 }
+
+/* Achado ao adicionar os KPIs de Em Tratativas/Resolvidos (2026-08-28):
+   TurnosReportPdf.php já referenciava .bg-blue/.bg-red/.bg-orange/.bg-yellow/
+   .bg-purple/.bg-green nos ícones dos KPIs (e a lista de print-color-adjust
+   logo abaixo também os cita) mas a classe nunca existiu neste arquivo — o
+   ícone do KPI no PDF sempre renderizou sem o círculo de fundo colorido que
+   a view ao vivo tem (que usa .txt-* + .rp-kpi-icon transparente, propositalmente
+   diferente). Definindo agora, no mesmo espírito visual (círculo colorido,
+   ícone branco) — sem isso o `bg-blue`/`bg-green` novos ficariam com o mesmo
+   problema silencioso. */
+.rp-kpi-icon.bg-blue   { background: var(--rp-blue);  color: #fff; border-radius: 50%; }
+.rp-kpi-icon.bg-red    { background: var(--sev-high); color: #fff; border-radius: 50%; }
+.rp-kpi-icon.bg-orange { background: #f28b00;         color: #fff; border-radius: 50%; }
+.rp-kpi-icon.bg-yellow { background: #f5b700;         color: #fff; border-radius: 50%; }
+.rp-kpi-icon.bg-purple { background: #9c27b0;         color: #fff; border-radius: 50%; }
+.rp-kpi-icon.bg-green  { background: #30a14e;         color: #fff; border-radius: 50%; }
 
 .txt-green {
     color: #30a14e;
@@ -650,6 +671,51 @@ select.rp-nh-input {
 
 .rp-ack-no {
     color: var(--sev-disaster);
+}
+
+/* ── Action chips (coluna Ações: Herdados/Sem ACK/Em Tratativas/Resolvidos) ──
+   Um chip por item do histórico (queryEventActions()); cor por tipo, no
+   mesmo espírito de .rp-perf — mas discreta, porque uma linha pode ter
+   vários chips lado a lado. Detalhe (quem/quando/mensagem) vai só no
+   title (tooltip), não no chip, pra não estourar a célula. */
+.rp-act-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+
+.rp-act {
+    display: inline-block;
+    padding: 1px 7px;
+    border-radius: 10px;
+    font-size: 10px;
+    font-weight: 600;
+    white-space: nowrap;
+    background: #eef1f4;
+    color: #555;
+    cursor: default;
+}
+
+.rp-act-ack       { background: #e8f5e9; color: #2e7d32; }
+.rp-act-close     { background: #e8f5e9; color: #1b5e20; }
+.rp-act-message   { background: var(--rp-blue-light); color: var(--rp-blue); }
+.rp-act-severity  { background: #fff3e0; color: #e65100; }
+.rp-act-unack     { background: #ffebee; color: #c62828; }
+.rp-act-suppress  { background: #f3e5f5; color: #6a1b9a; }
+.rp-act-unsuppress{ background: #f3e5f5; color: #6a1b9a; }
+.rp-act-rank_cause,
+.rp-act-rank_symptom { background: #eef1f4; color: #555; }
+.rp-act-notify     { background: #fffde7; color: #8d6e00; }
+
+/* Quem resolveu (tabela Alarmes Resolvidos): manual x automático */
+.rp-resolve-manual {
+    color: #2e7d32;
+    font-weight: 600;
+}
+
+.rp-resolve-auto {
+    color: var(--rp-text-muted);
+    font-style: italic;
 }
 
 /* ── Noise Row ────────────────────────────────────────── */

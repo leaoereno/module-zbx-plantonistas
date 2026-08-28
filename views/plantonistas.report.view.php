@@ -58,12 +58,54 @@ function rp_probLink(?string $h=null): string {
     $u = 'zabbix.php?action=problem.view&filter_set=1&filter_show=3';
     return $h ? $u.'&filter_name='.urlencode($h) : $u;
 }
+/**
+ * Renderiza a coluna Ações das 4 tabelas de alarme (Herdados, Sem ACK, Em
+ * Tratativas, Resolvidos) a partir de $data['actions'][$eventid]['items'],
+ * já montado por TurnosReportBase::queryEventActions() — a view só formata,
+ * não decide o que é ação nem consulta banco nenhum.
+ *
+ * $rp_sev entra só pro item type=severity, pra mostrar o nome REAL da
+ * severidade (Administração > Geral), igual ao resto da tela.
+ */
+function rp_actionChips(array $items, array $rp_sev): string {
+    if (empty($items)) {
+        return '<span class="rp-muted">—</span>';
+    }
+    $chips = [];
+    foreach ($items as $it) {
+        $detail = trim(
+            ($it['who'] ? $it['who'] . ' — ' : '')
+            . date('d/m/Y H:i', (int)$it['when'])
+        );
+        if ($it['type'] === 'severity') {
+            $detail .= ': ' . rp_sevLabel((int)($it['old_severity'] ?? 0), $rp_sev)
+                     . ' → ' . rp_sevLabel((int)($it['new_severity'] ?? 0), $rp_sev);
+        } elseif (!empty($it['message'])) {
+            $detail .= ': ' . $it['message'];
+        }
+        $chips[] = '<span class="rp-act rp-act-' . htmlspecialchars((string)$it['type']) . '" title="'
+                  . htmlspecialchars($detail) . '">' . htmlspecialchars((string)$it['label']) . '</span>';
+    }
+    return '<div class="rp-act-list">' . implode('', $chips) . '</div>';
+}
+/**
+ * "Quem resolveu" da tabela Alarmes Resolvidos: fechamento manual (item
+ * type=close no histórico de ações) x recuperação automática (trigger
+ * voltou ao normal sozinha, sem ninguém clicar em nada).
+ */
+function rp_resolvedBy(?string $closedBy): string {
+    return $closedBy !== null
+        ? '<span class="rp-resolve-manual"><i class="fas fa-user-check"></i> ' . htmlspecialchars($closedBy) . '</span>'
+        : '<span class="rp-resolve-auto"><i class="fas fa-sync-alt"></i> Automático</span>';
+}
 
 $date  = $data['date'];
 $shift = $data['shift'];
 // Nomes/cores reais de severidade — ver rp_sevLabel() e o bloco de <style>
 // logo abaixo de _theme.php, que sobrescreve --sev-* com as cores de verdade.
 $rp_sev = $data['severities'] ?? [];
+// Coluna Ações das 4 tabelas de alarme — ver rp_actionChips() acima.
+$rp_actions = $data['actions'] ?? [];
 $chart_mtta_labels = json_encode(array_column($data['mtta_timeline'], 'hora'));
 $chart_mtta_data   = json_encode(array_map('intval', array_column($data['mtta_timeline'], 'avg_mtta')));
 $sev_data = json_encode([
@@ -341,6 +383,14 @@ $pview_base = "zabbix.php?action=problem.view&filter_set=1&filter_show=3&from=".
         <div class="rp-kpi-icon txt-purple"><i class="fas fa-reply-all"></i></div>
         <div class="rp-kpi-body"><span class="rp-kpi-val"><?= count($data['inherited']) ?></span><span class="rp-kpi-label">Herdados</span></div>
     </a>
+    <a href="javascript:void(0)" onclick="document.getElementById('table-in-progress').scrollIntoView({behavior:'smooth'})" class="rp-kpi rp-kpi-link" title="Alarmes abertos durante o turno que já têm alguma ação registrada (ACK, mensagem, etc.).">
+        <div class="rp-kpi-icon txt-blue"><i class="fas fa-tools"></i></div>
+        <div class="rp-kpi-body"><span class="rp-kpi-val"><?= count($data['in_progress']) ?></span><span class="rp-kpi-label">Em Tratativas</span></div>
+    </a>
+    <a href="javascript:void(0)" onclick="document.getElementById('table-resolved').scrollIntoView({behavior:'smooth'})" class="rp-kpi rp-kpi-link" title="Alarmes resolvidos dentro da janela deste turno — histórico do turno.">
+        <div class="rp-kpi-icon txt-green"><i class="fas fa-check-circle"></i></div>
+        <div class="rp-kpi-body"><span class="rp-kpi-val"><?= count($data['resolved']) ?></span><span class="rp-kpi-label">Resolvidos</span></div>
+    </a>
     <a href="javascript:void(0)" onclick="document.getElementById('table-presence').scrollIntoView({behavior:'smooth'})" class="rp-kpi rp-kpi-link" title="Analistas rastreados como ativos durante a janela de horário do plantão selecionado.">
         <div class="rp-kpi-icon txt-green"><i class="fas fa-users"></i></div>
         <div class="rp-kpi-body"><span class="rp-kpi-val"><?= count($data['presence']) ?></span><span class="rp-kpi-label">Analistas Online</span></div>
@@ -420,7 +470,7 @@ $pview_base = "zabbix.php?action=problem.view&filter_set=1&filter_show=3&from=".
     <?php if (empty($data['inherited'])): ?>
         <div class="rp-card-body rp-empty">Nenhum alerta herdado pendente.</div>
     <?php else: ?>
-        <table class="rp-table"><thead><tr><th>Início</th><th>Severidade</th><th>Host</th><th>Problema</th><th>Idade</th><th>ACK</th><th></th></tr></thead><tbody>
+        <table class="rp-table"><thead><tr><th>Início</th><th>Severidade</th><th>Host</th><th>Problema</th><th>Idade</th><th>ACK</th><th>Ações</th><th></th></tr></thead><tbody>
         <?php foreach ($data['inherited'] as $r): $cls='row-'.rp_sevClass((int)$r['severity']); ?>
         <tr class="<?= $cls ?>">
             <td class="td-mono"><?= date('d/m H:i', (int)$r['clock']) ?></td>
@@ -429,6 +479,7 @@ $pview_base = "zabbix.php?action=problem.view&filter_set=1&filter_show=3&from=".
             <td><a href="zabbix.php?action=problem.view&filter_set=1&filter_show=3&filter_name=<?= urlencode($r['trigger_desc']) ?>" class="rp-trigger-link"><?= htmlspecialchars($r['trigger_desc']) ?></a></td>
             <td class="td-bold"><?= rp_duration((int)$r['age_seconds']) ?></td>
             <td class="td-center"><?= $r['has_ack'] ? '<i class="fas fa-check-circle rp-ack-yes"></i>' : '<i class="fas fa-times-circle rp-ack-no"></i>' ?></td>
+            <td><?= rp_actionChips($rp_actions[(int)$r['eventid']]['items'] ?? [], $rp_sev) ?></td>
             <td class="td-center"><a href="zabbix.php?action=problem.view&filter_set=1&filter_show=3&filter_name=<?= urlencode($r['trigger_desc']) ?>" target="_blank" class="rp-action" title="Ver no Zabbix"><i class="fas fa-search"></i></a></td>
         </tr>
         <?php endforeach; ?>
@@ -442,13 +493,62 @@ $pview_base = "zabbix.php?action=problem.view&filter_set=1&filter_show=3&from=".
     <?php if (empty($data['unacked'])): ?>
         <div class="rp-card-body rp-empty">Todos os alertas foram reconhecidos. <i class="fas fa-check"></i></div>
     <?php else: ?>
-        <table class="rp-table"><thead><tr><th>Hora</th><th>Severidade</th><th>Host</th><th>Problema</th><th></th></tr></thead><tbody>
+        <table class="rp-table"><thead><tr><th>Hora</th><th>Severidade</th><th>Host</th><th>Problema</th><th>Ações</th><th></th></tr></thead><tbody>
         <?php foreach ($data['unacked'] as $r): $cls='row-'.rp_sevClass((int)$r['severity']); ?>
         <tr class="<?= $cls ?>">
             <td class="td-mono"><?= date('H:i:s', (int)$r['clock']) ?></td>
             <td><span class="rp-sev sev-<?= rp_sevClass((int)$r['severity']) ?>"><?= htmlspecialchars(rp_sevLabel((int)$r['severity'], $rp_sev)) ?></span></td>
             <td><a href="zabbix.php?action=problem.view&filter_set=1&filter_show=3&filter_name=<?= urlencode($r['host']) ?>" target="_blank" class="rp-host-link"><?= htmlspecialchars($r['host']) ?></a></td>
             <td><a href="zabbix.php?action=problem.view&filter_set=1&filter_show=3&filter_name=<?= urlencode($r['trigger_desc']) ?>" class="rp-trigger-link"><?= htmlspecialchars($r['trigger_desc']) ?></a></td>
+            <td><?= rp_actionChips($rp_actions[(int)$r['eventid']]['items'] ?? [], $rp_sev) ?></td>
+            <td class="td-center"><a href="zabbix.php?action=problem.view&filter_set=1&filter_show=3&filter_name=<?= urlencode($r['trigger_desc']) ?>" target="_blank" class="rp-action" title="Ver no Zabbix"><i class="fas fa-search"></i></a></td>
+        </tr>
+        <?php endforeach; ?>
+        </tbody></table>
+    <?php endif; ?>
+</div>
+
+<!-- IN PROGRESS ALERTS (complemento de Sem ACK: já tem ação/ACK) -->
+<div class="rp-card" id="table-in-progress">
+    <div class="rp-card-head"><i class="fas fa-tools"></i> Alarmes em Tratativas <span class="rp-badge"><?= count($data['in_progress']) ?></span></div>
+    <div class="rp-card-desc">Alarmes abertos durante este turno que já têm pelo menos uma ação registrada (ACK, mensagem, etc.) — complemento de Alertas Sem ACK.</div>
+    <?php if (empty($data['in_progress'])): ?>
+        <div class="rp-card-body rp-empty">Nenhum alarme em tratativa neste turno.</div>
+    <?php else: ?>
+        <table class="rp-table"><thead><tr><th>Hora</th><th>Severidade</th><th>Host</th><th>Problema</th><th>Ações</th><th></th></tr></thead><tbody>
+        <?php foreach ($data['in_progress'] as $r): $cls='row-'.rp_sevClass((int)$r['severity']); ?>
+        <tr class="<?= $cls ?>">
+            <td class="td-mono"><?= date('H:i:s', (int)$r['clock']) ?></td>
+            <td><span class="rp-sev sev-<?= rp_sevClass((int)$r['severity']) ?>"><?= htmlspecialchars(rp_sevLabel((int)$r['severity'], $rp_sev)) ?></span></td>
+            <td><a href="zabbix.php?action=problem.view&filter_set=1&filter_show=3&filter_name=<?= urlencode($r['host']) ?>" target="_blank" class="rp-host-link"><?= htmlspecialchars($r['host']) ?></a></td>
+            <td><a href="zabbix.php?action=problem.view&filter_set=1&filter_show=3&filter_name=<?= urlencode($r['trigger_desc']) ?>" class="rp-trigger-link"><?= htmlspecialchars($r['trigger_desc']) ?></a></td>
+            <td><?= rp_actionChips($rp_actions[(int)$r['eventid']]['items'] ?? [], $rp_sev) ?></td>
+            <td class="td-center"><a href="zabbix.php?action=problem.view&filter_set=1&filter_show=3&filter_name=<?= urlencode($r['trigger_desc']) ?>" target="_blank" class="rp-action" title="Ver no Zabbix"><i class="fas fa-search"></i></a></td>
+        </tr>
+        <?php endforeach; ?>
+        </tbody></table>
+    <?php endif; ?>
+</div>
+
+<!-- RESOLVED ALERTS (histórico do turno) -->
+<div class="rp-card" id="table-resolved">
+    <div class="rp-card-head"><i class="fas fa-check-circle"></i> Alarmes Resolvidos <span class="rp-badge"><?= count($data['resolved']) ?></span></div>
+    <div class="rp-card-desc">
+        Alarmes cuja resolução caiu dentro deste turno — histórico do turno. Turnos antigos podem aparecer vazios aqui mesmo tendo tido resolução: o Zabbix limpa problemas resolvidos da tabela de origem depois de um tempo (housekeeper), independente deste módulo.
+    </div>
+    <?php if (empty($data['resolved'])): ?>
+        <div class="rp-card-body rp-empty">Nenhum alarme resolvido dentro da janela deste turno.</div>
+    <?php else: ?>
+        <table class="rp-table"><thead><tr><th>Resolvido</th><th>Severidade</th><th>Host</th><th>Problema</th><th>MTTR</th><th>Resolvido por</th><th>Ações</th><th></th></tr></thead><tbody>
+        <?php foreach ($data['resolved'] as $r): $cls='row-'.rp_sevClass((int)$r['severity']); $closedBy = $rp_actions[(int)$r['eventid']]['closed_by'] ?? null; ?>
+        <tr class="<?= $cls ?>">
+            <td class="td-mono"><?= date('d/m H:i', (int)$r['r_clock']) ?></td>
+            <td><span class="rp-sev sev-<?= rp_sevClass((int)$r['severity']) ?>"><?= htmlspecialchars(rp_sevLabel((int)$r['severity'], $rp_sev)) ?></span></td>
+            <td><a href="zabbix.php?action=problem.view&filter_set=1&filter_show=3&filter_name=<?= urlencode($r['host']) ?>" target="_blank" class="rp-host-link"><?= htmlspecialchars($r['host']) ?></a></td>
+            <td><a href="zabbix.php?action=problem.view&filter_set=1&filter_show=3&filter_name=<?= urlencode($r['trigger_desc']) ?>" class="rp-trigger-link"><?= htmlspecialchars($r['trigger_desc']) ?></a></td>
+            <td class="td-bold"><?= rp_duration((int)$r['resolve_seconds']) ?></td>
+            <td><?= rp_resolvedBy($closedBy) ?></td>
+            <td><?= rp_actionChips($rp_actions[(int)$r['eventid']]['items'] ?? [], $rp_sev) ?></td>
             <td class="td-center"><a href="zabbix.php?action=problem.view&filter_set=1&filter_show=3&filter_name=<?= urlencode($r['trigger_desc']) ?>" target="_blank" class="rp-action" title="Ver no Zabbix"><i class="fas fa-search"></i></a></td>
         </tr>
         <?php endforeach; ?>

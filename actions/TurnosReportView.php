@@ -90,6 +90,7 @@ class TurnosReportView extends CController {
                 'sev_dist' => [], 'calendar' => [], 'shift_analysts' => [], 'limit' => $limitStr,
                 'pending_mentions' => [],
                 'mention_history'  => [],
+                'in_progress' => [], 'resolved' => [], 'actions' => [],
             ];
             $closed_report = null;
         } else {
@@ -111,10 +112,26 @@ class TurnosReportView extends CController {
 
             $shiftAnalysts = ctype_digit($shift) ? $this->queryShiftAnalysts($db, (int)$shift) : [];
 
+            $inherited   = $this->queryInheritedAlerts($db, $ts_start, $hostFilter);
+            $unacked     = $this->queryUnackedAlerts($db, $ts_start, $ts_end, $hostFilter);
+            $in_progress = $this->queryInProgressAlerts($db, $ts_start, $ts_end, $hostFilter);
+            $resolved    = $this->queryResolvedAlerts($db, $ts_start, $ts_end, $hostFilter);
+            // Coluna Ações das 4 tabelas acima: uma query só, pelos eventids
+            // já trazidos por elas (ver queryEventActions()).
+            $actions = $this->queryEventActions($db, array_merge(
+                array_column($inherited, 'eventid'),
+                array_column($unacked, 'eventid'),
+                array_column($in_progress, 'eventid'),
+                array_column($resolved, 'eventid')
+            ));
+
             $data_pack = [
                 'mtta'           => $mtta,
-                'inherited'      => $this->queryInheritedAlerts($db, $ts_start, $hostFilter),
-                'unacked'        => $this->queryUnackedAlerts($db, $ts_start, $ts_end, $hostFilter),
+                'inherited'      => $inherited,
+                'unacked'        => $unacked,
+                'in_progress'    => $in_progress,
+                'resolved'       => $resolved,
+                'actions'        => $actions,
                 'top_hosts'      => $this->queryTopHosts($db, $ts_start, $ts_end, $limit, $hostFilter),
                 'top_triggers'   => $this->queryTopTriggers($db, $ts_start, $ts_end, $limit, $hostFilter),
                 'totals'         => $this->queryEventTotals($db, $ts_start, $ts_end, $hostFilter),

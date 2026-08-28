@@ -4,7 +4,7 @@ Módulo único de gestão de plantonistas para Zabbix 7.0 LTS. Unifica os antigo
 `module-zbx-escala-plantao` (v3.0.1) e `module-zbx-repasse-plantao` (v2.5.0)
 em um só módulo, menu e repositório.
 
-**Versão:** 5.1.0 · **Autor:** Rafael M. A. Leão Ereno (MALE)
+**Versão:** 5.2.0 · **Autor:** Rafael M. A. Leão Ereno (MALE)
 Forks de origem: [pandradee/zabbix-escala-de-plantao](https://github.com/pandradee/zabbix-escala-de-plantao) e [JohnnyIver/zabbix-report-module](https://github.com/JohnnyIver/zabbix-report-module)
 
 **Requisitos:** Zabbix 7.0 LTS · PHP 8.0+ nos frontends · MySQL 5.7+/8.0,
@@ -70,6 +70,22 @@ MariaDB 10.x **ou** PostgreSQL.
 - **Rollback documentado** para os módulos antigos, sem perda de dados.
 
 ---
+
+## Novidades da 5.2.0
+
+Repasse de Plantão ganhou histórico de ações e mais duas tabelas de alarme:
+
+| O quê | Precisa de configuração? |
+|---|---|
+| **Coluna Ações** em Alertas Herdados e Alertas Sem ACK: o que o analista fez no alarme (ACK, mensagem, mudança de severidade, fechar, suprimir) e o que o Zabbix notificou sozinho (e-mail/SMS/webhook das Ações configuradas), num chip por evento | Não |
+| **Alarmes em Tratativas** (nova tabela): alarmes abertos durante o turno que já têm alguma ação — complemento direto de Alertas Sem ACK | Não |
+| **Alarmes Resolvidos** (nova tabela, histórico do turno): alarmes cuja resolução caiu dentro da janela do turno, com MTTR e se o fechamento foi manual (e por quem) ou automático | Não |
+| As duas tabelas novas e a coluna Ações entram também no PDF e no documento de "Fechar Turno" | Não |
+
+Alarmes Resolvidos depende da tabela `problem` do Zabbix, que o housekeeper
+limpa depois de um tempo configurável — turnos antigos podem aparecer vazios
+ali mesmo tendo tido resolução (mesma limitação que Alertas Herdados já tinha,
+ver `CLAUDE.md`).
 
 ## Novidades da 5.1.0
 

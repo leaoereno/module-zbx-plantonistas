@@ -204,6 +204,33 @@ Volte na aba original e salve.
 - [ ] Fechar o mesmo turno de novo como **User (1)** → recusado (só Admin+)
 - [ ] Gerar PDF do relatório ao vivo
 
+### Coluna Ações + Alarmes em Tratativas/Resolvidos (novo, 2026-08-28)
+
+Precisa de um turno com atividade real: pelo menos 1 problema com ACK simples,
+1 com mensagem/comentário, 1 com mudança de severidade, 1 fechado manualmente
+("Fechar problema" no update do Zabbix) e, se der, 1 notificação disparada por
+uma Ação configurada — pra ver os 5 tipos de chip de uma vez.
+
+- [ ] **Alertas Herdados** e **Alertas Sem ACK** ganharam a coluna **Ações**,
+      com um chip por evento (ou "—" se não teve nenhuma)
+- [ ] Passar o mouse num chip mostra quem fez, quando, e mensagem/severidade
+      no tooltip
+- [ ] Problema com ACK + mensagem + fechar **no mesmo clique** (update
+      combinado no Zabbix) aparece como **3 chips separados** na mesma célula
+- [ ] Nova tabela **Alarmes em Tratativas**: só alarmes abertos no turno que
+      JÁ têm alguma ação — o mesmo alarme não pode aparecer também em
+      "Sem ACK"
+- [ ] Nova tabela **Alarmes Resolvidos**: só alarmes resolvidos DENTRO da
+      janela do turno, com MTTR preenchido e "Resolvido por" mostrando o nome
+      de quem fechou manualmente ou "Automático" quando ninguém fechou
+- [ ] Os 2 KPIs novos (**Em Tratativas**, **Resolvidos**) no topo da tela
+      levam para as tabelas certas ao clicar
+- [ ] PDF do relatório ao vivo mostra as 2 tabelas novas e a coluna Ações
+- [ ] **Fechar turno** de novo → o PDF do fechamento também mostra as 2
+      tabelas novas e a coluna Ações (não só o relatório ao vivo)
+- [ ] Abrir um fechamento **antigo** (de antes desta atualização, se houver
+      algum) → não quebra; as 2 tabelas novas aparecem vazias
+
 ---
 
 ## 7. Gerenciar Turnos

@@ -58,6 +58,40 @@ class TurnosReportPdf extends CController {
         return floor($s / 3600) . 'h ' . floor(($s % 3600) / 60) . 'm';
     }
 
+    /**
+     * Mesma renderização de rp_actionChips() na view ao vivo — duplicada
+     * aqui porque este arquivo não inclui a view compartilhada (é
+     * echo/die() próprio, ver cabeçalho da classe e o Backlog do CLAUDE.md).
+     * A QUERY e a decodificação do bitmask não são duplicadas — só o HTML.
+     */
+    private function actionChips(array $items, array $severities): string {
+        if (empty($items)) {
+            return '<span class="rp-muted">—</span>';
+        }
+        $chips = [];
+        foreach ($items as $it) {
+            $detail = trim(
+                ($it['who'] ? $it['who'] . ' — ' : '')
+                . date('d/m/Y H:i', (int)$it['when'])
+            );
+            if ($it['type'] === 'severity') {
+                $detail .= ': ' . $this->sevLabel((int)($it['old_severity'] ?? 0), $severities)
+                         . ' → ' . $this->sevLabel((int)($it['new_severity'] ?? 0), $severities);
+            } elseif (!empty($it['message'])) {
+                $detail .= ': ' . $it['message'];
+            }
+            $chips[] = '<span class="rp-act rp-act-' . htmlspecialchars((string)$it['type']) . '" title="'
+                     . htmlspecialchars($detail) . '">' . htmlspecialchars((string)$it['label']) . '</span>';
+        }
+        return '<div class="rp-act-list">' . implode('', $chips) . '</div>';
+    }
+
+    private function resolvedBy(?string $closedBy): string {
+        return $closedBy !== null
+            ? '<span class="rp-resolve-manual"><i class="fas fa-user-check"></i> ' . htmlspecialchars($closedBy) . '</span>'
+            : '<span class="rp-resolve-auto"><i class="fas fa-sync-alt"></i> Automático</span>';
+    }
+
     private function shiftLabel(string $sh, array $shiftOptions = []): string {
         if (array_key_exists($sh, $shiftOptions)) {
             return $shiftOptions[$sh];
@@ -139,6 +173,12 @@ class TurnosReportPdf extends CController {
                             );
             $inherited    = $d['inherited']    ?? [];
             $unacked      = $d['unacked']      ?? [];
+            // Snapshot v1 (antes de 2026-08-28) não tem essas 3 chaves — o
+            // ?? [] cobre o documento antigo sem precisar migrar nada (ver
+            // TurnosReportBase::snapshotVersion()).
+            $in_progress  = $d['in_progress']  ?? [];
+            $resolved     = $d['resolved']     ?? [];
+            $actions      = $d['actions']      ?? [];
             $top_hosts    = $d['top_hosts']    ?? [];
             $top_triggers = $d['top_triggers'] ?? [];
             $totals       = $d['totals']       ?? ['total'=>0,'critical'=>0,'average'=>0,'low'=>0];
@@ -166,6 +206,14 @@ class TurnosReportPdf extends CController {
             $mtta         = $this->restrictMttaByRole($mtta, $roleType, $userid);
             $inherited    = $this->queryInheritedAlerts($db, $ts_start, $hostFilter);
             $unacked      = $this->queryUnackedAlerts($db, $ts_start, $ts_end, $hostFilter);
+            $in_progress  = $this->queryInProgressAlerts($db, $ts_start, $ts_end, $hostFilter);
+            $resolved     = $this->queryResolvedAlerts($db, $ts_start, $ts_end, $hostFilter);
+            $actions      = $this->queryEventActions($db, array_merge(
+                array_column($inherited, 'eventid'),
+                array_column($unacked, 'eventid'),
+                array_column($in_progress, 'eventid'),
+                array_column($resolved, 'eventid')
+            ));
             $top_hosts    = $this->queryTopHosts($db, $ts_start, $ts_end, $limit, $hostFilter);
             $top_triggers = $this->queryTopTriggers($db, $ts_start, $ts_end, $limit, $hostFilter);
             $totals       = $this->queryEventTotals($db, $ts_start, $ts_end, $hostFilter);
@@ -264,6 +312,8 @@ class TurnosReportPdf extends CController {
         echo '<div class="rp-kpi"><div class="rp-kpi-icon bg-orange"><i class="fas fa-clock"></i></div><div class="rp-kpi-body"><span class="rp-kpi-val">' . $this->fmtDuration($gmtta) . '</span><span class="rp-kpi-label">' . $mttaKpiLabel . '</span></div></div>';
         echo '<div class="rp-kpi"><div class="rp-kpi-icon bg-yellow"><i class="fas fa-exclamation-circle"></i></div><div class="rp-kpi-body"><span class="rp-kpi-val">' . count($unacked) . '</span><span class="rp-kpi-label">Sem ACK</span></div></div>';
         echo '<div class="rp-kpi"><div class="rp-kpi-icon bg-purple"><i class="fas fa-history"></i></div><div class="rp-kpi-body"><span class="rp-kpi-val">' . count($inherited) . '</span><span class="rp-kpi-label">Herdados</span></div></div>';
+        echo '<div class="rp-kpi"><div class="rp-kpi-icon bg-blue"><i class="fas fa-tools"></i></div><div class="rp-kpi-body"><span class="rp-kpi-val">' . count($in_progress) . '</span><span class="rp-kpi-label">Em Tratativas</span></div></div>';
+        echo '<div class="rp-kpi"><div class="rp-kpi-icon bg-green"><i class="fas fa-check-circle"></i></div><div class="rp-kpi-body"><span class="rp-kpi-val">' . count($resolved) . '</span><span class="rp-kpi-label">Resolvidos</span></div></div>';
         echo '</div>';
 
         // MTTA por analista
@@ -283,7 +333,7 @@ class TurnosReportPdf extends CController {
         // Alertas herdados
         if ($inherited) {
             echo '<div class="rp-card"><div class="rp-card-head"><i class="fas fa-history"></i> Alertas Herdados</div>';
-            echo '<table class="rp-table"><thead><tr><th>Início</th><th>Severidade</th><th>Host</th><th>Problema</th><th>Idade</th></tr></thead><tbody>';
+            echo '<table class="rp-table"><thead><tr><th>Início</th><th>Severidade</th><th>Host</th><th>Problema</th><th>Idade</th><th>Ações</th></tr></thead><tbody>';
             foreach ($inherited as $r) {
                 $sc = $this->sevClass((int)$r['severity']);
                 echo '<tr class="row-' . $sc . '">';
@@ -291,7 +341,8 @@ class TurnosReportPdf extends CController {
                 echo '<td><span class="rp-sev sev-' . $sc . '">' . htmlspecialchars($this->sevLabel((int)$r['severity'], $severities)) . '</span></td>';
                 echo '<td>' . htmlspecialchars($r['host']) . '</td>';
                 echo '<td>' . htmlspecialchars($r['trigger_desc']) . '</td>';
-                echo '<td class="td-bold">' . $this->fmtDuration((int)$r['age_seconds']) . '</td></tr>';
+                echo '<td class="td-bold">' . $this->fmtDuration((int)$r['age_seconds']) . '</td>';
+                echo '<td>' . $this->actionChips($actions[(int)$r['eventid']]['items'] ?? [], $severities) . '</td></tr>';
             }
             echo '</tbody></table></div>';
         }
@@ -299,14 +350,50 @@ class TurnosReportPdf extends CController {
         // Alertas sem ACK
         if ($unacked) {
             echo '<div class="rp-card"><div class="rp-card-head"><i class="fas fa-exclamation-triangle"></i> Alertas Sem ACK</div>';
-            echo '<table class="rp-table"><thead><tr><th>Hora</th><th>Severidade</th><th>Host</th><th>Problema</th></tr></thead><tbody>';
+            echo '<table class="rp-table"><thead><tr><th>Hora</th><th>Severidade</th><th>Host</th><th>Problema</th><th>Ações</th></tr></thead><tbody>';
             foreach ($unacked as $r) {
                 $sc = $this->sevClass((int)$r['severity']);
                 echo '<tr class="row-' . $sc . '">';
                 echo '<td class="td-mono">' . date('H:i:s', (int)$r['clock']) . '</td>';
                 echo '<td><span class="rp-sev sev-' . $sc . '">' . htmlspecialchars($this->sevLabel((int)$r['severity'], $severities)) . '</span></td>';
                 echo '<td>' . htmlspecialchars($r['host']) . '</td>';
-                echo '<td>' . htmlspecialchars($r['trigger_desc']) . '</td></tr>';
+                echo '<td>' . htmlspecialchars($r['trigger_desc']) . '</td>';
+                echo '<td>' . $this->actionChips($actions[(int)$r['eventid']]['items'] ?? [], $severities) . '</td></tr>';
+            }
+            echo '</tbody></table></div>';
+        }
+
+        // Alarmes em tratativas
+        if ($in_progress) {
+            echo '<div class="rp-card"><div class="rp-card-head"><i class="fas fa-tools"></i> Alarmes em Tratativas</div>';
+            echo '<table class="rp-table"><thead><tr><th>Hora</th><th>Severidade</th><th>Host</th><th>Problema</th><th>Ações</th></tr></thead><tbody>';
+            foreach ($in_progress as $r) {
+                $sc = $this->sevClass((int)$r['severity']);
+                echo '<tr class="row-' . $sc . '">';
+                echo '<td class="td-mono">' . date('H:i:s', (int)$r['clock']) . '</td>';
+                echo '<td><span class="rp-sev sev-' . $sc . '">' . htmlspecialchars($this->sevLabel((int)$r['severity'], $severities)) . '</span></td>';
+                echo '<td>' . htmlspecialchars($r['host']) . '</td>';
+                echo '<td>' . htmlspecialchars($r['trigger_desc']) . '</td>';
+                echo '<td>' . $this->actionChips($actions[(int)$r['eventid']]['items'] ?? [], $severities) . '</td></tr>';
+            }
+            echo '</tbody></table></div>';
+        }
+
+        // Alarmes resolvidos (histórico do turno)
+        if ($resolved) {
+            echo '<div class="rp-card"><div class="rp-card-head"><i class="fas fa-check-circle"></i> Alarmes Resolvidos</div>';
+            echo '<table class="rp-table"><thead><tr><th>Resolvido</th><th>Severidade</th><th>Host</th><th>Problema</th><th>MTTR</th><th>Resolvido por</th><th>Ações</th></tr></thead><tbody>';
+            foreach ($resolved as $r) {
+                $sc = $this->sevClass((int)$r['severity']);
+                $closedBy = $actions[(int)$r['eventid']]['closed_by'] ?? null;
+                echo '<tr class="row-' . $sc . '">';
+                echo '<td class="td-mono">' . date('d/m H:i', (int)$r['r_clock']) . '</td>';
+                echo '<td><span class="rp-sev sev-' . $sc . '">' . htmlspecialchars($this->sevLabel((int)$r['severity'], $severities)) . '</span></td>';
+                echo '<td>' . htmlspecialchars($r['host']) . '</td>';
+                echo '<td>' . htmlspecialchars($r['trigger_desc']) . '</td>';
+                echo '<td class="td-bold">' . $this->fmtDuration((int)$r['resolve_seconds']) . '</td>';
+                echo '<td>' . $this->resolvedBy($closedBy) . '</td>';
+                echo '<td>' . $this->actionChips($actions[(int)$r['eventid']]['items'] ?? [], $severities) . '</td></tr>';
             }
             echo '</tbody></table></div>';
         }

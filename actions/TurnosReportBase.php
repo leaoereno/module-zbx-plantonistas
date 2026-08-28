@@ -493,6 +493,261 @@ trait TurnosReportBase {
         return $stmt->get_result()->fetch_all();
     }
 
+    /**
+     * "Alarmes em Tratativas" — espelho direto de queryUnackedAlerts(): MESMO
+     * escopo (eventos abertos DURANTE o turno), só troca NOT EXISTS por
+     * EXISTS. É o complemento pedido pelo Rafael: "sem ACK" mostra quem não
+     * teve nenhuma ação; esta mostra quem já teve pelo menos uma (ACK,
+     * mensagem, mudança de severidade etc. — qualquer linha em
+     * acknowledges conta, não só ACK "puro").
+     *
+     * Não filtra por estado atual (aberto/resolvido de propósito): mesmo
+     * espírito da tabela irmã, que também não filtra — os dois são "o que
+     * aconteceu no turno", não "o que está em aberto agora".
+     */
+    private function queryInProgressAlerts(ZbxDb $db, int $s, int $e, string $hostFilter = ''): array {
+        $sql = "SELECT ev.eventid, ev.clock, ev.severity,
+                    REPLACE(MIN(t.description), '{HOST.NAME}', MIN(h.name)) AS trigger_desc,
+                    MIN(h.host) AS host,
+                    MIN(h.name) AS host_name
+                FROM events ev
+                INNER JOIN triggers t  ON t.triggerid = ev.objectid
+                INNER JOIN functions f ON f.triggerid  = t.triggerid
+                INNER JOIN items i     ON i.itemid     = f.itemid
+                INNER JOIN hosts h     ON h.hostid     = i.hostid
+                WHERE ev.source = 0 AND ev.object = 0 AND ev.value = 1
+                  AND ev.clock BETWEEN ? AND ?
+                  AND EXISTS (
+                      SELECT 1 FROM acknowledges ak WHERE ak.eventid = ev.eventid
+                  )
+                  $hostFilter
+                GROUP BY ev.eventid, ev.clock, ev.severity
+                ORDER BY ev.severity DESC, ev.clock DESC
+                LIMIT 50";
+
+        $stmt = $db->prepare($sql);
+        $stmt->bind_param('ii', $s, $e);
+        $stmt->execute();
+        return $stmt->get_result()->fetch_all();
+    }
+
+    /**
+     * "Alarmes Resolvidos" (histórico do turno) — problemas cuja RECUPERAÇÃO
+     * (r_clock) caiu dentro da janela do turno, não a abertura. Mesma escolha
+     * de fonte que queryInheritedAlerts() já fez (tabela `problem`, não
+     * `events`+`event_recovery`): a versão por `events` chegou a 200s+ e
+     * nunca terminava em produção (PERF FIX v2.4.4, ver método acima) — aqui
+     * o ganho é o mesmo, e o preço também: `problem` só guarda o problema
+     * resolvido até o housekeeper do Zabbix limpar (prazo configurável em
+     * Administração > Geral > Manutenção do banco de dados, aba "Problemas
+     * internos"). Um turno de meses atrás pode aparecer vazio aqui mesmo que
+     * tenha tido resolução — não é bug do módulo, é o housekeeper já tendo
+     * limpado a linha.
+     *
+     * `resolve_seconds` é o MTTR (tempo até resolver), mesmo padrão de
+     * `age_seconds` em queryInheritedAlerts(). Quem resolveu (manual via
+     * "Fechar problema" x automático, quando a trigger volta sozinha ao
+     * normal) NÃO é calculado aqui — vem de queryEventActions() (o
+     * fechamento manual já aparece lá como um item type=close), evitando
+     * duplicar a mesma lógica em duas consultas.
+     */
+    private function queryResolvedAlerts(ZbxDb $db, int $s, int $e, string $hostFilter = ''): array {
+        $sql = "SELECT p.eventid, p.clock, p.severity, p.r_clock,
+                    REPLACE(MIN(t.description), '{HOST.NAME}', MIN(h.name)) AS trigger_desc,
+                    MIN(h.host)  AS host,
+                    MIN(h.name)  AS host_name,
+                    (p.r_clock - p.clock) AS resolve_seconds
+                FROM problem p
+                INNER JOIN triggers t       ON t.triggerid = p.objectid
+                INNER JOIN functions f      ON f.triggerid = t.triggerid
+                INNER JOIN items i          ON i.itemid    = f.itemid
+                INNER JOIN hosts h          ON h.hostid    = i.hostid
+                WHERE p.source = 0 AND p.object = 0
+                  AND p.r_eventid IS NOT NULL
+                  AND p.r_clock BETWEEN ? AND ?
+                  $hostFilter
+                GROUP BY p.eventid, p.clock, p.severity, p.r_clock
+                ORDER BY p.r_clock DESC, p.severity DESC
+                LIMIT 50";
+
+        $stmt = $db->prepare($sql);
+        $stmt->bind_param('ii', $s, $e);
+        $stmt->execute();
+        return $stmt->get_result()->fetch_all();
+    }
+
+    /**
+     * Histórico de "ações" de uma lista de eventos, para a coluna Ações das 4
+     * tabelas de alarme (Herdados, Sem ACK, Em Tratativas, Resolvidos) — tanto
+     * o que o analista fez na mão (ACK, mensagem, mudança de severidade,
+     * fechar, suprimir — tabela `acknowledges`, bitmask `action`) quanto o que
+     * o Zabbix disparou sozinho pelas Ações configuradas (notificação por
+     * e-mail/SMS/webhook — tabela `alerts`).
+     *
+     * Query SEPARADA das 4 consultas principais — regra do módulo (ver
+     * CLAUDE.md "informação acessória não entra por JOIN na query do dado
+     * principal"): se uma das duas tabelas falhar, a lista de alarmes
+     * continua na tela, só a coluna Ações fica vazia para aquela linha.
+     *
+     * @param int[] $eventids
+     * @return array<int, array{items: array, closed_by: ?string}> indexado
+     *         por eventid
+     */
+    private function queryEventActions(ZbxDb $db, array $eventids): array {
+        $ids = array_values(array_unique(array_filter(
+            array_map('intval', $eventids),
+            fn($id) => $id > 0
+        )));
+        if (empty($ids)) {
+            return [];
+        }
+        $in = implode(',', $ids); // já convertidos pra int — sem entrada de usuário
+
+        $result = [];
+
+        // ── Ações manuais: ACK, mensagem, severidade, fechar, suprimir ──
+        try {
+            $stmt = $db->prepare(
+                "SELECT a.eventid, a.clock, a.action, a.message,
+                        a.old_severity, a.new_severity,
+                        u.username, u.name, u.surname
+                   FROM acknowledges a
+                   LEFT JOIN users u ON u.userid = a.userid
+                  WHERE a.eventid IN ($in)
+                  ORDER BY a.clock ASC"
+            );
+            $stmt->execute();
+            foreach ($stmt->get_result()->fetch_all() as $r) {
+                $eventid = (int)$r['eventid'];
+                $who = $this->formatUserLabel(
+                    $r['name'] ?? '', $r['surname'] ?? '', $r['username'] ?? ''
+                );
+                foreach ($this->decodeUpdateAction((int)$r['action']) as $badge) {
+                    $result[$eventid]['items'][] = [
+                        'type'         => $badge['type'],
+                        'label'        => $badge['label'],
+                        'who'          => $who,
+                        'when'         => (int)$r['clock'],
+                        'message'      => $badge['type'] === 'message' ? (string)($r['message'] ?? '') : null,
+                        'old_severity' => $badge['type'] === 'severity' ? (int)$r['old_severity'] : null,
+                        'new_severity' => $badge['type'] === 'severity' ? (int)$r['new_severity'] : null,
+                    ];
+                    if ($badge['type'] === 'close') {
+                        $result[$eventid]['closed_by'] = $who;
+                    }
+                }
+            }
+        } catch (\Throwable $ex) {
+            error_log('[plantonistas] queryEventActions() acknowledges falhou: ' . $ex->getMessage());
+        }
+
+        // ── Notificações automáticas: o que as Ações do Zabbix dispararam ──
+        //
+        // `alerts.eventid` é o evento associado ao alerta, mas para mensagens
+        // de RECUPERAÇÃO relatos antigos da comunidade Zabbix (o pedido que
+        // originou a coluna p_eventid) indicam que esse valor pode ser o do
+        // evento de RECUPERAÇÃO, não o do problema original. Sem fonte
+        // oficial que feche a dúvida para a 7.0, a query cobre os dois —
+        // eventid OU p_eventid — em vez de arriscar não mostrar nenhuma
+        // notificação de recuperação.
+        try {
+            $stmt = $db->prepare(
+                "SELECT al.eventid, al.p_eventid, al.clock, al.status, al.alerttype,
+                        al.error, mt.name AS media_name
+                   FROM alerts al
+                   LEFT JOIN media_type mt ON mt.mediatypeid = al.mediatypeid
+                  WHERE al.eventid IN ($in) OR al.p_eventid IN ($in)
+                  ORDER BY al.clock ASC"
+            );
+            $stmt->execute();
+            foreach ($stmt->get_result()->fetch_all() as $r) {
+                // Se o eventid do alerta não é um dos nossos, o match veio por
+                // p_eventid — ancora nele, é o problema que este relatório
+                // mostra.
+                $eventid = in_array((int)$r['eventid'], $ids, true)
+                    ? (int)$r['eventid']
+                    : (int)$r['p_eventid'];
+                if ($eventid <= 0) {
+                    continue;
+                }
+                $result[$eventid]['items'][] = [
+                    'type'         => 'notify',
+                    'label'        => 'Notificação'
+                                     . ((int)$r['alerttype'] === 1 ? ' (script)' : '')
+                                     . ($r['media_name'] ? ': ' . $r['media_name'] : ''),
+                    'who'          => null,
+                    'when'         => (int)$r['clock'],
+                    'message'      => $this->alertStatusLabel((int)$r['status'], (string)($r['error'] ?? '')),
+                    'old_severity' => null,
+                    'new_severity' => null,
+                ];
+            }
+        } catch (\Throwable $ex) {
+            error_log('[plantonistas] queryEventActions() alerts falhou: ' . $ex->getMessage());
+        }
+
+        foreach ($result as &$r) {
+            if (!empty($r['items'])) {
+                // Mais recente primeiro — é o que interessa pra quem está
+                // pegando o turno agora.
+                usort($r['items'], fn($a, $b) => $b['when'] <=> $a['when']);
+            }
+            $r['closed_by'] = $r['closed_by'] ?? null;
+        }
+        unset($r);
+
+        return $result;
+    }
+
+    /**
+     * Decompõe o bitmask de `acknowledges.action` em rótulos individuais —
+     * uma atualização de problema no Zabbix pode marcar ACK + escrever
+     * mensagem + fechar tudo de uma vez (mesma linha, bits somados), e cada
+     * bit vira um badge próprio na tela.
+     *
+     * Valores confirmados em include/defines.inc.php do Zabbix 7.0
+     * (ZBX_PROBLEM_UPDATE_*, 0x01 a 0x100). `action=0` é o formato ANTIGO de
+     * acknowledge (pré-5.4, só booleano, sem bitmask) — tratado como ACK
+     * simples, não como "nenhuma ação".
+     */
+    private function decodeUpdateAction(int $bitmask): array {
+        if ($bitmask === 0) {
+            return [['type' => 'ack', 'label' => 'ACK']];
+        }
+        $map = [
+            0x01  => ['type' => 'close',        'label' => 'Fechado'],
+            0x02  => ['type' => 'ack',          'label' => 'ACK'],
+            0x04  => ['type' => 'message',      'label' => 'Mensagem'],
+            0x08  => ['type' => 'severity',     'label' => 'Severidade alterada'],
+            0x10  => ['type' => 'unack',        'label' => 'ACK removido'],
+            0x20  => ['type' => 'suppress',     'label' => 'Suprimido'],
+            0x40  => ['type' => 'unsuppress',   'label' => 'Supressão removida'],
+            0x80  => ['type' => 'rank_cause',   'label' => 'Marcado como causa'],
+            0x100 => ['type' => 'rank_symptom', 'label' => 'Marcado como sintoma'],
+        ];
+        $out = [];
+        foreach ($map as $bit => $badge) {
+            if (($bitmask & $bit) === $bit) {
+                $out[] = $badge;
+            }
+        }
+        return $out;
+    }
+
+    /**
+     * Rótulo do status de envio de uma notificação (`alerts.status`).
+     * Valores confirmados em include/defines.inc.php do Zabbix 7.0
+     * (ALERT_STATUS_*).
+     */
+    private function alertStatusLabel(int $status, string $error): string {
+        switch ($status) {
+            case 1:  return 'Enviada';
+            case 2:  return 'Falhou' . ($error !== '' ? ': ' . $error : '');
+            case 3:  return 'Na fila';
+            default: return 'Pendente';
+        }
+    }
+
     private function queryTopHosts(ZbxDb $db, int $s, int $e, int $limit, string $hostFilter = ''): array {
         $limitClause = $limit > 0 ? 'LIMIT ' . (int)$limit : '';
         $sql = "SELECT h.hostid, h.host, h.name AS host_name,
@@ -1676,7 +1931,13 @@ trait TurnosReportBase {
      * teste e só apareceria em produção.
      */
     private function snapshotVersion(): int {
-        return 1;
+        // v2 (2026-08-28): snapshot ganhou in_progress/resolved/actions
+        // (Alarmes em Tratativas, Alarmes Resolvidos e a coluna Ações das 4
+        // tabelas de alarme). Snapshot v1 antigo não tem essas chaves — o
+        // `?? []` no lugar onde o PDF lê `$d['in_progress']` etc. já cobre a
+        // leitura de documentos fechados antes desta mudança, então não foi
+        // preciso migrar nada: só documentar o motivo do número ter subido.
+        return 2;
     }
 
     /**

@@ -2,7 +2,7 @@
 
 Contexto, memória e instruções de trabalho deste projeto. Portável: serve como
 knowledge de projeto no Claude.ai e como contexto de agente ao trabalhar neste
-repositório. Atualizado em 2026-08-24.
+repositório. Atualizado em 2026-08-28.
 
 ---
 
@@ -1779,6 +1779,109 @@ automatizada nesta sessão — o shell do ambiente ficou indisponível o tempo
 todo, ver commit/próximos passos). Rodar `php tests/run.php` antes do deploy
 é o passo que falta para confirmar que passam de verdade.
 
+### Histórico de ações e 2 tabelas novas no Repasse (2026-08-28, v5.2.0)
+
+Pedido do Rafael: "dá pra ver as ações que aconteceram nos alarmes" (Herdados
+e Sem ACK) e "cadastrar tabelas novas de alarmes em tratativas e alarmes
+resolvidos (histórico do turno)". Perguntado antes de mexer (4 decisões, ver
+histórico de perguntas): "ação" cobre TANTO o que o analista fez na mão
+quanto o que o Zabbix notificou sozinho; "em tratativas" é o complemento
+direto de "sem ACK" (aberto no turno + já tem ação); "resolvidos" mostra MTTR
+e quem fechou; as 3 coisas entram na tela, no PDF e no documento de Fechar
+Turno.
+
+**De onde vêm as "ações"**: duas tabelas nativas do Zabbix, nunca antes
+consultadas pelo módulo.
+
+- `acknowledges` — toda atualização de problema (o que a tela "Update problem"
+  do Zabbix grava): `action` é um **bitmask** (confirmado em
+  `include/defines.inc.php` do Zabbix 7.0, não documentado num lugar só nos
+  manuais): `0x01`=fechar, `0x02`=ACK, `0x04`=mensagem, `0x08`=severidade,
+  `0x10`=remover ACK, `0x20`=suprimir, `0x40`=remover supressão,
+  `0x80`=marcar como causa, `0x100`=marcar como sintoma. Uma linha pode somar
+  vários bits (ACK + mensagem + fechar de uma vez, tudo no mesmo clique) —
+  `decodeUpdateAction()` decompõe em um badge por bit, e um evento pode
+  acumular vários badges de uma linha só. `action=0` é o formato ANTIGO
+  (pré-5.4, só booleano) — tratado como ACK simples, não como "nada".
+- `alerts` — o que as Ações (Actions) configuradas no Zabbix efetivamente
+  dispararam (e-mail/SMS/webhook), com status de envio
+  (`ALERT_STATUS_NOT_SENT/SENT/FAILED/NEW`, também confirmadas no
+  `defines.inc.php`).
+
+**Armadilha que não deu pra fechar com 100% de certeza, e a saída escolhida**:
+threads antigas da comunidade Zabbix (2009-2011) relatam que `alerts.eventid`
+de uma notificação de RECUPERAÇÃO pode não ser o eventid do problema original
+— e a coluna `alerts.p_eventid` existe exatamente por causa desse pedido
+histórico de correlação. Não achei fonte oficial que feche a semântica exata
+pra 7.0 (se `p_eventid` hoje é só isso ou também serve pra correlação
+causa/sintoma). Em vez de arriscar não mostrar notificação de recuperação
+nenhuma, a query busca por `eventid IN (...) OR p_eventid IN (...)` e ancora
+no que bateu — cobre os dois cenários sem exigir certeza sobre qual é o
+comportamento real. Documentado no código para não ser tratado como "decisão
+óbvia" numa próxima leitura.
+
+**Uma query só para as 4 tabelas**: `queryEventActions()` recebe os eventids
+já trazidos por Herdados/Sem ACK/Em Tratativas/Resolvidos e devolve tudo
+indexado por eventid — mesma regra de sempre (informação acessória não entra
+por JOIN na query principal; se `acknowledges`/`alerts` falharem, a lista de
+alarmes continua na tela, só a coluna Ações fica vazia). A formatação em HTML
+(chip colorido por tipo, tooltip com quem/quando/mensagem) É duplicada entre
+a view e `TurnosReportPdf` — mas só ISSO; a query e a decodificação do
+bitmask vivem uma vez só no trait, porque tanto a view quanto o PDF usam
+`TurnosReportBase` e conseguem chamar `queryEventActions()` diretamente. Não
+é o mesmo caso de `rp_sevLabel()`/`sevLabel()` (que duplicam a função
+inteira porque a view não tem acesso a `$this` do controller) — aqui só a
+etapa de "virar HTML" precisou de duas cópias.
+
+**"Alarmes em Tratativas"** (`queryInProgressAlerts()`) é literalmente
+`queryUnackedAlerts()` com `EXISTS` no lugar de `NOT EXISTS` — mesmo escopo
+(eventos abertos DURANTE o turno), sem filtrar por estado atual (aberto ou já
+resolvido não importa, mesmo espírito da tabela irmã). Foi a opção que o
+Rafael escolheu explicitamente entre as duas oferecidas.
+
+**"Alarmes Resolvidos"** (`queryResolvedAlerts()`) segue a MESMA escolha de
+fonte que `queryInheritedAlerts()` já tinha feito por performance: tabela
+`problem`, não `events`+`event_recovery` (a versão por `events` já tinha dado
+200s+ sem terminar — PERF FIX v2.4.4, ver acima). O preço é o mesmo que
+Herdados já paga: `problem` só guarda o problema resolvido até o housekeeper
+limpar, então um turno de meses atrás pode aparecer vazio aqui mesmo tendo
+tido resolução — documentado na tela (`.rp-card-desc`) e no README, não só no
+código, porque é o tipo de coisa que gera chamado de "sumiu dado" sem ser bug.
+MTTR é `r_clock - clock`, mesmo padrão de `age_seconds` de Herdados. "Quem
+resolveu" NÃO tem subquery própria: é derivado do resultado de
+`queryEventActions()` (`closed_by`, preenchido quando há um item
+`type=close`) — se não tem `closed_by`, foi resolução automática (trigger
+voltou ao normal sozinha). Evita duas consultas fazendo a mesma pergunta.
+
+**Achados no caminho, corrigidos junto**:
+
+- `TurnosReportPdf.php` já referenciava `.bg-blue`/`.bg-red`/`.bg-orange`/
+  `.bg-yellow`/`.bg-purple`/`.bg-green` nos ícones dos KPIs (e a lista de
+  print-color-adjust do CSS também citava essas classes) — mas elas nunca
+  foram DEFINIDAS em `turnos.report.css`. Os KPIs do PDF sempre renderizaram
+  sem o círculo colorido de fundo, um degrau visual que ninguém notou porque
+  não dá erro nenhum, só um ícone "pelado". Definidas agora, e os 2 KPIs
+  novos (Em Tratativas/Resolvidos) já nascem certos.
+- `.rp-kpi-grid` era `grid-template-columns: repeat(6, 1fr)` fixo. Com 7 KPIs
+  (os 2 novos), o 7º ficava sozinho numa linha nova ocupando 1/6 da largura.
+  Virou `repeat(auto-fit, minmax(150px, 1fr))` — acomoda qualquer contagem
+  sem precisar editar de novo a cada KPI adicionado.
+
+**Snapshot de Fechar Turno**: `snapshotVersion()` subiu de 1 para 2 (só como
+registro — não foi preciso migrar nada, porque `TurnosReportPdf` já lê
+`in_progress`/`resolved`/`actions` com `?? []`, então um snapshot v1 antigo
+simplesmente mostra essas 3 seções vazias, sem quebrar).
+
+**Bitwise em SQL, decidido por evitar, não por incompatibilidade**: o MySQL e
+o PostgreSQL têm o MESMO operador `&` para AND bit a bit — dava para calcular
+"fechado manualmente" com uma subquery `(ak.action & 1) = 1` sem problema de
+dialeto nenhum. Mesmo assim, a decisão foi NÃO fazer isso: como
+`queryEventActions()` já decompõe o bitmask em PHP pra montar os badges,
+calcular "quem fechou" de novo em SQL seria a mesma lógica escrita duas
+vezes, uma em cada linguagem — decidiu-se reaproveitar o resultado de
+`queryEventActions()` (ver acima) em vez de introduzir uma segunda fonte de
+verdade para a mesma pergunta.
+
 ### Backlog conhecido
 
 - ~~Salvar vínculo analista→turno em massa~~ — **resolvido em 2026-08-19**:
@@ -1817,6 +1920,13 @@ todo, ver commit/próximos passos). Rodar `php tests/run.php` antes do deploy
   executada** — o shell desta sessão ficou indisponível o tempo todo
   (infraestrutura do ambiente, não do módulo). Rodar `php tests/run.php`
   é o próximo passo antes de confiar nela como regressão.
+- Histórico de ações + Alarmes em Tratativas/Resolvidos (2026-08-28) não
+  foram validados no lab — `queryInProgressAlerts()`/`queryResolvedAlerts()`/
+  `queryEventActions()` dependem de `ZbxDb $db` (não é lógica pura, não entra
+  na suíte de testes acima). Validar: as 4 tabelas do Repasse com dados reais
+  de `acknowledges`/`alerts`, o PDF, e o documento de Fechar Turno com um
+  turno que tenha pelo menos um ACK, uma mensagem, uma mudança de severidade
+  e um fechamento manual — pra ver os 5 tipos de badge de uma vez.
 - ~~Unificação visual das duas famílias~~ — **resolvido em 2026-08-19**: as
   duas seguem o tema do Zabbix, paleta única em `views/_theme.php`.
 - ~~CSV import/export da Escala não sabe de turnos~~ — **resolvido em

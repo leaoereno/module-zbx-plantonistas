@@ -110,6 +110,17 @@ class TurnosReportClose extends CController {
                 $userid
             );
 
+            $inherited   = $this->queryInheritedAlerts($db, $ts_start, $hostFilter);
+            $unacked     = $this->queryUnackedAlerts($db, $ts_start, $ts_end, $hostFilter);
+            $in_progress = $this->queryInProgressAlerts($db, $ts_start, $ts_end, $hostFilter);
+            $resolved    = $this->queryResolvedAlerts($db, $ts_start, $ts_end, $hostFilter);
+            $actions     = $this->queryEventActions($db, array_merge(
+                array_column($inherited, 'eventid'),
+                array_column($unacked, 'eventid'),
+                array_column($in_progress, 'eventid'),
+                array_column($resolved, 'eventid')
+            ));
+
             // Mesmo conjunto que o PDF renderiza — é ele que exibe o documento
             // fechado depois, sem consultar o banco de novo.
             $snapshot = [
@@ -136,8 +147,11 @@ class TurnosReportClose extends CController {
                 'data'        => [
                     'mtta'         => $mtta,
                     'global_mtta'  => $this->calcGlobalMTTA($mtta),
-                    'inherited'    => $this->queryInheritedAlerts($db, $ts_start, $hostFilter),
-                    'unacked'      => $this->queryUnackedAlerts($db, $ts_start, $ts_end, $hostFilter),
+                    'inherited'    => $inherited,
+                    'unacked'      => $unacked,
+                    'in_progress'  => $in_progress,
+                    'resolved'     => $resolved,
+                    'actions'      => $actions,
                     'top_hosts'    => $this->queryTopHosts($db, $ts_start, $ts_end, $limit, $hostFilter),
                     'top_triggers' => $this->queryTopTriggers($db, $ts_start, $ts_end, $limit, $hostFilter),
                     'totals'       => $this->queryEventTotals($db, $ts_start, $ts_end, $hostFilter),
