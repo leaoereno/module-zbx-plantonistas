@@ -22,6 +22,15 @@ Correções de exibição e de escopo, achadas numa auditoria dos números da te
 | **Rodapé do PDF dizia "Módulo Repasse v2.5.0"** desde o fork — número fixo justamente no artefato que fica arquivado. Agora lê o `manifest.json`, como a tela | Não |
 | **Coluna "Notas" da lista** repetia a mesma contagem em cada refechamento, o que fazia a coluna somar 15 para 5 notas. Passa a aparecer só na linha do fechamento vigente, e o cabeçalho diz que é o estado de hoje, não o congelado no documento | Não |
 
+**PostgreSQL saiu de "homologação pendente".** Não é mudança de código — o
+suporte está no ar desde a 5.0.0 —, mas o status mudou: as 7 telas, os 3
+crons, a criação/migração de schema e o fechamento de turno com PDF foram
+exercitados contra um PostgreSQL real, em produção. Consequência prática para
+quem mantém: os dois ramos de dialeto passam a ser caminho de produção, então
+erro de SQL específico de um banco derruba um ambiente real — o
+`CHECKLIST-LAB.md` traz a seção de PostgreSQL como regressão, não como
+descoberta.
+
 ## 5.4.0
 
 | O quê | Precisa de configuração? |

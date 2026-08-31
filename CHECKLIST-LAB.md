@@ -364,9 +364,11 @@ Precisa de token de API de Super Admin na env `PLANTONISTAS_ALERT_TOKEN`.
 
 ## 10. PostgreSQL (se houver instância)
 
-Nada disso jamais rodou contra um PG de verdade. Se não houver instância no
-lab, **registre como não homologado** e siga com MySQL — é o estado honesto,
-e o README já diz isso.
+O PostgreSQL foi **homologado em produção em 2026-08-31** — telas, crons,
+schema e fechamento de turno. Esta seção deixa de ser "descobrir se funciona"
+e passa a ser regressão: rode-a quando mexer em consulta, DDL ou no `SqlFn`,
+porque agora as duas variantes de SQL são caminho de produção e um erro de
+dialeto derruba um ambiente real, não um lab.
 
 - [ ] instalação nova em PG cria as 9 tabelas — **não** pelo `scripts/install.sh`,
       que só tem caminho MySQL, e sim direto:

@@ -1346,8 +1346,11 @@ Duas armadilhas do PDO que o adaptador precisou compensar:
   exceção original — a que diz o que aconteceu — seria trocada por "There is no
   active transaction".
 
-O que **falta**: homologar. Nada disso foi executado contra um PostgreSQL de
-verdade.
+**Homologado em produção (2026-08-31).** O passo 7 da issue #1 foi fechado:
+as 7 telas, os 3 crons, a criação/migração de schema pelo `Module::init()` e o
+fechamento de turno com PDF rodaram contra um PostgreSQL real. Os dois
+backends deixam de ter status diferente — ao mexer em consulta ou DDL daqui em
+diante, os dois ramos são caminho de produção, não um deles um plano B.
 
 ### Fechar turno: a corrida fechada por advisory lock (2026-08-19)
 
@@ -2213,8 +2216,8 @@ dependem de `ZbxDb $db` e não entram na suíte de testes puros. Ver Backlog.
 - ~~`scripts/install.sh` só tem caminho MySQL~~ — **resolvido em 2026-08-24**:
   o script agora lê `zabbix.conf.php` e detecta o dialeto sozinho (ou
   pergunta, se não conseguir ler), com `psql`/`mysql` escolhidos conforme o
-  banco. PostgreSQL continua **não homologado** (ver Roadmap) — o script
-  aceita, mas o passo 7 da issue #1 segue pendente.
+  banco. (PostgreSQL foi **homologado em produção** em 2026-08-31 — o passo 7
+  da issue #1, que esta nota dizia estar pendente, está fechado.)
 - ~~Caminho de instalação do módulo defasado (`/usr/share/zabbix/ui/modules`
   hardcoded)~~ — **resolvido em 2026-08-24**: `detect_frontend_dir()` testa
   `/usr/share/zabbix/modules` (caminho real de produção deste projeto, ver

@@ -61,9 +61,8 @@ MariaDB 10.x **ou** PostgreSQL.
 ## Instalação
 
 Pré-requisito: Zabbix 7.0 LTS com backend **MySQL 5.7+/8.0, MariaDB 10.x ou
-PostgreSQL**, e PHP 8.0+ no frontend. PostgreSQL segue com homologação
-pendente — ver a nota em [Banco de dados](#banco-de-dados-mysqlmariadb-e-postgresql)
-antes de usar em produção.
+PostgreSQL**, e PHP 8.0+ no frontend. Os dois backends estão homologados em
+produção — ver [Banco de dados](#banco-de-dados-mysqlmariadb-e-postgresql).
 
 ```bash
 cd /usr/share/zabbix/modules
@@ -241,7 +240,7 @@ movimento no Diário de Bordo e sem documento.
 ### Plataforma
 
 - **Roda em MySQL/MariaDB e PostgreSQL** com o mesmo código, detectando o
-  backend em tempo de execução.
+  backend em tempo de execução — os dois homologados em produção.
 - **Permissões por perfil**, validadas na action e não só no menu.
 - **CSRF exigido** em todas as actions de escrita.
 - **Provisionamento e migração de schema idempotentes** dentro do `init()` —
@@ -263,11 +262,12 @@ detectado em tempo de execução (`$DB['TYPE']`, que o Zabbix já expõe em
 | Consultas das 7 telas | ✅ | ✅ `SqlFn` gera `to_char`/`to_timestamp`/`EXTRACT`/`ON CONFLICT`; `insert_id` usa `lastval()` |
 | Armadilhas semânticas | ✅ | ✅ chaves do `INFORMATION_SCHEMA` em minúsculo, booleano `t`/`f`, comparação de texto com caixa, `SELECT DISTINCT` + `ORDER BY` |
 | Crons (`cron_presence_tracker`, `cron_sync_oncall`, `cron_notify_mentions`) | ✅ | ✅ PDO via `scripts/CliDb.php`, dialeto pela env `DB_TYPE` |
-| Homologação | ✅ **em produção** | ⚠️ **pendente** — o código está portado, mas ainda não foi executado contra um PostgreSQL de verdade |
+| Homologação | ✅ **em produção** | ✅ **em produção** — as 7 telas, os 3 crons, a criação/migração de schema e o fechamento de turno com PDF, exercitados contra um PostgreSQL real |
 
-> ⚠️ **PostgreSQL: homologação pendente.** O suporte está implementado e é
-> exercitado pelo mesmo caminho de código do MySQL, mas nenhum lab PostgreSQL
-> validou as 7 telas e os crons até agora. Suba primeiro em ambiente de teste.
+Os dois backends estão homologados **em produção**. Não há caminho de código
+"preferido": o dialeto é escolhido em tempo de execução e as duas variantes
+saem das mesmas fontes — `Schema.php` para o DDL e `SqlFn` para as funções de
+data, upsert e trava.
 
 Nos crons, acrescente `DB_TYPE=pgsql` ao arquivo (o default é `mysql`, e a
 porta acompanha: 3306 ou 5432).

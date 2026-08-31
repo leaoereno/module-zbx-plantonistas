@@ -9,7 +9,7 @@ Escrito em 2026-08-19.
 
 | # | Issue | Tipo | Esforço | Fase |
 |---|---|---|---|---|
-| [#1](https://github.com/leaoereno/module-zbx-plantonistas/issues/1) | Suporte a PostgreSQL (v5.0) — código **pronto** (passos 1–6), só falta o passo 7 (homologação real) | Portabilidade | G | 1 e 3 |
+| ~~[#1](https://github.com/leaoereno/module-zbx-plantonistas/issues/1)~~ | ~~Suporte a PostgreSQL (v5.0)~~ — **feito** (2026-08-31): passos 1–6 no código e passo 7 homologado em produção (7 telas, 3 crons, schema e fechamento de turno) | Portabilidade | G | 1 e 3 |
 | ~~[#3](https://github.com/leaoereno/module-zbx-plantonistas/issues/3)~~ | ~~CSRF desativado nas actions de escrita~~ — **feito** (2026-08-19) | Segurança | M | 2 |
 | ~~[#4](https://github.com/leaoereno/module-zbx-plantonistas/issues/4)~~ | ~~Cron de presença: eliminar a API do Zabbix~~ — **feito** (2026-08-19) | Segurança + dívida | M | 2 |
 | ~~[#5](https://github.com/leaoereno/module-zbx-plantonistas/issues/5)~~ | ~~Sincronizar escala com escalonamento do Zabbix~~ — **feito** (2026-08-19) | Funcionalidade | M/G | 4 |
