@@ -883,9 +883,17 @@ if (document.getElementById('chartSev')) {
                         });
                     }
                 }},
-                tooltip:{callbacks:{label:function(c){const t=c.dataset.data.reduce((a,b)=>a+b,0);
-                    if (window.sevChart && window.sevChart.config.type === 'bar') return c.label+': '+c.parsed;
-                    return c.label+': '+c.parsed+' ('+(t>0?Math.round(c.parsed/t*100):0)+'%)';}}}
+                // `c.raw` e NÃO `c.parsed`: no Chart.js v4 o parsed é um NÚMERO
+                // em doughnut/pie e um OBJETO {x,y} em bar. Como este mesmo
+                // gráfico troca de tipo no botão "mudar formato", imprimir
+                // c.parsed direto mostrava "[object Object]" — mas só no modo
+                // barra, que é o menos usado, então o defeito passou batido.
+                // c.raw é o valor do array de dados nos dois tipos.
+                tooltip:{callbacks:{label:function(c){
+                    const v = Number(c.raw) || 0;
+                    const t = c.dataset.data.reduce((a,b)=>a+Number(b),0);
+                    if (window.sevChart && window.sevChart.config.type === 'bar') return c.label+': '+v;
+                    return c.label+': '+v+' ('+(t>0?Math.round(v/t*100):0)+'%)';}}}
             },
             onClick:function(e,el){
                 if(el.length>0){const sev=sevMap[el[0].index];

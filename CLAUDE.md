@@ -15,10 +15,15 @@ Módulo frontend único para Zabbix 7.0 LTS que unifica dois módulos antigos:
 - `module-zbx-escala-plantao` v3.0.1 (id `plantao`, ns `Modules\Plantao`) — escala mensal, telefones, histórico
 - `module-zbx-repasse-plantao` v2.5.0 (id `turnos-noc-report`, ns `Modules\TurnosNocReport`) — relatório de repasse NOC, turnos por equipe
 
-Resultado: **Plantonistas v4.0.0** — id `plantonistas`, namespace `Modules\Plantonistas`,
+Resultado: **Plantonistas** — id `plantonistas`, namespace `Modules\Plantonistas`,
 repo `leaoereno/module-zbx-plantonistas`. Rebranding completo (decisão do Rafael):
-18 actions `plantonistas.*`, 8 tabelas `module_plantonistas_*`. De-para completo
-de actions e tabelas está no README.md.
+todas as actions com prefixo `plantonistas.` e todas as tabelas com prefixo
+`module_plantonistas_`. De-para completo está no README.md.
+
+**Números atuais** (v5.4.0): 23 actions no `manifest.json`, 9 tabelas no
+`Schema.php`, 7 telas no menu. Este parágrafo já esteve defasado dizendo
+"18 actions, 8 tabelas" — conferir com `manifest.json`/`Schema.php` antes de
+citar, não repetir daqui.
 
 ### Infraestrutura
 

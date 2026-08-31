@@ -916,8 +916,25 @@ trait TurnosReportBase {
             ?: ['total' => 0, 'critical' => 0, 'average' => 0, 'low' => 0];
     }
 
-    private function queryMttaTimeline(ZbxDb $db, int $s, int $e, string $hostFilter = ''): array {
+    /**
+     * MTTA por hora do turno.
+     *
+     * @param int $roleType papel de QUEM ESTÁ OLHANDO; com User (1) o gráfico
+     *        é restrito aos ACKs do próprio usuário, igual ao KPI e à tabela.
+     *        Sem isso a tela se contradizia: a tabela dizia "você não
+     *        registrou nenhum ACK" e o gráfico ao lado desenhava as barras de
+     *        todo mundo — além de mostrar a um User o tempo de resposta dos
+     *        colegas, que é exatamente o que restrictMttaByRole() impede nos
+     *        outros três pontos (tela, PDF ao vivo e documento fechado).
+     */
+    private function queryMttaTimeline(ZbxDb $db, int $s, int $e, string $hostFilter = '',
+                                       int $roleType = 3, int $userid = 0): array {
         $tzOffset = (int)date('Z');
+
+        // A restrição entra no SQL, e não em PHP: a média por hora é agregada
+        // pelo banco, então filtrar depois não teria como desfazer o agregado.
+        $filtroAnalista = ($roleType < 2 && $userid > 0) ? 'AND a.userid = ?' : '';
+
         // A média sai de uma subconsulta com DISTINCT (ver a nota em
         // queryMTTA): direto sobre o JOIN, cada evento entrava na média tantas
         // vezes quantos itens a trigger referencia, e o gráfico de MTTA por
@@ -941,13 +958,19 @@ trait TurnosReportBase {
                           FROM acknowledges a2
                           WHERE a2.eventid = a.eventid
                       )
+                      $filtroAnalista
                       $hostFilter
                 ) sub
                 GROUP BY sub.hora
                 ORDER BY sub.hora ASC";
 
         $stmt = $db->prepare($sql);
-        $stmt->bind_param('iii', $tzOffset, $s, $e);
+        // A ordem dos parâmetros acompanha a dos `?` no SQL, e o do analista
+        // fica ENTRE a janela e o hostFilter — que não tem placeholder, é
+        // interpolado. Trocar a ordem aqui filtraria por userid errado.
+        $filtroAnalista === ''
+            ? $stmt->bind_param('iii', $tzOffset, $s, $e)
+            : $stmt->bind_param('iiii', $tzOffset, $s, $e, $userid);
         $stmt->execute();
         return $stmt->get_result()->fetch_all();
     }

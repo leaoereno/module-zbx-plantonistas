@@ -143,7 +143,7 @@ foreach ($rows as $r) {
                     <th style="width:110px">Situação</th>
                     <th style="width:160px">Fechado em</th>
                     <th>Fechado por</th>
-                    <th style="width:90px">Notas</th>
+                    <th style="width:110px" title="Notas do Diário de Bordo hoje, no turno inteiro — não é o que ficou congelado em cada documento">Notas do turno</th>
                     <th style="width:230px">Ações</th>
                 </tr>
             </thead>
@@ -196,12 +196,22 @@ foreach ($rows as $r) {
                     <td><?= $fechado ? htmlspecialchars((string) $r['closed_at']) : '<span class="rp-muted">—</span>' ?></td>
                     <td><?= $fechado ? htmlspecialchars((string) $r['closed_by']) : '<span class="rp-muted">—</span>' ?></td>
                     <td>
-                        <?php if ((int) $r['notas'] > 0): ?>
+                        <?php
+                        // A contagem é por TURNO (data + código), não por documento: ela
+                        // vem do estado atual do Diário de Bordo, enquanto cada
+                        // fechamento congelou as notas que existiam naquele instante.
+                        // Repetir o mesmo número em cada refechamento faria a coluna
+                        // somar 15 para 5 notas — por isso só a linha vigente a exibe.
+                        $mostraNotas = !$fechado || (int) $r['ordem'] === 1;
+                        ?>
+                        <?php if ($mostraNotas && (int) $r['notas'] > 0): ?>
                             <span class="rp-badge" title="Última nota: <?= htmlspecialchars((string) $r['last_note']) ?>">
                                 <?= (int) $r['notas'] ?>
                             </span>
-                        <?php else: ?>
+                        <?php elseif ($mostraNotas): ?>
                             <span class="rp-muted">—</span>
+                        <?php else: ?>
+                            <span class="rp-muted" title="A contagem aparece na linha do fechamento vigente deste turno">·</span>
                         <?php endif; ?>
                     </td>
                     <td class="rpl-actions">

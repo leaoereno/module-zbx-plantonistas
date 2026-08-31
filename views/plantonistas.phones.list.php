@@ -231,7 +231,11 @@ function phnSubmitImport() {
     </thead>
     <tbody>
     <?php foreach ($data['users'] as $u):
-        $np = $u['label'] ?? trim($u['name'].' '.$u['surname']);
+        // Sem fallback de CONCAT: o controller já entrega `label` montado pelo
+        // trait UserLabel (PhonesList), e o ramo de reserva era justamente a
+        // concatenação crua que duplica o nome de quem tem o nome completo no
+        // campo surname — o defeito que o trait existe para eliminar.
+        $np = (string) $u['label'];
         $group_ids_str = implode(',', array_keys($u['groups']));
         $has_phone = !empty($u['phone']) ? 'yes' : 'no';
     ?>

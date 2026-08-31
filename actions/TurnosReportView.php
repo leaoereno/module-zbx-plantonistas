@@ -163,7 +163,12 @@ class TurnosReportView extends CController {
                     'totals'         => $this->queryEventTotals($db, $ts_start, $ts_end, $hostFilter),
                     'presence'       => $this->queryPresence($db, $ts_start, $ts_end, $current_userid, $isSuperadmin),
                     'notes'          => $this->queryNotes($db, $date, $shift, $current_userid, $isSuperadmin),
-                    'mtta_timeline'  => $this->queryMttaTimeline($db, $ts_start, $ts_end, $hostFilter),
+                    // O papel vai junto: com User (1) o gráfico por hora tem de
+                    // ficar restrito aos ACKs do próprio, igual ao KPI e à
+                    // tabela logo acima — senão a tela se contradiz e mostra o
+                    // tempo de resposta dos colegas a quem não pode vê-lo.
+                    'mtta_timeline'  => $this->queryMttaTimeline($db, $ts_start, $ts_end, $hostFilter,
+                                                                 $roleType, $current_userid),
                     'sev_dist'       => $this->querySeverityDistribution($db, $ts_start, $ts_end, $hostFilter),
                     'calendar'       => $this->queryCalendarHeatmap($db, $hostFilter),
                     'shift_analysts' => $shiftAnalysts,

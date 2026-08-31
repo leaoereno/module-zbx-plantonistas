@@ -439,7 +439,13 @@ class TurnosReportPdf extends CController {
         if ($nocLabel) {
             echo '<span class="rp-noc-badge"><i class="fas fa-shield-alt"></i> ' . htmlspecialchars($nocLabel) . '</span>';
         }
-        echo '<span class="rp-nh-sub">' . $this->shiftLabel($shift, $shiftOptions) . ' — ' . htmlspecialchars($this->formatDateBr($date)) . '</span>';
+        // htmlspecialchars no rótulo do turno: ele é montado com o NOME do
+        // turno e o NOME do grupo de usuário (queryShiftOptions()), os dois
+        // digitados por um Admin. A tela ao vivo escapa nos três pontos
+        // equivalentes; só o PDF imprimia cru — e o PDF é o documento que todo
+        // mundo abre, inclusive Super Admin.
+        echo '<span class="rp-nh-sub">' . htmlspecialchars($this->shiftLabel($shift, $shiftOptions))
+           . ' — ' . htmlspecialchars($this->formatDateBr($date)) . '</span>';
         echo '</div></div>';
 
         // ── Barra de ação (só na tela) ───────────────────────────────────
@@ -631,7 +637,16 @@ class TurnosReportPdf extends CController {
         // Rodapé
         echo '<div class="rp-native-footer">';
         echo '<span>Relatório gerado em ' . date('d/m/Y H:i:s') . ' por ' . htmlspecialchars($user_fn) . '</span>';
-        echo '<span>Módulo Repasse v2.5.0</span>';
+        // Versão lida do manifest, não literal. O número fixo "v2.5.0" veio do
+        // fork e sobreviveu à unificação inteira: todo repasse fechado que
+        // alguém imprimiu desde a v4.0.0 saiu com a versão errada — justamente
+        // no artefato que fica arquivado. A tela ao vivo já lê o manifest.
+        $pdfVersao = 'v?';
+        $pdfManifest = @json_decode((string) @file_get_contents(__DIR__ . '/../manifest.json'), true);
+        if (is_array($pdfManifest) && !empty($pdfManifest['version'])) {
+            $pdfVersao = 'v' . $pdfManifest['version'];
+        }
+        echo '<span>Módulo Plantonistas ' . htmlspecialchars($pdfVersao) . '</span>';
         echo '</div>';
 
         echo '</div></body></html>';
