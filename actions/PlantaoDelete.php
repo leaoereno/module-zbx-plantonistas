@@ -7,6 +7,9 @@ use CController, CControllerResponseRedirect, CUrl, CWebUser;
 class PlantaoDelete extends CController {
 
     use AjaxRedirect;
+    // Escrita conferida (ver DbWrite): o DELETE que falhava respondia
+    // "Plantão removido" e a linha continuava no calendário.
+    use DbWrite;
 
     protected function checkInput(): bool {
         return $this->validateInput([
@@ -75,7 +78,9 @@ class PlantaoDelete extends CController {
         }
 
         // ── Log histórico antes de deletar ────────────────────────────────
-        DBexecute(
+        // Acessório (dbExecOptional): não impedir a remoção pedida porque o
+        // registro de histórico falhou.
+        $this->dbExecOptional(
             'INSERT INTO module_plantonistas_history' .
             ' (scheduleid,usrgrpid,shift_id,shift_name,schedule_date,action,userid_old,userid_new,' .
             '  reserva_old,reserva_new,changed_by,changed_at)' .
@@ -86,10 +91,22 @@ class PlantaoDelete extends CController {
                 (int)$sched['userid'] . ',NULL,' .
                 ($sched['userid_reserva'] ? (int)$sched['userid_reserva'] : 'NULL') . ',NULL,' .
                 $current_userid . ',' . time() .
-            ')'
+            ')',
+            'registrar a remoção no histórico'
         );
 
-        DBexecute('DELETE FROM module_plantonistas_schedule WHERE scheduleid=' . $scheduleid);
+        // A remoção em si é o dado principal: se o banco recusar, o operador
+        // precisa saber. Antes o retorno do DELETE era ignorado e a tela
+        // dizia "Plantão removido" com a entrada ainda no calendário.
+        try {
+            $this->dbExec(
+                'DELETE FROM module_plantonistas_schedule WHERE scheduleid=' . $scheduleid,
+                'remover o plantão'
+            );
+        } catch (\Throwable $e) {
+            $this->respondErr($redirect, $e->getMessage());
+            return;
+        }
 
         $this->respondOk($redirect, 'Plantão removido.');
     }

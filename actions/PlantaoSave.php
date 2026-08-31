@@ -21,6 +21,9 @@ use CController, CControllerResponseRedirect, CUrl, CWebUser;
 class PlantaoSave extends CController {
 
     use AjaxRedirect;
+    // Escrita conferida: \DBexecute() devolve false em erro e o retorno era
+    // ignorado — dia que não gravava era contado como salvo (ver DbWrite).
+    use DbWrite;
 
     protected function checkInput(): bool {
         return $this->validateInput([
@@ -199,10 +202,11 @@ class PlantaoSave extends CController {
         ));
 
         if ($existing) {
-            DBexecute(
+            $this->dbExec(
                 'UPDATE module_plantonistas_schedule SET userid=' . $userid . $r_set .
                 ', created_by=' . $current_userid . ', created_at=' . time() .
-                ' WHERE scheduleid=' . (int)$existing['scheduleid']
+                ' WHERE scheduleid=' . (int)$existing['scheduleid'],
+                'atualizar a escala de ' . $date
             );
             $this->logHistory(
                 (int)$existing['scheduleid'], $usrgrpid, $shift_id, $shift_name, $date, 'update',
@@ -212,11 +216,23 @@ class PlantaoSave extends CController {
                 $current_userid
             );
         } else {
-            DBexecute(
+            // Upsert em vez de INSERT puro: entre o SELECT acima e este INSERT
+            // há uma janela em que outro admin pode gravar o mesmo
+            // (grupo, dia, turno) — e a unique key uniq_group_day_shift faria
+            // o segundo INSERT falhar com "duplicate entry". É a mesma forma
+            // que PhonesSave/PhonesImport já usam.
+            //
+            // No caminho raro em que o upsert vira UPDATE, o histórico abaixo
+            // registra 'create' com titular anterior nulo. Preferível a um
+            // erro na cara do operador por uma corrida de milissegundos.
+            $this->dbExec(
                 'INSERT INTO module_plantonistas_schedule' .
                 ' (usrgrpid,shift_id,userid,userid_reserva,schedule_date,created_by,created_at)' .
                 ' VALUES (' . $usrgrpid . ',' . $shift_id . ',' . $userid . ',' . $r_sql . ',' .
-                zbx_dbstr($date) . ',' . $current_userid . ',' . time() . ')'
+                zbx_dbstr($date) . ',' . $current_userid . ',' . time() . ')' .
+                SqlFn::upsert('usrgrpid, schedule_date, shift_id',
+                    ['userid', 'userid_reserva', 'created_by', 'created_at']),
+                'gravar a escala de ' . $date
             );
             $new_id = DBfetch(DBselect(
                 'SELECT scheduleid FROM module_plantonistas_schedule' .
@@ -250,7 +266,10 @@ class PlantaoSave extends CController {
         ?int $reserva_old, ?int $reserva_new,
         int $changed_by
     ): void {
-        DBexecute(
+        // dbExecOptional: o histórico é acessório. Falha aqui não pode
+        // derrubar (nem desfazer) a escala que acabou de ser gravada — mesma
+        // regra que vale para turno na Presença e contexto no cron.
+        $this->dbExecOptional(
             'INSERT INTO module_plantonistas_history' .
             ' (scheduleid,usrgrpid,shift_id,shift_name,schedule_date,action,userid_old,userid_new,' .
             '  reserva_old,reserva_new,changed_by,changed_at)' .
@@ -263,7 +282,8 @@ class PlantaoSave extends CController {
                 ($reserva_old !== null ? $reserva_old : 'NULL') . ',' .
                 ($reserva_new !== null ? $reserva_new : 'NULL') . ',' .
                 $changed_by . ',' . time() .
-            ')'
+            ')',
+            'registrar o histórico da escala de ' . $date
         );
     }
 

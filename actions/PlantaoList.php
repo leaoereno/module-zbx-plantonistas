@@ -203,7 +203,13 @@ class PlantaoList extends CController {
             while ($row = DBfetch($res_users)) {
                 // Rótulo pronto (UserLabel) para a view não concatenar
                 // name+surname às cegas e duplicar o nome.
-                $row['label'] = $this->userLabel($row['name'], $row['surname'], '');
+                //
+                // O username entra como reserva (o 3º argumento era ''): conta
+                // com name/surname vazios — comum em cadastro antigo ou de
+                // serviço — saía com rótulo em branco no seletor de técnico, e
+                // a view tapava o buraco repetindo a regra por conta própria.
+                // Mesmo defeito já corrigido para o reserva em 2026-08-24.
+                $row['label'] = $this->userLabel($row['name'], $row['surname'], $row['username']);
                 $users[$row['userid']] = $row;
             }
         }

@@ -117,8 +117,42 @@ function rp_resolvedBy(?string $closedBy): string {
         : '<span class="rp-resolve-auto"><i class="fas fa-sync-alt"></i> Automático</span>';
 }
 
+/**
+ * Contagem exibível de uma das 4 tabelas de alarme.
+ *
+ * As consultas trazem no máximo 50 linhas (mais uma de sonda — ver
+ * TurnosReportBase::capAlertRows()). O KPI usava `count()` desse array direto,
+ * então um turno com 213 alertas sem ACK mostrava "50" no card, sem nada
+ * indicando que havia corte. Com o teto batido sai "50+".
+ */
+function rp_alertCount(array $data, string $chave): string {
+    $n = count($data[$chave] ?? []);
+
+    return $n . (!empty($data['truncated'][$chave]) ? '+' : '');
+}
+
+/** Aviso no rodapé da tabela quando o teto de linhas foi atingido. */
+function rp_alertCut(array $data, string $chave): string {
+    if (empty($data['truncated'][$chave])) {
+        return '';
+    }
+
+    return '<div class="rp-card-desc">Exibindo as ' . (int)($data['alert_limit'] ?? 50)
+         . ' primeiras linhas: há mais alarmes neste recorte do que a tabela mostra.'
+         . ' Use o Monitoramento &gt; Problemas para a lista completa.</div>';
+}
+
 $date  = $data['date'];
 $shift = $data['shift'];
+// Versão lida do manifest: o rodapé trazia "v2.5.0" fixo desde o fork e
+// continuou lá enquanto o módulo chegava à 5.x — número de versão errado no
+// rodapé de um relatório de plantão atrapalha justamente quem está tentando
+// descobrir qual código está no ar.
+$rp_versao = 'v?';
+$rp_mf     = @json_decode((string) @file_get_contents(__DIR__ . '/../manifest.json'), true);
+if (is_array($rp_mf) && !empty($rp_mf['version'])) {
+    $rp_versao = 'v' . $rp_mf['version'];
+}
 // Nomes/cores reais de severidade — ver rp_sevLabel() e o bloco de <style>
 // logo abaixo de _theme.php, que sobrescreve --sev-* com as cores de verdade.
 $rp_sev = $data['severities'] ?? [];
@@ -395,19 +429,19 @@ $pview_base = "zabbix.php?action=problem.view&filter_set=1&filter_show=3&from=".
     </div>
     <a href="javascript:void(0)" onclick="document.getElementById('table-unacked').scrollIntoView({behavior:'smooth'})" class="rp-kpi rp-kpi-link" title="Eventos do plantão atual que ainda não foram reconhecidos.">
         <div class="rp-kpi-icon txt-yellow"><i class="fas fa-eye-slash"></i></div>
-        <div class="rp-kpi-body"><span class="rp-kpi-val"><?= count($data['unacked']) ?></span><span class="rp-kpi-label">Sem ACK</span></div>
+        <div class="rp-kpi-body"><span class="rp-kpi-val"><?= rp_alertCount($data, 'unacked') ?></span><span class="rp-kpi-label">Sem ACK</span></div>
     </a>
     <a href="javascript:void(0)" onclick="document.getElementById('table-inherited').scrollIntoView({behavior:'smooth'})" class="rp-kpi rp-kpi-link" title="Alertas que não foram tratados no último plantão.">
         <div class="rp-kpi-icon txt-purple"><i class="fas fa-reply-all"></i></div>
-        <div class="rp-kpi-body"><span class="rp-kpi-val"><?= count($data['inherited']) ?></span><span class="rp-kpi-label">Herdados</span></div>
+        <div class="rp-kpi-body"><span class="rp-kpi-val"><?= rp_alertCount($data, 'inherited') ?></span><span class="rp-kpi-label">Herdados</span></div>
     </a>
     <a href="javascript:void(0)" onclick="document.getElementById('table-in-progress').scrollIntoView({behavior:'smooth'})" class="rp-kpi rp-kpi-link" title="Alarmes abertos durante o turno que já têm alguma ação registrada (ACK, mensagem, etc.).">
         <div class="rp-kpi-icon txt-blue"><i class="fas fa-tools"></i></div>
-        <div class="rp-kpi-body"><span class="rp-kpi-val"><?= count($data['in_progress']) ?></span><span class="rp-kpi-label">Em Tratativas</span></div>
+        <div class="rp-kpi-body"><span class="rp-kpi-val"><?= rp_alertCount($data, 'in_progress') ?></span><span class="rp-kpi-label">Em Tratativas</span></div>
     </a>
     <a href="javascript:void(0)" onclick="document.getElementById('table-resolved').scrollIntoView({behavior:'smooth'})" class="rp-kpi rp-kpi-link" title="Alarmes resolvidos dentro da janela deste turno — histórico do turno.">
         <div class="rp-kpi-icon txt-green"><i class="fas fa-check-circle"></i></div>
-        <div class="rp-kpi-body"><span class="rp-kpi-val"><?= count($data['resolved']) ?></span><span class="rp-kpi-label">Resolvidos</span></div>
+        <div class="rp-kpi-body"><span class="rp-kpi-val"><?= rp_alertCount($data, 'resolved') ?></span><span class="rp-kpi-label">Resolvidos</span></div>
     </a>
     <a href="javascript:void(0)" onclick="document.getElementById('table-presence').scrollIntoView({behavior:'smooth'})" class="rp-kpi rp-kpi-link" title="Analistas rastreados como ativos durante a janela de horário do plantão selecionado.">
         <div class="rp-kpi-icon txt-green"><i class="fas fa-users"></i></div>
@@ -483,7 +517,7 @@ $pview_base = "zabbix.php?action=problem.view&filter_set=1&filter_show=3&from=".
 
 <!-- INHERITED ALERTS -->
 <div class="rp-card" id="table-inherited">
-    <div class="rp-card-head"><i class="fas fa-history"></i> Alertas Herdados <span class="rp-badge"><?= count($data['inherited']) ?></span></div>
+    <div class="rp-card-head"><i class="fas fa-history"></i> Alertas Herdados <span class="rp-badge"><?= rp_alertCount($data, 'inherited') ?></span></div>
     <div class="rp-card-desc">Alertas que não foram tratados no último plantão.</div>
     <?php if (empty($data['inherited'])): ?>
         <div class="rp-card-body rp-empty">Nenhum alerta herdado pendente.</div>
@@ -502,12 +536,13 @@ $pview_base = "zabbix.php?action=problem.view&filter_set=1&filter_show=3&from=".
         </tr>
         <?php endforeach; ?>
         </tbody></table>
+        <?= rp_alertCut($data, 'inherited') ?>
     <?php endif; ?>
 </div>
 
 <!-- UNACKED ALERTS -->
 <div class="rp-card" id="table-unacked">
-    <div class="rp-card-head"><i class="fas fa-exclamation-triangle"></i> Alertas Sem ACK <span class="rp-badge rp-badge-warn"><?= count($data['unacked']) ?></span></div>
+    <div class="rp-card-head"><i class="fas fa-exclamation-triangle"></i> Alertas Sem ACK <span class="rp-badge rp-badge-warn"><?= rp_alertCount($data, 'unacked') ?></span></div>
     <?php if (empty($data['unacked'])): ?>
         <div class="rp-card-body rp-empty">Todos os alertas foram reconhecidos. <i class="fas fa-check"></i></div>
     <?php else: ?>
@@ -523,12 +558,13 @@ $pview_base = "zabbix.php?action=problem.view&filter_set=1&filter_show=3&from=".
         </tr>
         <?php endforeach; ?>
         </tbody></table>
+        <?= rp_alertCut($data, 'unacked') ?>
     <?php endif; ?>
 </div>
 
 <!-- IN PROGRESS ALERTS (complemento de Sem ACK: já tem ação/ACK) -->
 <div class="rp-card" id="table-in-progress">
-    <div class="rp-card-head"><i class="fas fa-tools"></i> Alarmes em Tratativas <span class="rp-badge"><?= count($data['in_progress']) ?></span></div>
+    <div class="rp-card-head"><i class="fas fa-tools"></i> Alarmes em Tratativas <span class="rp-badge"><?= rp_alertCount($data, 'in_progress') ?></span></div>
     <div class="rp-card-desc">Alarmes abertos durante este turno que já têm pelo menos uma ação registrada (ACK, mensagem, etc.) — complemento de Alertas Sem ACK.</div>
     <?php if (empty($data['in_progress'])): ?>
         <div class="rp-card-body rp-empty">Nenhum alarme em tratativa neste turno.</div>
@@ -545,12 +581,13 @@ $pview_base = "zabbix.php?action=problem.view&filter_set=1&filter_show=3&from=".
         </tr>
         <?php endforeach; ?>
         </tbody></table>
+        <?= rp_alertCut($data, 'in_progress') ?>
     <?php endif; ?>
 </div>
 
 <!-- RESOLVED ALERTS (histórico do turno) -->
 <div class="rp-card" id="table-resolved">
-    <div class="rp-card-head"><i class="fas fa-check-circle"></i> Alarmes Resolvidos <span class="rp-badge"><?= count($data['resolved']) ?></span></div>
+    <div class="rp-card-head"><i class="fas fa-check-circle"></i> Alarmes Resolvidos <span class="rp-badge"><?= rp_alertCount($data, 'resolved') ?></span></div>
     <div class="rp-card-desc">
         Alarmes cuja resolução caiu dentro deste turno — histórico do turno. Turnos antigos podem aparecer vazios aqui mesmo tendo tido resolução: o Zabbix limpa problemas resolvidos da tabela de origem depois de um tempo (housekeeper), independente deste módulo.
     </div>
@@ -571,6 +608,7 @@ $pview_base = "zabbix.php?action=problem.view&filter_set=1&filter_show=3&from=".
         </tr>
         <?php endforeach; ?>
         </tbody></table>
+        <?= rp_alertCut($data, 'resolved') ?>
     <?php endif; ?>
 </div>
 
@@ -715,7 +753,7 @@ $pview_base = "zabbix.php?action=problem.view&filter_set=1&filter_show=3&from=".
 <!-- FOOTER -->
 <div class="rp-native-footer">
     <span>Relatório gerado em <?= date('d/m/Y H:i:s') ?> por <?= htmlspecialchars($data['current_fullname']) ?></span>
-    <span>Módulo Repasse Plantão v2.5.0</span>
+    <span>Módulo Plantonistas <?= htmlspecialchars($rp_versao) ?></span>
 </div>
 
 </div><!-- /rp-native-container -->
@@ -723,7 +761,12 @@ $pview_base = "zabbix.php?action=problem.view&filter_set=1&filter_show=3&from=".
 <script>
 const MTTA_LABELS = <?= $chart_mtta_labels ?>;
 const MTTA_DATA = <?= $chart_mtta_data ?>;
-const CURRENT_FULLNAME = '<?= addslashes($data['current_fullname']) ?>';
+// json_encode e não addslashes: addslashes escapa aspa e barra, mas não trata
+// quebra de linha nem os separadores U+2028/U+2029, que são fim de instrução
+// em JavaScript — um nome de cadastro com qualquer um deles quebrava o bloco
+// inteiro. JSON_HEX_TAG pelo mesmo motivo do SEV_LABELS logo abaixo. Todas as
+// outras constantes deste bloco já usavam json_encode.
+const CURRENT_FULLNAME = <?= json_encode((string) $data['current_fullname'], JSON_HEX_TAG | JSON_UNESCAPED_UNICODE) ?>;
 // Nomes/cores reais (Administração > Geral > Opções de exibição de
 // acionadores) — mesma fonte ($rp_sev) usada nas tabelas acima. Fallback é o
 // default de fábrica do Zabbix, só usado se a consulta a `config` falhar.

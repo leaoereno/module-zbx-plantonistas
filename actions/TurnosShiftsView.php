@@ -66,16 +66,24 @@ class TurnosShiftsView extends CController {
 
         $ctx = $this->resolveUserContext($db, $current_userid);
 
+        // Duas consultas para TODAS as equipes, em vez de duas por equipe: com
+        // 40 grupos administráveis a tela abria 80 consultas só para se montar
+        // (ver listShiftsByGroups()/listUsersByGroups()).
+        $gerenciaveis = $this->listManageableGroups($db, $ctx);
+        $ids          = array_map(fn($g) => (int)$g['usrgrpid'], $gerenciaveis);
+
+        $turnosPorGrupo = $this->listShiftsByGroups($db, $ids);
+        $usuarios       = $this->listUsersByGroups($db, $ids);
+
         $groups = [];
-        foreach ($this->listManageableGroups($db, $ctx) as $g) {
-            $usrgrpid  = (int)$g['usrgrpid'];
-            $usersInfo = $this->listUsersByGroup($db, $usrgrpid);
+        foreach ($gerenciaveis as $g) {
+            $usrgrpid = (int)$g['usrgrpid'];
             $groups[] = [
                 'usrgrpid'   => $usrgrpid,
                 'name'       => $g['name'],
-                'shifts'     => $this->listShiftsByGroup($db, $usrgrpid),
-                'users'      => $usersInfo['rows'],
-                'users_error'=> $usersInfo['error'],
+                'shifts'     => $turnosPorGrupo[$usrgrpid] ?? [],
+                'users'      => $usuarios['rows'][$usrgrpid] ?? [],
+                'users_error'=> $usuarios['error'],
             ];
         }
 

@@ -319,12 +319,22 @@ trait TurnosReportBase {
         // de antes (sem consultar `rights`).
         if (!$result['is_superadmin']) {
             try {
+                // Teto de hosts que ainda vale a pena listar literalmente no
+                // SQL. Abaixo dele o filtro continua sendo a lista de ids que
+                // sempre foi (plano de consulta conhecido e testado em
+                // produção); acima, ela viraria dezenas de KB de texto
+                // repetidos em ~10 consultas por carga de página, e o filtro
+                // passa a ser subconsulta. O `+ 1` é sonda: serve só para
+                // saber que passou do teto sem trazer a lista inteira.
+                $teto = 500;
+
                 $stmt = $db->prepare(
                     "SELECT DISTINCT hg.hostid
                      FROM hosts_groups hg
                      INNER JOIN rights r        ON r.id        = hg.groupid
                      INNER JOIN users_groups ug ON ug.usrgrpid = r.groupid
-                     WHERE ug.userid = ? AND r.permission >= 2"
+                     WHERE ug.userid = ? AND r.permission >= 2
+                     LIMIT " . ($teto + 1)
                 );
                 $stmt->bind_param('i', $userid);
                 $stmt->execute();
@@ -332,10 +342,31 @@ trait TurnosReportBase {
                     fn($r) => (int)$r['hostid'],
                     $stmt->get_result()->fetch_all()
                 );
-                $result['host_filter'] = empty($hostIds)
-                    ? ''
-                    : 'AND h.hostid IN (' . implode(',', $hostIds) . ')';
-            } catch (\Exception $e) {}
+
+                if (empty($hostIds)) {
+                    // Sem rights por host: sem filtro, como sempre foi.
+                    $result['host_filter'] = '';
+                }
+                elseif (count($hostIds) <= $teto) {
+                    $result['host_filter'] = 'AND h.hostid IN (' . implode(',', $hostIds) . ')';
+                }
+                else {
+                    // Aliases com sufixo _hf para não colidir com os das
+                    // consultas que recebem este trecho (ev, t, f, i, h, a,
+                    // ak, p) nem com o ugx do enabledUserClause().
+                    $result['host_filter'] =
+                        'AND h.hostid IN (
+                            SELECT hg_hf.hostid
+                            FROM hosts_groups hg_hf
+                            INNER JOIN rights r_hf        ON r_hf.id        = hg_hf.groupid
+                            INNER JOIN users_groups ug_hf ON ug_hf.usrgrpid = r_hf.groupid
+                            WHERE ug_hf.userid = ' . (int)$userid . ' AND r_hf.permission >= 2
+                         )';
+                }
+            } catch (\Exception $e) {
+                error_log('[plantonistas] resolveUserContext() host_filter falhou (userid='
+                    . $userid . '): ' . $e->getMessage());
+            }
         }
 
         // Label de exibição (badge no header): mantém o comportamento original
@@ -377,13 +408,24 @@ trait TurnosReportBase {
     // ── Queries ──────────────────────────────────────────────
 
     private function queryMTTA(ZbxDb $db, int $s, int $e, string $hostFilter = ''): array {
+        // SELECT DISTINCT na subconsulta: a cadeia de JOIN
+        // events → triggers → functions → items → hosts devolve UMA LINHA POR
+        // ITEM referenciado na expressão da trigger, então um ACK de uma
+        // trigger com 2 itens virava 2 linhas idênticas aqui. Sem o DISTINCT,
+        // COUNT(*) contava o ACK duas vezes e o AVG ficava ponderado pelo
+        // número de itens de cada trigger (evento com 3 itens pesava 3× no
+        // MTTA do analista). As colunas selecionadas são todas idênticas nas
+        // linhas duplicadas, então o DISTINCT colapsa exatamente o excesso.
+        //
+        // Os demais pontos que sofriam a mesma multiplicação: queryEventTotals,
+        // querySeverityDistribution, queryCalendarHeatmap e queryMttaTimeline.
         $sql = "SELECT sub.userid, sub.username, sub.name, sub.surname,
                     COUNT(*) AS total_acks,
                     ROUND(AVG(sub.mtta), 0) AS avg_mtta,
                     MIN(sub.mtta) AS min_mtta,
                     MAX(sub.mtta) AS max_mtta
                 FROM (
-                    SELECT a.userid, u.username,
+                    SELECT DISTINCT a.userid, u.username,
                         u.name, u.surname,
                         a.eventid,
                         (a.clock - ev.clock) AS mtta
@@ -412,6 +454,42 @@ trait TurnosReportBase {
         $stmt->execute();
 
         return $this->withFullName($stmt->get_result()->fetch_all());
+    }
+
+    // ── Teto das tabelas de alarme ───────────────────────────────────────
+    //
+    // As 4 tabelas (Herdados, Sem ACK, Em Tratativas, Resolvidos) mostram no
+    // máximo 50 linhas — o relatório é para leitura no repasse, não é dump.
+    // O problema era outro: a tela usava `count()` desse array como VALOR DO
+    // KPI, então 213 alertas sem ACK apareciam no card como "50" e não havia
+    // como perceber. As consultas passaram a pedir uma linha a mais (51) só
+    // como sonda: se ela veio, houve corte, e a tela mostra "50+" com um aviso
+    // no rodapé da tabela. Sem consulta extra de COUNT.
+    //
+    // É método e não `const`: constante em trait só existe do PHP 8.2 em
+    // diante e o piso do módulo é 8.0 (ver snapshotVersion()).
+
+    /** Quantas linhas cada tabela de alarme exibe. */
+    private function alertRowLimit(): int {
+        return 50;
+    }
+
+    /**
+     * Corta o resultado no teto e diz se havia mais.
+     *
+     * @param array $rows por referência — sai já cortado no teto
+     * @return bool true se a consulta trouxe a linha-sonda (houve corte)
+     */
+    private function capAlertRows(array &$rows): bool {
+        $max = $this->alertRowLimit();
+
+        if (count($rows) <= $max) {
+            return false;
+        }
+
+        $rows = array_slice($rows, 0, $max);
+
+        return true;
     }
 
     /**
@@ -456,7 +534,7 @@ trait TurnosReportBase {
                   $hostFilter
                 GROUP BY p.eventid, p.clock, p.severity
                 ORDER BY p.severity DESC, p.clock ASC
-                LIMIT 50";
+                LIMIT " . ($this->alertRowLimit() + 1);
 
         $stmt = $db->prepare($sql);
         $stmt->bind_param('iii', $ts_start, $ts_start, $ts_start);
@@ -487,7 +565,7 @@ trait TurnosReportBase {
                   $hostFilter
                 GROUP BY ev.eventid, ev.clock, ev.severity
                 ORDER BY ev.severity DESC, ev.clock DESC
-                LIMIT 50";
+                LIMIT " . ($this->alertRowLimit() + 1);
 
         $stmt = $db->prepare($sql);
         $stmt->bind_param('ii', $s, $e);
@@ -526,7 +604,7 @@ trait TurnosReportBase {
                   $hostFilter
                 GROUP BY ev.eventid, ev.clock, ev.severity
                 ORDER BY ev.severity DESC, ev.clock DESC
-                LIMIT 50";
+                LIMIT " . ($this->alertRowLimit() + 1);
 
         $stmt = $db->prepare($sql);
         $stmt->bind_param('ii', $s, $e);
@@ -572,7 +650,7 @@ trait TurnosReportBase {
                   $hostFilter
                 GROUP BY p.eventid, p.clock, p.severity, p.r_clock
                 ORDER BY p.r_clock DESC, p.severity DESC
-                LIMIT 50";
+                LIMIT " . ($this->alertRowLimit() + 1);
 
         $stmt = $db->prepare($sql);
         $stmt->bind_param('ii', $s, $e);
@@ -655,22 +733,37 @@ trait TurnosReportBase {
         // eventid OU p_eventid — em vez de arriscar não mostrar nenhuma
         // notificação de recuperação.
         try {
+            // UNION ALL, e não `WHERE eventid IN (...) OR p_eventid IN (...)`:
+            // o OR entre duas colunas diferentes tipicamente impede o
+            // otimizador de usar índice, e vira varredura da tabela `alerts` —
+            // uma das maiores do Zabbix. Cada ramo do UNION filtra por UMA
+            // coluna e usa o índice dela.
+            //
+            // O segundo ramo exclui as linhas que o primeiro já trouxe (alerta
+            // cujo eventid TAMBÉM está no conjunto), senão a mesma notificação
+            // apareceria duas vezes. A âncora sai pronta do SQL, no lugar da
+            // escolha que antes era feita em PHP linha a linha.
             $stmt = $db->prepare(
-                "SELECT al.eventid, al.p_eventid, al.clock, al.status, al.alerttype,
-                        al.error, mt.name AS media_name
-                   FROM alerts al
-                   LEFT JOIN media_type mt ON mt.mediatypeid = al.mediatypeid
-                  WHERE al.eventid IN ($in) OR al.p_eventid IN ($in)
-                  ORDER BY al.clock ASC"
+                "SELECT x.anchor_eventid, x.clock, x.status, x.alerttype,
+                        x.error, mt.name AS media_name
+                   FROM (
+                        SELECT al.eventid AS anchor_eventid, al.clock, al.status,
+                               al.alerttype, al.error, al.mediatypeid
+                          FROM alerts al
+                         WHERE al.eventid IN ($in)
+                        UNION ALL
+                        SELECT al.p_eventid AS anchor_eventid, al.clock, al.status,
+                               al.alerttype, al.error, al.mediatypeid
+                          FROM alerts al
+                         WHERE al.p_eventid IN ($in)
+                           AND (al.eventid IS NULL OR al.eventid NOT IN ($in))
+                   ) x
+                   LEFT JOIN media_type mt ON mt.mediatypeid = x.mediatypeid
+                  ORDER BY x.clock ASC"
             );
             $stmt->execute();
             foreach ($stmt->get_result()->fetch_all() as $r) {
-                // Se o eventid do alerta não é um dos nossos, o match veio por
-                // p_eventid — ancora nele, é o problema que este relatório
-                // mostra.
-                $eventid = in_array((int)$r['eventid'], $ids, true)
-                    ? (int)$r['eventid']
-                    : (int)$r['p_eventid'];
+                $eventid = (int)$r['anchor_eventid'];
                 if ($eventid <= 0) {
                     continue;
                 }
@@ -798,10 +891,15 @@ trait TurnosReportBase {
     }
 
     private function queryEventTotals(ZbxDb $db, int $s, int $e, string $hostFilter = ''): array {
+        // COUNT(DISTINCT ... CASE ...), não SUM(CASE ...): o JOIN em
+        // functions/items devolve uma linha por item da trigger, então o SUM
+        // contava o mesmo evento várias vezes enquanto o `total` (que já era
+        // DISTINCT) contava uma — os três recortes somavam MAIS que o total no
+        // mesmo SELECT, e os KPIs da tela se contradiziam.
         $sql = "SELECT COUNT(DISTINCT ev.eventid) AS total,
-                    SUM(CASE WHEN ev.severity >= 4 THEN 1 ELSE 0 END) AS critical,
-                    SUM(CASE WHEN ev.severity = 3  THEN 1 ELSE 0 END) AS average,
-                    SUM(CASE WHEN ev.severity <= 2 THEN 1 ELSE 0 END) AS low
+                    COUNT(DISTINCT CASE WHEN ev.severity >= 4 THEN ev.eventid END) AS critical,
+                    COUNT(DISTINCT CASE WHEN ev.severity = 3  THEN ev.eventid END) AS average,
+                    COUNT(DISTINCT CASE WHEN ev.severity <= 2 THEN ev.eventid END) AS low
                 FROM events ev
                 INNER JOIN triggers t  ON t.triggerid = ev.objectid
                 INNER JOIN functions f ON f.triggerid  = t.triggerid
@@ -820,24 +918,33 @@ trait TurnosReportBase {
 
     private function queryMttaTimeline(ZbxDb $db, int $s, int $e, string $hostFilter = ''): array {
         $tzOffset = (int)date('Z');
-        $sql = "SELECT " . SqlFn::hourFromEpoch('ev.clock + ?') . " AS hora,
-                    ROUND(AVG(a.clock - ev.clock), 0) AS avg_mtta
-                FROM acknowledges a
-                INNER JOIN events ev   ON ev.eventid  = a.eventid
-                INNER JOIN triggers t  ON t.triggerid = ev.objectid
-                INNER JOIN functions f ON f.triggerid  = t.triggerid
-                INNER JOIN items i     ON i.itemid     = f.itemid
-                INNER JOIN hosts h     ON h.hostid     = i.hostid
-                WHERE ev.source = 0 AND ev.object = 0
-                  AND ev.clock BETWEEN ? AND ?
-                  AND a.acknowledgeid = (
-                      SELECT MIN(a2.acknowledgeid)
-                      FROM acknowledges a2
-                      WHERE a2.eventid = a.eventid
-                  )
-                  $hostFilter
-                GROUP BY hora
-                ORDER BY hora ASC";
+        // A média sai de uma subconsulta com DISTINCT (ver a nota em
+        // queryMTTA): direto sobre o JOIN, cada evento entrava na média tantas
+        // vezes quantos itens a trigger referencia, e o gráfico de MTTA por
+        // hora ficava puxado pelas triggers de expressão mais longa — não pelo
+        // tempo de resposta do turno, que é o que ele existe para mostrar.
+        $sql = "SELECT sub.hora, ROUND(AVG(sub.mtta), 0) AS avg_mtta
+                FROM (
+                    SELECT DISTINCT a.eventid,
+                        " . SqlFn::hourFromEpoch('ev.clock + ?') . " AS hora,
+                        (a.clock - ev.clock) AS mtta
+                    FROM acknowledges a
+                    INNER JOIN events ev   ON ev.eventid  = a.eventid
+                    INNER JOIN triggers t  ON t.triggerid = ev.objectid
+                    INNER JOIN functions f ON f.triggerid  = t.triggerid
+                    INNER JOIN items i     ON i.itemid     = f.itemid
+                    INNER JOIN hosts h     ON h.hostid     = i.hostid
+                    WHERE ev.source = 0 AND ev.object = 0
+                      AND ev.clock BETWEEN ? AND ?
+                      AND a.acknowledgeid = (
+                          SELECT MIN(a2.acknowledgeid)
+                          FROM acknowledges a2
+                          WHERE a2.eventid = a.eventid
+                      )
+                      $hostFilter
+                ) sub
+                GROUP BY sub.hora
+                ORDER BY sub.hora ASC";
 
         $stmt = $db->prepare($sql);
         $stmt->bind_param('iii', $tzOffset, $s, $e);
@@ -846,7 +953,10 @@ trait TurnosReportBase {
     }
 
     private function querySeverityDistribution(ZbxDb $db, int $s, int $e, string $hostFilter = ''): array {
-        $sql = "SELECT ev.severity, COUNT(*) AS cnt
+        // COUNT(DISTINCT ev.eventid), não COUNT(*): ver a nota em queryMTTA —
+        // sem isso a rosca de severidade mostrava mais eventos que o KPI de
+        // total, porque cada item da trigger virava uma linha.
+        $sql = "SELECT ev.severity, COUNT(DISTINCT ev.eventid) AS cnt
                 FROM events ev
                 INNER JOIN triggers t  ON t.triggerid = ev.objectid
                 INNER JOIN functions f ON f.triggerid  = t.triggerid
@@ -931,9 +1041,12 @@ trait TurnosReportBase {
         $tsNow    = (int)time();
         $tzOffset = (int)date('Z');
 
+        // `critical` com COUNT(DISTINCT ... CASE ...) pelo mesmo motivo do
+        // queryEventTotals: com SUM, a célula do heatmap dizia mais críticos
+        // do que eventos no dia.
         $sql = "SELECT " . SqlFn::dateFromEpoch('ev.clock + ?') . " AS dia,
                     COUNT(DISTINCT ev.eventid) AS cnt,
-                    SUM(CASE WHEN ev.severity >= 4 THEN 1 ELSE 0 END) AS critical
+                    COUNT(DISTINCT CASE WHEN ev.severity >= 4 THEN ev.eventid END) AS critical
                 FROM events ev
                 INNER JOIN triggers t  ON t.triggerid = ev.objectid
                 INNER JOIN functions f ON f.triggerid  = t.triggerid
@@ -972,16 +1085,12 @@ trait TurnosReportBase {
         // string já formatada "dd/mm/aaaa" daria resultado errado (comparação
         // léxica não é o mesmo que ordem cronológica).
         if ($isSuperadmin) {
-            $sql  = "SELECT id, analyst_userid, analyst_name, notes, notes_format,
+            $sql = "SELECT id, analyst_userid, analyst_name, notes, notes_format,
                         " . SqlFn::dateTimeBr('created_at') . " AS created_at,
                         created_at AS created_sort
                      FROM module_plantonistas_shift_notes
                      WHERE shift_date = ? AND $shiftCol = ?
                      ORDER BY created_sort DESC";
-            $stmt = $db->prepare($sql);
-            $filterByShiftId
-                ? $stmt->bind_param('si', $date, $shiftIdInt)
-                : $stmt->bind_param('ss', $date, $shift);
         } else {
             $sameGroup = $this->sameGroupExists($userid, 'csn.analyst_userid');
             $sql = "SELECT DISTINCT csn.id, csn.analyst_userid, csn.analyst_name,
@@ -992,16 +1101,23 @@ trait TurnosReportBase {
                     WHERE csn.shift_date = ? AND csn.$shiftCol = ?
                       AND $sameGroup
                     ORDER BY created_sort DESC";
+        }
+
+        // prepare/bind_param/execute JUNTOS dentro do try — regra do módulo
+        // desde o ZbxDb (quem lança agora é o execute(), mas o bind também
+        // pode: string de tipos com tamanho diferente da lista de valores).
+        // Aqui só o execute() estava protegido.
+        try {
             $stmt = $db->prepare($sql);
             $filterByShiftId
                 ? $stmt->bind_param('si', $date, $shiftIdInt)
                 : $stmt->bind_param('ss', $date, $shift);
-        }
-
-        try {
             $stmt->execute();
-            return $stmt->get_result()->fetch_all();
-        } catch (\Exception $e) {
+
+            // Sanitiza de novo na exibição — ver sanitizeNotesForDisplay().
+            return $this->sanitizeNotesForDisplay($stmt->get_result()->fetch_all());
+        } catch (\Throwable $e) {
+            error_log('[plantonistas] queryNotes() falhou: ' . $e->getMessage());
             return [];
         }
     }
@@ -1220,6 +1336,89 @@ trait TurnosReportBase {
             ];
         } catch (\Throwable $e) {
             error_log('[plantonistas] listUsersByGroup() falhou (usrgrpid=' . $usrgrpid . '): ' . $e->getMessage());
+            return ['error' => $e->getMessage(), 'rows' => []];
+        }
+    }
+
+    /**
+     * Turnos de VÁRIAS equipes de uma vez, indexados por usrgrpid.
+     *
+     * A tela de Gerenciar Turnos chamava listShiftsByGroup() e
+     * listUsersByGroup() dentro do laço de equipes: um Super Admin com 40
+     * grupos abria 80 consultas para montar uma página. Aqui é uma só.
+     *
+     * @param int[] $usrgrpids
+     * @return array<int, array> [usrgrpid => linhas de turno]
+     */
+    private function listShiftsByGroups(ZbxDb $db, array $usrgrpids): array {
+        if (empty($usrgrpids)) {
+            return [];
+        }
+        $in = implode(',', array_map('intval', $usrgrpids)); // já int — sem entrada de usuário
+
+        $out = [];
+        try {
+            $res = $db->query(
+                "SELECT id, usrgrpid, name, start_time, end_time, sort_order, active
+                   FROM module_plantonistas_shifts
+                  WHERE usrgrpid IN ($in)
+                  ORDER BY usrgrpid ASC, sort_order ASC, start_time ASC"
+            );
+            while ($r = $res->fetch_assoc()) {
+                $out[(int)$r['usrgrpid']][] = $r;
+            }
+        } catch (\Throwable $e) {
+            error_log('[plantonistas] listShiftsByGroups() falhou: ' . $e->getMessage());
+        }
+
+        return $out;
+    }
+
+    /**
+     * Analistas de VÁRIAS equipes de uma vez.
+     *
+     * Mantém o contrato de listUsersByGroup(): 'error' preenchido distingue
+     * "consulta falhou" de "equipe sem analistas" — a diferença que já custou
+     * um diagnóstico errado ("Nenhum usuário Zabbix neste grupo" para tudo).
+     * Aqui o erro é o mesmo para todas as equipes, porque a consulta é uma só.
+     *
+     * @param int[] $usrgrpids
+     * @return array{error: ?string, rows: array<int, array>}
+     */
+    private function listUsersByGroups(ZbxDb $db, array $usrgrpids): array {
+        if (empty($usrgrpids)) {
+            return ['error' => null, 'rows' => []];
+        }
+        $in = implode(',', array_map('intval', $usrgrpids));
+
+        try {
+            $enabled = $this->enabledUserClause('u');
+            $res = $db->query(
+                "SELECT ugm.usrgrpid, u.userid, u.username,
+                        u.name, u.surname,
+                        cush.shift_id
+                   FROM users u
+                   INNER JOIN users_groups ugm ON ugm.userid = u.userid
+                   LEFT JOIN module_plantonistas_user_shift cush ON cush.userid = u.userid
+                  WHERE ugm.usrgrpid IN ($in)
+                    AND $enabled
+                  ORDER BY ugm.usrgrpid ASC,
+                           COALESCE(NULLIF(TRIM(CONCAT(COALESCE(u.name,''), ' ',
+                           COALESCE(u.surname,''))), ''), u.username) ASC"
+            );
+
+            $porGrupo = [];
+            while ($r = $res->fetch_assoc()) {
+                $porGrupo[(int)$r['usrgrpid']][] = $r;
+            }
+            foreach ($porGrupo as $gid => $linhas) {
+                $porGrupo[$gid] = $this->withFullName($linhas);
+            }
+
+            return ['error' => null, 'rows' => $porGrupo];
+        } catch (\Throwable $e) {
+            error_log('[plantonistas] listUsersByGroups() falhou: ' . $e->getMessage());
+
             return ['error' => $e->getMessage(), 'rows' => []];
         }
     }
@@ -1742,6 +1941,32 @@ trait TurnosReportBase {
     }
 
     /**
+     * Passa as notas já gravadas pela sanitização OUTRA VEZ, na exibição.
+     *
+     * A nota com notes_format='html' é impressa crua pela view e pelo PDF —
+     * confiando na sanitização feita no momento do save. Isso torna qualquer
+     * falha futura do sanitizeNoteHtml(), ou uma linha inserida por fora do
+     * módulo (import, correção manual no banco, ferramenta de terceiros), um
+     * XSS armazenado permanente: o HTML ruim já está na tabela e nada mais o
+     * examina.
+     *
+     * Sanitizar de novo aqui custa um parse de DOM por nota exibida e não
+     * altera nada no caminho normal (o HTML já sanitizado é idempotente sob a
+     * mesma allowlist). Nota antiga (`text`) não é tocada: ela continua sendo
+     * escapada na exibição, que é o comportamento certo para texto puro.
+     */
+    private function sanitizeNotesForDisplay(array $rows): array {
+        foreach ($rows as &$r) {
+            if (($r['notes_format'] ?? 'text') === 'html' && !empty($r['notes'])) {
+                $r['notes'] = $this->sanitizeNoteHtml((string) $r['notes'])['html'];
+            }
+        }
+        unset($r);
+
+        return $rows;
+    }
+
+    /**
      * Grava 1 linha em module_plantonistas_mentions por userid mencionado
      * válido (ativo + visível ao autor: mesmo grupo, ou autor é Super
      * Admin). Menção inválida é descartada em silêncio — não deve
@@ -1941,7 +2166,12 @@ trait TurnosReportBase {
         // `?? []` no lugar onde o PDF lê `$d['in_progress']` etc. já cobre a
         // leitura de documentos fechados antes desta mudança, então não foi
         // preciso migrar nada: só documentar o motivo do número ter subido.
-        return 2;
+        //
+        // v3 (2026-08-31): snapshot passou a gravar `truncated` (quais das 4
+        // tabelas de alarme bateram no teto de 50 linhas). Documento v1/v2 não
+        // tem a chave, e o `?? []` de quem lê trata a ausência como "não houve
+        // corte" — que é exatamente o que ele significava antes de existir.
+        return 3;
     }
 
     /**

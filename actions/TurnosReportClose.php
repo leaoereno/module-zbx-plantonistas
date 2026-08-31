@@ -114,6 +114,15 @@ class TurnosReportClose extends CController {
             $unacked     = $this->queryUnackedAlerts($db, $ts_start, $ts_end, $hostFilter);
             $in_progress = $this->queryInProgressAlerts($db, $ts_start, $ts_end, $hostFilter);
             $resolved    = $this->queryResolvedAlerts($db, $ts_start, $ts_end, $hostFilter);
+            // Mesmo corte da tela (ver capAlertRows()): o documento congela o
+            // que foi exibido, e a marca de truncamento vai junto para o PDF
+            // não afirmar "50" onde a tela dizia "50+".
+            $truncated   = [
+                'inherited'   => $this->capAlertRows($inherited),
+                'unacked'     => $this->capAlertRows($unacked),
+                'in_progress' => $this->capAlertRows($in_progress),
+                'resolved'    => $this->capAlertRows($resolved),
+            ];
             $actions     = $this->queryEventActions($db, array_merge(
                 array_column($inherited, 'eventid'),
                 array_column($unacked, 'eventid'),
@@ -133,6 +142,7 @@ class TurnosReportClose extends CController {
                                     ? implode(' / ', $ctx['display_groups'])
                                     : null,
                 'role_type'   => $roleType,
+                'truncated'   => $truncated,
                 // Contexto do autor: é o que permite decidir, na leitura, se
                 // o documento pode ser entregue a outra pessoa sem furar a
                 // segmentação da tela (ver canReadSnapshot()).

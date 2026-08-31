@@ -10,6 +10,9 @@ use CController,
 class PhonesSave extends CController {
 
     use AjaxRedirect;
+    // Escrita conferida (ver DbWrite): o upsert que falhava respondia
+    // "Telefone atualizado" sem nada ter sido gravado.
+    use DbWrite;
 
     protected function checkInput(): bool {
         $fields = [
@@ -73,21 +76,33 @@ class PhonesSave extends CController {
             }
         }
 
-        if (empty($phone)) {
-            DBexecute('DELETE FROM module_plantonistas_phones WHERE userid = ' . $userid);
-            $msg = 'Telefone removido.';
-        } else {
-            // Upsert numa ida ao banco, em vez do SELECT-then-UPDATE-or-INSERT
-            // que estava aqui: entre o SELECT e o INSERT havia uma janela em
-            // que outra requisição podia inserir a mesma linha, e o segundo
-            // INSERT estouraria a PK. É a mesma forma que o PhonesImport já
-            // usava; agora as duas telas gravam telefone do mesmo jeito.
-            DBexecute(
-                'INSERT INTO module_plantonistas_phones (userid, phone)' .
-                ' VALUES (' . $userid . ', ' . zbx_dbstr($phone) . ')' .
-                SqlFn::upsert('userid', ['phone'])
-            );
-            $msg = 'Telefone atualizado.';
+        try {
+            if (empty($phone)) {
+                $this->dbExec(
+                    'DELETE FROM module_plantonistas_phones WHERE userid = ' . $userid,
+                    'remover o telefone'
+                );
+                $msg = 'Telefone removido.';
+            }
+            else {
+                // Upsert numa ida ao banco, em vez do
+                // SELECT-then-UPDATE-or-INSERT que estava aqui: entre o SELECT
+                // e o INSERT havia uma janela em que outra requisição podia
+                // inserir a mesma linha, e o segundo INSERT estouraria a PK. É
+                // a mesma forma que o PhonesImport já usava; agora as duas
+                // telas gravam telefone do mesmo jeito.
+                $this->dbExec(
+                    'INSERT INTO module_plantonistas_phones (userid, phone)' .
+                    ' VALUES (' . $userid . ', ' . zbx_dbstr($phone) . ')' .
+                    SqlFn::upsert('userid', ['phone']),
+                    'gravar o telefone'
+                );
+                $msg = 'Telefone atualizado.';
+            }
+        } catch (\Throwable $e) {
+            // Mensagem do DbWrite: já é exibível e não carrega SQL.
+            $this->respondErr($redirect, $e->getMessage());
+            return;
         }
 
         $this->respondOk($redirect, $msg);
