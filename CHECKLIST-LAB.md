@@ -26,7 +26,7 @@ dependem disso.
 
 - [ ] `git pull` sem conflito
 - [ ] `systemctl status php-fpm` ativo
-- [ ] menu **Plantão** aparece com 6 itens
+- [ ] menu **Plantão** aparece com 7 itens
 
 ---
 
@@ -66,7 +66,7 @@ e o teste "passa" com stdout vazio — que é justamente o critério de aprovaç
 
 ---
 
-## 2. As 6 telas, nos DOIS temas
+## 2. As 7 telas, nos DOIS temas
 
 O visual foi unificado nesta rodada: as telas seguem o tema ativo do Zabbix em
 vez de terem cor fixa. **Teste no tema claro e no escuro** (Perfil do usuário →
@@ -251,6 +251,40 @@ o conserto pegou.
       continuam abrindo a lista geral filtrada por nome — isso não mudou, é
       esperado
 
+### Lista de repasses abertos/fechados (novo, 2026-08-31)
+
+Tela `plantonistas.report.list`. Nada aqui foi exercitado contra banco real —
+as duas consultas dependem de `ZbxDb` e não entram na suíte de testes puros.
+
+- [ ] Menu **Plantão → Repasses (abertos/fechados)** abre; o botão
+      **Repasses** no cabeçalho do Repasse leva ao mesmo lugar
+- [ ] Turno com nota no Diário de Bordo e **sem** fechamento aparece como
+      **Aberto**, com a barra âmbar na primeira coluna
+- [ ] Fechar esse turno e recarregar a lista → a linha vira **Fechado**, e
+      some da contagem de abertos
+- [ ] **Fechar o mesmo turno duas vezes** (exige Admin+) → duas linhas, a de
+      cima como `fechamento 2 de 2` e a de baixo `fechamento 1 de 2`. Esta é a
+      razão de a tela existir: antes só o último era alcançável
+- [ ] Turno **cadastrado** (id numérico) e turno **legado** (24h/manhã/tarde/
+      noite) no mesmo período → nenhum aparece duas vezes, uma como aberto e
+      outra como fechado. É onde a divergência de `shift_name` entre as duas
+      tabelas apareceria
+- [ ] **Renomear um turno** que já tem notas → a lista mostra UMA linha, com a
+      contagem de notas somada (não duas linhas com a contagem partida)
+- [ ] Filtro de datas e atalhos **7d / 30d / 90d** batem com o período pedido;
+      repetir o teste **depois das 21h** (fuso: `toISOString` deslizaria um dia)
+- [ ] Data inicial **maior** que a final → a tela corrige a ordem em vez de
+      voltar vazia
+- [ ] Filtro **Só fechados** / **Só abertos** / **Todos**
+- [ ] Clicar em **Abrir documento** → documento congelado, com a barra
+      **Lista de repasses** + **Baixar PDF**
+- [ ] **Baixar PDF** abre a impressão do navegador, e na pré-visualização a
+      barra de botões **não** aparece no papel
+- [ ] Clicar em **Ao vivo** / **Abrir repasse** → Repasse na data e turno certos
+- [ ] Com **usuário não Super Admin**: um fechamento feito por alguém de outro
+      grupo **não** aparece na lista (mesma regra que já esconde o PDF)
+- [ ] Nos **dois temas** (claro e escuro): pills, barra âmbar e botões legíveis
+
 ---
 
 ## 7. Gerenciar Turnos
@@ -274,7 +308,7 @@ Faça login com um usuário de cada tipo.
 - [ ] **User (1)**: menu Plantão mostra só **Visão Geral** e **Repasse**
 - [ ] User (1) colando a URL `zabbix.php?action=plantonistas.list` → **Acesso
       negado** (esconder o menu não basta; a action tem que recusar)
-- [ ] **Admin (2)**: vê as 6 telas, e em Telefones enxerga os **analistas
+- [ ] **Admin (2)**: vê as 7 telas, e em Telefones enxerga os **analistas
       (User)** do grupo dele. Este era o bug: com o filtro por papel, o Admin
       só via outros Admins — justamente escondendo quem se liga às 3h
 - [ ] **Super Admin (3)**: vê tudo
@@ -343,7 +377,7 @@ e o README já diz isso.
 
       (ou deixe o próprio `Module::init()` criar, abrindo uma tela com o
       módulo habilitado — é o caminho que a instalação normal usa)
-- [ ] as 6 telas abrem
+- [ ] as 7 telas abrem
 - [ ] salvar, remover e importar funcionam
 - [ ] os dois crons rodam com `DB_TYPE=pgsql`
 - [ ] "Fechar turno" funciona (usa `pg_try_advisory_lock`, que é caminho

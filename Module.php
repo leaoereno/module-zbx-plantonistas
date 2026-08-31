@@ -103,6 +103,19 @@ class Module extends CModule {
                         'plantonistas.report.notes.get',
                         'plantonistas.report.mentions.search',
                         'plantonistas.report.mentions.read',
+                    ])
+                )
+                // Lista de repasses (abertos e fechados). Mesmo nível de acesso
+                // do Repasse — o que cada um enxerga é decidido linha a linha,
+                // não na entrada.
+                //
+                // `plantonistas.report.pdf` saiu dos aliases do Repasse e veio
+                // para cá: o PDF é aberto em aba nova a partir das duas telas,
+                // e o alias serve para manter o item do menu marcado — deixar
+                // nas duas faria o Zabbix marcar dois itens ao mesmo tempo.
+                ->add((new CMenuItem(_('Repasses (abertos/fechados)')))
+                    ->setAction('plantonistas.report.list')
+                    ->setAliases([
                         'plantonistas.report.pdf',
                     ])
                 );

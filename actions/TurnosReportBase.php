@@ -2449,4 +2449,213 @@ trait TurnosReportBase {
             return null;
         }
     }
+
+    // ── Listagem de repasses (tela plantonistas.report.list) ─────────────
+    //
+    // O banner do Repasse mostra apenas o ÚLTIMO fechamento de (data, turno).
+    // Os anteriores continuavam gravados (o fechamento é append-only) mas não
+    // tinham por onde ser abertos — só quem soubesse o id na mão chegava neles.
+    // Estes dois métodos alimentam a tela de listagem, que é a porta de entrada
+    // para todo documento fechado e para os turnos que ainda não foram fechados.
+
+    /**
+     * Fechamentos visíveis para este usuário num intervalo de datas.
+     *
+     * UMA linha por documento, não por (data, turno): refechar cria outra linha
+     * e ela precisa aparecer — é justamente o histórico que a tela do Repasse
+     * escondia.
+     *
+     * A visibilidade é a MESMA do findClosedReport()/loadClosedReport()
+     * (canReadSnapshot(), sobre o contexto gravado no snapshot). Repetir a
+     * regra com um WHERE "parecido" abriria uma porta lateral para o dado que a
+     * tela protege — por isso o filtro continua sendo em PHP, sobre o JSON.
+     *
+     * `report_json` é LONGTEXT: para Super Admin, que lê qualquer fechamento, a
+     * coluna nem é trazida. Num intervalo largo seriam megabytes lidos do banco
+     * para decidir algo que canReadSnapshot() já decide na primeira linha.
+     *
+     * @param int $cap teto de linhas LIDAS — a tela é de consulta, não de
+     *        exportação, e um intervalo de anos não pode virar um SELECT sem
+     *        fim. O teto vale sobre o resultado bruto, ANTES do filtro de
+     *        visibilidade: num ambiente com muitos fechamentos, um usuário de
+     *        grupo pequeno pode receber lista curta (ou vazia) com o aviso de
+     *        corte. Filtrar antes exigiria decidir a visibilidade no SQL, que é
+     *        exatamente o que canReadSnapshot() não consegue expressar — por
+     *        isso o aviso na tela manda reduzir o intervalo.
+     * @return array{rows: array, truncated: bool, error: bool}
+     */
+    private function listClosedReports(ZbxDb $db, string $from, string $to,
+                                       int $userid, bool $isSuperadmin,
+                                       array $ctx = [], int $cap = 500): array {
+        $from = $this->validateDate($from);
+        $to   = $this->validateDate($to);
+        $cap  = max(1, $cap);
+
+        // Coluna de reserva para o ramo Super Admin: ele lê qualquer
+        // fechamento, então o JSON não é trazido — string vazia (e não NULL)
+        // porque quem lê faz json_decode do valor, e decodificar '' devolve
+        // null sem warning.
+        //
+        // O CAST existe só no PostgreSQL, onde literal solto é de tipo
+        // `unknown`. E é `AS TEXT` **apenas lá**: o CAST do MySQL não aceita
+        // TEXT como tipo de destino (a lista dele é CHAR, BINARY, DATE,
+        // DECIMAL…), então a mesma expressão nos dois bancos derrubaria a tela
+        // justamente para quem tem mais acesso, e só em produção — o lab pode
+        // estar em qualquer um dos dois.
+        $jsonCol = 'r.report_json';
+        if ($isSuperadmin) {
+            $jsonCol = SqlFn::isPgsql() ? "CAST('' AS TEXT) AS report_json" : "'' AS report_json";
+        }
+
+        // ORDER BY qualificado (r.generated_at), NUNCA pelo alias de saída: o
+        // alias é a string já formatada em d/m/Y H:i, e os dois bancos preferem
+        // o alias — a ordem viraria léxica e a numeração dos refechamentos
+        // sairia invertida. Mesma armadilha já documentada em queryNotes().
+        try {
+            $stmt = $db->prepare(
+                "SELECT r.id, " . SqlFn::dateIso('r.shift_date') . " AS shift_date,
+                        r.shift_name, r.generated_by, r.noc_context,
+                        " . SqlFn::dateTimeBr('r.generated_at') . " AS generated_at,
+                        $jsonCol,
+                        u.username, u.name, u.surname
+                   FROM module_plantonistas_shift_reports r
+                   LEFT JOIN users u ON u.userid = r.generated_by
+                  WHERE r.shift_date >= ? AND r.shift_date <= ?
+                  ORDER BY r.shift_date DESC, r.generated_at DESC, r.id DESC
+                  LIMIT " . ($cap + 1)
+            );
+            $stmt->bind_param('ss', $from, $to);
+            $stmt->execute();
+            $res = $stmt->get_result();
+
+            // Linha a linha, e NÃO fetch_all(): o JSON de um fechamento v2
+            // (MTTA + 4 tabelas de alarme + ações + top hosts + notas) passa
+            // fácil de 100 KB, e materializar 500 deles de uma vez estoura o
+            // memory_limit do PHP-FPM — falha fatal, sem log útil. Aqui cada
+            // linha é lida, testada e o JSON descartado antes da seguinte.
+            $visiveis  = [];
+            $lidas     = 0;
+            $truncated = false;
+
+            while (($r = $res->fetch_assoc()) !== null) {
+                // Lê-se uma linha além do teto só para saber que sobrou coisa
+                // fora da janela — ela não entra na tela, vira o aviso.
+                if ($lidas >= $cap) {
+                    $truncated = true;
+                    break;
+                }
+                $lidas++;
+
+                if (!$isSuperadmin) {
+                    $snap = json_decode((string) $r['report_json'], true);
+                    if (!$this->canReadSnapshot(is_array($snap) ? $snap : [], $userid, $isSuperadmin, $ctx)) {
+                        continue;
+                    }
+                }
+                unset($r['report_json']);
+
+                $r['closed_by_label'] = $this->formatUserLabel(
+                    $r['name'] ?? '', $r['surname'] ?? '', (string) ($r['username'] ?? '')
+                ) ?: 'usuário removido';
+
+                $visiveis[] = $r;
+            }
+
+            return ['rows' => $visiveis, 'truncated' => $truncated, 'error' => false];
+        } catch (\Throwable $e) {
+            // Aqui o fechamento NÃO é dado acessório: é o conteúdo da tela.
+            // Devolver [] em silêncio diria "nenhum repasse fechado" para uma
+            // consulta que quebrou — o mesmo engano que "Execute o cron" já
+            // custou caro. Quem chama distingue vazio de falha pelo 'error'.
+            error_log('[plantonistas] listClosedReports() falhou: ' . $e->getMessage());
+            return ['rows' => [], 'truncated' => false, 'error' => true];
+        }
+    }
+
+    /**
+     * Notas do Diário de Bordo agrupadas por (data, turno) no intervalo.
+     *
+     * Serve a dois propósitos na tela de listagem: é a coluna "Notas" das
+     * linhas fechadas E é o que define um turno ABERTO — turno com movimento
+     * (alguém escreveu no Diário de Bordo) e sem documento de fechamento.
+     *
+     * Por que a nota, e não o alarme: nota é barata (tabela do módulo, indexada
+     * por shift_date) e é o rastro de que ALGUÉM trabalhou aquele turno. Varrer
+     * `events` por trinta dias, turno a turno, para descobrir a mesma coisa
+     * custaria a consulta que já derrubou este módulo uma vez (PERF FIX v2.4.4).
+     *
+     * A chave é "data|código do turno", e o código exige atenção: as duas
+     * tabelas guardam coisas diferentes na coluna de mesmo nome. Em
+     * `shift_notes`, `shift_name` é o NOME legível ("Diurno") e o código está em
+     * `shift_id`; em `shift_reports`, `shift_name` é o próprio CÓDIGO ("24h" ou
+     * o id numérico). Comparar shift_name com shift_name nunca casaria um turno
+     * cadastrado — o aberto apareceria duplicado ao lado do fechado.
+     *
+     * @return array{rows: array<string, array>, error: bool}
+     */
+    private function countNotesByShift(ZbxDb $db, string $from, string $to,
+                                       int $userid, bool $isSuperadmin): array {
+        $from = $this->validateDate($from);
+        $to   = $this->validateDate($to);
+
+        // Mesma segmentação das notas na tela do Repasse: quem não é Super
+        // Admin só conta o que enxergaria abrindo o Diário de Bordo.
+        $escopo = $isSuperadmin
+            ? '1=1'
+            : $this->sameGroupExists($userid, 'csn.analyst_userid');
+
+        try {
+            // Chave do agrupamento: turno CADASTRADO agrupa só por shift_id, e
+            // o nome sai por MAX(). Agrupar pelo nome junto quebraria o turno
+            // RENOMEADO em duas linhas (as notas antigas guardam o nome velho),
+            // e aí a contagem sairia dividida e o "última nota" viria da linha
+            // que o banco devolvesse primeiro — que não é ordem nenhuma.
+            // Turno LEGADO não tem id, e ali o nome É o código: precisa
+            // continuar no agrupamento, senão 24h/manhã/tarde/noite do mesmo
+            // dia virariam uma linha só.
+            //
+            // O MAX() do nome devolve o maior em ordem alfabética, não o mais
+            // recente — e é de propósito: o que importa aqui é ser
+            // determinístico. O rótulo bom vem de queryShiftOptions() quando o
+            // turno ainda existe; este nome é a reserva de quando não existe.
+            $chaveNome = "CASE WHEN COALESCE(csn.shift_id, 0) > 0 THEN '' ELSE csn.shift_name END";
+
+            $stmt = $db->prepare(
+                "SELECT " . SqlFn::dateIso('csn.shift_date') . " AS shift_date,
+                        COALESCE(csn.shift_id, 0) AS shift_id,
+                        MAX(csn.shift_name) AS shift_name,
+                        COUNT(*) AS notas,
+                        " . SqlFn::dateTimeBr('MAX(csn.created_at)') . " AS last_note
+                   FROM module_plantonistas_shift_notes csn
+                  WHERE csn.shift_date >= ? AND csn.shift_date <= ?
+                    AND $escopo
+                  GROUP BY " . SqlFn::dateIso('csn.shift_date') . ",
+                           COALESCE(csn.shift_id, 0), $chaveNome
+                  ORDER BY 1 DESC"
+            );
+            $stmt->bind_param('ss', $from, $to);
+            $stmt->execute();
+
+            $out = [];
+            foreach ($stmt->get_result()->fetch_all() as $r) {
+                $shiftId = (int) $r['shift_id'];
+                // Turno cadastrado → o código é o id; legado → o próprio nome
+                // gravado ('24h', 'manha', …). Ver o bloco de comentário acima.
+                $code = $shiftId > 0 ? (string) $shiftId : (string) $r['shift_name'];
+
+                $out[$r['shift_date'] . '|' . $code] = [
+                    'date'       => $r['shift_date'],
+                    'code'       => $code,
+                    'shift_name' => (string) $r['shift_name'],
+                    'notas'      => (int) $r['notas'],
+                    'last_note'  => (string) $r['last_note'],
+                ];
+            }
+
+            return ['rows' => $out, 'error' => false];
+        } catch (\Throwable $e) {
+            error_log('[plantonistas] countNotesByShift() falhou: ' . $e->getMessage());
+            return ['rows' => [], 'error' => true];
+        }
+    }
 }

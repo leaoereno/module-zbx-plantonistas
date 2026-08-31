@@ -38,8 +38,9 @@ estático; se gráfico não renderizar atrás do F5, é isso.
 
 ### Arquitetura do módulo
 
-Menu **Plantão** (após Reports), 6 itens: Visão Geral, Escala, Histórico,
-Telefones, Repasse Plantão, Gerenciar Turnos (este só role type >= 2).
+Menu **Plantão** (após Reports), 7 itens: Visão Geral, Escala, Histórico,
+Telefones, Repasse Plantão, Repasses (abertos/fechados), Gerenciar Turnos
+(este só role type >= 2).
 
 Duas famílias de código coexistem de propósito (não unificar sem demanda):
 
@@ -205,7 +206,7 @@ Feito: repo GitHub criado; clone no **front02**; tabelas de produção verificad
 Não confirmado/pendente: backup dump concluído; clone + chown + restart php-fpm
 no **front01**; chown/restart no front02; Scan directory; desabilitar os 2
 módulos antigos; habilitar Plantonistas; atualizar crontab do presence tracker;
-conferir roles (Modules → Plantonistas); validar as 6 telas; remover pastas
+conferir roles (Modules → Plantonistas); validar as 7 telas; remover pastas
 antigas após estabilizar. Runbook completo no README.md.
 
 Atualização 2026-08-17: front01 rodando o código novo, tela de Repasse
@@ -2068,6 +2069,125 @@ colidir com `ev`/`t`/`f`/`i`/`h`/`p`/`ak` nem com o `ugx` do
 - Rodapé do Repasse dizia "v2.5.0" desde o fork; agora lê a versão do
   `manifest.json`.
 
+### Lista de repasses abertos e fechados (2026-08-31, v5.4.0)
+
+Pedido do Rafael: "ao clicar em ver repasse ou fechar plantão ele mantém o
+registro dos outros" — investigado e **não é bug de dado**. O fechamento
+sempre foi append-only e `findClosedReport()` sempre filtrou por (data,
+turno); o que existia era um buraco de navegação: o banner do Repasse mostra
+só o ÚLTIMO fechamento, e os anteriores ficavam sem porta — chegava neles
+quem soubesse o `report_id` na mão, na URL do PDF. Pediu então uma tela de
+lista, com o clique abrindo o documento e o download em PDF.
+
+Decisões respondidas por ele antes de implementar: "aberto" é turno **com
+atividade e sem fechamento** (não "todos os turnos dos últimos N dias"); a
+tela entra **no menu E num botão** do cabeçalho do Repasse; o clique abre o
+**documento congelado com botão de baixar**, não o PDF direto.
+
+**Atividade = nota no Diário de Bordo.** É o rastro barato de que alguém
+trabalhou aquele turno: tabela do módulo, indexada por `shift_date`. Varrer
+`events` por trinta dias, turno a turno, para descobrir a mesma coisa é
+exatamente a consulta que já derrubou este módulo uma vez (PERF FIX v2.4.4).
+Consequência aceita e escrita na tela: turno movimentado em que ninguém
+escreveu nada não aparece como aberto.
+
+**A armadilha das duas colunas de mesmo nome**, que era o jeito fácil de
+errar: `shift_notes.shift_name` guarda o NOME legível ("Diurno") e o código
+fica em `shift_id`; `shift_reports.shift_name` guarda o próprio CÓDIGO ("24h"
+ou o id numérico). Casar shift_name com shift_name nunca reconheceria um
+turno cadastrado — cada turno com fechamento apareceria DUPLICADO, uma vez
+como fechado e outra como aberto. A chave dos dois lados é montada como
+`data|código`, com o código derivado de `COALESCE(shift_id,0)`.
+
+Outras decisões:
+
+- **Uma linha por documento**, não por (data, turno): mostrar só o vigente
+  reproduziria o buraco que a tela existe para tapar. O refechamento aparece
+  como `refeito #N`, em cinza — está lá, mas não disputa atenção com o
+  vigente, que é o do topo.
+- **A visibilidade não ganhou regra nova.** Fechado passa pelo mesmo
+  `canReadSnapshot()` do PDF; aberto vem da contagem de notas, que já é
+  segmentada por grupo compartilhado. Tela de listagem é justamente onde uma
+  regra "parecida" viraria vazamento: a lista revelaria a EXISTÊNCIA do
+  documento que a tela de detalhe recusa a abrir.
+- **`report_json` não é lido para Super Admin.** É LONGTEXT, e num intervalo
+  largo seriam megabytes trazidos do banco só para decidir algo que
+  `canReadSnapshot()` decide na primeira linha, sem olhar o conteúdo.
+- **Teto de 500 fechamentos, lendo 501.** A linha extra não vai para a tela —
+  serve para saber se sobrou coisa fora da janela e avisar. Sem o aviso, a
+  lista cortada pareceria completa.
+- **Falha na contagem de notas tem aviso próprio**, separado do erro dos
+  fechados: é ela que DEFINE o turno aberto, então quebrar em silêncio faria
+  a tela dizer que está tudo fechado — a conclusão mais perigosa possível
+  para quem usa a lista para saber o que falta fechar.
+- **Intervalo invertido é corrigido, não obedecido**: `from > to` troca a
+  ordem. Devolver zero linhas mandaria procurar um repasse que existe.
+- **"Baixar PDF" é `window.print()`** — o módulo nunca gerou PDF no servidor;
+  quem produz o arquivo é o navegador, e o `<title>` já montado vira o nome
+  sugerido. A barra usa classe própria (`.rp-doc-bar`) e NÃO `.rp-nh-btn`:
+  aquela é escondida com `display:none!important` na folha do PDF, o que está
+  certo para filtro e "fechar turno" e seria absurdo para o botão de
+  imprimir. O que tira a barra do papel é o `@media print`.
+- **`plantonistas.report.pdf` saiu dos aliases do Repasse** e foi para o item
+  novo: alias serve para manter o item do menu marcado, e deixar nos dois
+  marcaria dois itens ao mesmo tempo.
+- Atalhos de 7/30/90 dias montam a data por `getFullYear/getMonth/getDate`,
+  nunca por `toISOString()` — em UTC-3, das 21h em diante o ISO devolve a
+  data de amanhã e o período inteiro desliza um dia. Sexto lugar do módulo em
+  que fuso ia morder.
+
+**Quatro defeitos achados na revisão da própria implementação**, todos do
+tipo que só aparece em produção:
+
+- **`CAST('' AS TEXT)` não existe no MySQL.** A coluna de reserva que evita
+  ler o JSON no ramo Super Admin nasceu com o CAST do PostgreSQL escrito para
+  os dois bancos — e o CAST do MySQL não aceita TEXT como destino (a lista
+  dele é CHAR, BINARY, DATE, DECIMAL…). A tela cairia **só para Super Admin**,
+  e só no banco de produção. Agora o CAST é emitido apenas no ramo PG.
+- **`<=>` no código do turno não é transitivo.** O código é `'24h'` ou o id do
+  turno em texto (`'9'`, `'12'`). No PHP 8, duas strings numéricas comparam
+  como NÚMERO e uma numérica contra uma não-numérica compara como TEXTO —
+  `'9' < '12' < '24h' < '9'` fecha um ciclo, e comparador não transitivo faz o
+  `usort` devolver ordem indefinida: os refechamentos deixariam de ficar logo
+  abaixo do vigente, que é a única pista de qual documento vale. Virou
+  `strcmp()`.
+- **Turno renomeado dividia a contagem de notas.** As notas guardam o nome
+  legível da época e o `shift_id`; agrupar por nome quebrava o mesmo turno em
+  duas linhas — contagem pela metade e um "última nota" vindo da linha que o
+  banco devolvesse primeiro. O agrupamento passou a ser por `shift_id`, com o
+  nome saindo por `MAX()`; o nome só continua no agrupamento quando não há id
+  (turno legado, onde o nome É o código — sem isso 24h/manhã/tarde/noite do
+  mesmo dia virariam uma linha só).
+- **`fetch_all()` de 500 snapshots estourava o `memory_limit`.** Um fechamento
+  v2 passa fácil de 100 KB de JSON, e o filtro de visibilidade precisa lê-lo
+  linha a linha. Materializar tudo de uma vez é falha fatal sem log útil —
+  agora é `fetch_assoc()` num laço, descartando o JSON a cada volta.
+
+Prefixo CSS `rpl-` para a tela nova, seguindo "um prefixo por tela". Entrou
+junto `.rp-alert-warn` (aviso âmbar): só existia `.rp-alert-danger`, e pintar
+de vermelho um aviso de lista cortada manda procurar um problema que não há.
+
+**Duas assimetrias conhecidas, aceitas e escritas na tela:**
+
+- **"Aberto" quer dizer "sem fechamento visível PARA VOCÊ".** As duas fontes
+  usam regras diferentes por construção: fechado exige que os grupos do autor
+  caibam nos do leitor (`canReadSnapshot()`), nota exige compartilhar ao menos
+  um grupo (`sameGroupExists()`). Autor em `[NOC, Redes]` e leitor em `[NOC]`:
+  o documento some da lista, as notas dos analistas de NOC continuam contando,
+  e a linha aparece como aberta. Um Admin nessa situação pode refechar sem
+  saber — a regra de "refechar exige Admin+" continua valendo, porque
+  `countClosedReports()` não filtra visibilidade de propósito. A tela avisa em
+  texto, para quem não é Super Admin.
+- **Turno REMOVIDO gera linha aberta fantasma.** `TurnosNotesSave::
+  resolveShiftName()` devolve `'24h'` quando o turno não é encontrado, então
+  nota escrita depois da remoção cai na chave `data|24h` enquanto o fechamento
+  segue em `data|12` — o turno aparece fechado e um "24h aberto" surge do
+  nada. Comportamento antigo do save de nota, não desta tela; a lista só é o
+  primeiro lugar onde ele fica visível. Ver Backlog.
+
+**Não validado no lab** — `listClosedReports()` e `countNotesByShift()`
+dependem de `ZbxDb $db` e não entram na suíte de testes puros. Ver Backlog.
+
 ### Backlog conhecido
 
 - ~~Salvar vínculo analista→turno em massa~~ — **resolvido em 2026-08-19**:
@@ -2121,6 +2241,19 @@ colidir com `ev`/`t`/`f`/`i`/`h`/`p`/`ak` nem com o `ugx` do
   executada** — o shell desta sessão ficou indisponível o tempo todo
   (infraestrutura do ambiente, não do módulo). Rodar `php tests/run.php`
   é o próximo passo antes de confiar nela como regressão.
+- `TurnosNotesSave::resolveShiftName()` devolve `'24h'` quando o turno
+  cadastrado não existe mais, em vez de preservar o vínculo. A nota escrita
+  depois da remoção do turno muda de "balde" e, na tela de lista, vira um
+  turno "24h aberto" que nunca existiu. Raro (exige remover turno com
+  movimento) mas é linha que convida a refechar por engano.
+- Tela de lista de repasses (2026-08-31, v5.3.0) não foi validada no lab.
+  Conferir com dados reais: turno cadastrado e turno legado na mesma lista
+  (é onde a divergência de `shift_name` entre as duas tabelas apareceria,
+  como turno duplicado em aberto+fechado); turno fechado duas vezes (deve
+  render duas linhas, `refeito #2` na de baixo); turno com nota e sem
+  fechamento (deve aparecer como aberto); e a leitura por um usuário
+  não-Super-Admin, para confirmar que o filtro de snapshot esconde da LISTA
+  o que já esconde do PDF.
 - Histórico de ações + Alarmes em Tratativas/Resolvidos (2026-08-28) não
   foram validados no lab — `queryInProgressAlerts()`/`queryResolvedAlerts()`/
   `queryEventActions()` dependem de `ZbxDb $db` (não é lógica pura, não entra
@@ -2187,7 +2320,8 @@ colidir com `ev`/`t`/`f`/`i`/`h`/`p`/`ak` nem com o `ugx` do
 
 - Actions novas: prefixo `plantonistas.`; tabelas novas: `module_plantonistas_`;
   registrar no manifest e, se página, no menu do Module.php.
-- Prefixo CSS por tela (`plt-`, `rp-`, `ov-`, `phn-`) — não misturar famílias.
+- Prefixo CSS por tela (`plt-`, `rp-`, `ov-`, `phn-`, `rpl-`) — não misturar
+  famílias.
 - Texto de UI e mensagens em PT-BR; logs com prefixo `[plantonistas]`.
 - Action nova que **escreve** no banco: nada de `disableCsrfValidation()`; o
   caller tem que ser POST e mandar `_csrf_token` gerado com
@@ -2221,6 +2355,6 @@ colidir com `ev`/`t`/`f`/`i`/`h`/`p`/`ak` nem com o `ugx` do
 - Tela em branco com menu ok = falta `"view"` no manifest. "Acesso negado"
   indevido = checkPermissions com query quebrada. Grupo "vazio" na tela de
   turnos = ver `[plantonistas]` no log antes de assumir que é dado.
-- Testar no lab-zbx antes de produção; validar as 6 telas após qualquer deploy.
+- Testar no lab-zbx antes de produção; validar as 7 telas após qualquer deploy.
 - Rollback da unificação: desabilitar Plantonistas ANTES de rodar
   `sql/rollback-to-old-modules.<banco>.sql`, depois reabilitar os antigos (README).

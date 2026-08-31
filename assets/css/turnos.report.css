@@ -747,6 +747,14 @@ select.rp-nh-input {
     border: 1px solid #ef9a9a;
 }
 
+/* Aviso (lista cortada pelo teto de linhas, por exemplo): é informação, não
+   falha — vermelho aqui mandaria procurar um problema que não existe. */
+.rp-alert-warn {
+    background: #fff8e1;
+    color: #8a5a00;
+    border: 1px solid #f0d18a;
+}
+
 /* ── Diário de Bordo ──────────────────────────────────── */
 .rp-note-form {
     margin-bottom: 16px;
@@ -1657,4 +1665,96 @@ body[class*="dark"] .rp-mention-opt:hover {
 body[class*="dark"] .rp-bulk-bar {
     background: rgba(255, 255, 255, 0.04) !important;
     border-color: rgba(255, 255, 255, 0.12) !important;
+}
+
+/* ── Lista de repasses (plantonistas.report.list) ───────────────────────
+   Prefixo próprio (rpl-) porque é uma tela nova da família repasse, não uma
+   variação de card existente — mesma convenção de "um prefixo por tela" que
+   já separa plt-, ov- e phn-. */
+.rpl-table td { vertical-align: middle; }
+
+/* Linha de turno ABERTO: barra lateral âmbar. É o único destaque de linha da
+   tabela, e é de propósito — aberto significa "falta fechar", que é a ação
+   que a tela quer provocar. */
+.rpl-row-open > td:first-child { box-shadow: inset 3px 0 0 #e6a23c; }
+
+.rpl-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 2px 9px;
+    border-radius: 11px;
+    font-size: 11px;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.rpl-pill-closed { background: #e6f4ea; color: #1f7a3f; border: 1px solid #b7dfc4; }
+.rpl-pill-open   { background: #fff4e0; color: #a35c00; border: 1px solid #f0d3a0; }
+/* Fechamento anterior do mesmo turno: presente na lista (o histórico é o
+   ponto da tela), mas visualmente em segundo plano — o vigente é o do topo. */
+.rpl-pill-old    { background: #eceff1; color: #607d8b; border: 1px solid #cfd8dc; }
+
+.rpl-ctx {
+    margin-left: 6px;
+    font-size: 11px;
+    color: var(--rp-text-muted);
+}
+
+.rpl-actions { white-space: nowrap; }
+
+.rpl-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 10px;
+    margin-right: 6px;
+    border-radius: 5px;
+    font-size: 12px;
+    font-weight: 600;
+    text-decoration: none;
+    border: 1px solid var(--rp-border, #e0e0e0);
+    /* !important pelo mesmo motivo já documentado em .rp-nh-btn: o tema nativo
+       do Zabbix define cor de link com especificidade maior que uma classe
+       simples, e sem isto o texto do botão fica azul sobre azul em repouso,
+       legível só no hover. */
+    color: var(--rp-text, #2b3c51) !important;
+    background: transparent;
+}
+
+.rpl-btn:hover { background: var(--rp-bg-soft); }
+
+.rpl-btn-primary {
+    background: var(--rp-blue) !important;
+    color: #fff !important;
+    border-color: transparent;
+}
+
+.rpl-btn-primary:hover { filter: brightness(1.08); }
+
+[data-theme="dark-theme"] .rpl-pill-closed,
+.theme-dark-blue .rpl-pill-closed {
+    background: #162616; color: #59db8f; border-color: #2a5a2a;
+}
+[data-theme="dark-theme"] .rpl-pill-open,
+.theme-dark-blue .rpl-pill-open {
+    background: #2e2200; color: #e99003; border-color: #7a4400;
+}
+[data-theme="dark-theme"] .rpl-pill-old,
+.theme-dark-blue .rpl-pill-old {
+    background: rgba(255, 255, 255, .06); color: #90a4ae; border-color: rgba(255, 255, 255, .14);
+}
+[data-theme="dark-theme"] .rp-alert-warn,
+.theme-dark-blue .rp-alert-warn {
+    background: #2e2200; color: #e9a733; border-color: #7a4400;
+}
+
+/* Fechamento vigente quando o turno tem mais de um documento. Verde-azulado,
+   não verde de "fechado": a pill de situação ao lado já é verde, e duas
+   verdes na mesma linha competiriam entre si em vez de informar. */
+.rpl-pill-cur { background: #e3f0fa; color: #12608f; border: 1px solid #b9d8ee; }
+
+[data-theme="dark-theme"] .rpl-pill-cur,
+.theme-dark-blue .rpl-pill-cur {
+    background: #1a2d4a; color: #7fb2e0; border-color: #2a4a6a;
 }
