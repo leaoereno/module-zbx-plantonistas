@@ -310,6 +310,10 @@ if ($rp_sev) {
         <button type="button" onclick="location.reload()" class="rp-nh-btn" style="background:var(--z-blue); padding:6px 10px;" title="Recarregar Relatório">
             <i class="fas fa-sync-alt"></i>
         </button>
+        <a href="zabbix.php?action=plantonistas.report.list" class="rp-nh-btn"
+           title="Todos os repasses, abertos e fechados — inclusive os fechamentos anteriores deste turno">
+            <i class="fas fa-folder-open"></i> Repasses
+        </a>
         <a href="zabbix.php?action=plantonistas.report.pdf&date=<?= $date ?>&shift=<?= $shift ?>&limit=<?= $data['limit'] ?>" target="_blank"
            class="rp-nh-btn" title="Gerar PDF (abre em nova aba)">
             <i class="fas fa-file-pdf"></i> Gerar PDF
@@ -345,6 +349,15 @@ if ($cr):
            title="Abre o documento congelado, com os números do fechamento">
             <i class="fas fa-file-contract"></i> Ver repasse fechado
         </a>
+        <?php if ((int)$cr['total'] > 1): ?>
+        <!-- O banner só alcança o ÚLTIMO fechamento. Com mais de um, os
+             anteriores existem e precisam de porta: a lista, filtrada no dia. -->
+        <a class="rp-nh-btn"
+           href="zabbix.php?action=plantonistas.report.list&from=<?= urlencode($date) ?>&to=<?= urlencode($date) ?>&status=fechados"
+           title="Todos os fechamentos deste dia">
+            <i class="fas fa-layer-group"></i> Ver os <?= (int)$cr['total'] ?>
+        </a>
+        <?php endif; ?>
     </div>
 </div>
 <?php endif; ?>

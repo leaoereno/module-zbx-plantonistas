@@ -410,6 +410,22 @@ class TurnosReportPdf extends CController {
             .rp-actd-body{font-size:10px;color:#2b3c51;margin:2px 0 0 2px;
                 padding-left:8px;border-left:2px solid #dfe4ea;
                 white-space:normal;word-break:break-word}
+
+            /* Barra de ação do documento — existe só na TELA.
+               Não reaproveita .rp-nh-btn de propósito: aquela classe é
+               escondida logo acima com display:none!important, o que é certo
+               para os controles do relatório ao vivo (filtro, fechar turno)
+               e errado para um botão cuja função é justamente imprimir.
+               O @media print abaixo é o que garante que ela não saia no papel
+               nem no PDF gerado pelo navegador. */
+            .rp-doc-bar{display:flex;gap:8px;justify-content:flex-end;
+                margin:0 0 14px;flex-wrap:wrap}
+            .rp-doc-btn{display:inline-flex;align-items:center;gap:6px;
+                padding:7px 14px;border-radius:5px;font-size:12px;font-weight:600;
+                text-decoration:none;cursor:pointer;border:1px solid #cfd8dc;
+                background:#fff;color:#2b3c51!important;font-family:inherit}
+            .rp-doc-btn-primary{background:#0275b8;border-color:#0275b8;color:#fff!important}
+            @media print{.rp-doc-bar{display:none!important}}
             @page{size:A4 landscape;margin:10mm}
         </style>';
         echo '<link rel="stylesheet" href="modules/module-zbx-plantonistas/assets/fontawesome/css/all.min.css"/>';
@@ -425,6 +441,28 @@ class TurnosReportPdf extends CController {
         }
         echo '<span class="rp-nh-sub">' . $this->shiftLabel($shift, $shiftOptions) . ' — ' . htmlspecialchars($this->formatDateBr($date)) . '</span>';
         echo '</div></div>';
+
+        // ── Barra de ação (só na tela) ───────────────────────────────────
+        //
+        // A página já era a versão imprimível, mas nada nela dizia isso: o
+        // usuário abria o documento e ficava sem saber como baixar. "Baixar
+        // PDF" é window.print() porque o módulo não gera PDF no servidor —
+        // quem produz o arquivo é o "Salvar como PDF" do próprio navegador,
+        // com o <title> definido acima virando o nome do arquivo sugerido.
+        // O @media print da folha acima tira esta barra do papel.
+        $voltar = $closedMeta !== null
+            ? 'zabbix.php?action=plantonistas.report.list'
+                . '&from=' . urlencode((string) $date)
+                . '&to=' . urlencode((string) $date)
+                . '&status=fechados'
+            : 'zabbix.php?action=plantonistas.report.list';
+
+        echo '<div class="rp-doc-bar">';
+        echo '<a class="rp-doc-btn" href="' . htmlspecialchars($voltar) . '">'
+           . '<i class="fas fa-list"></i> Lista de repasses</a>';
+        echo '<button type="button" class="rp-doc-btn rp-doc-btn-primary" onclick="window.print()">'
+           . '<i class="fas fa-file-pdf"></i> Baixar PDF</button>';
+        echo '</div>';
 
         // Faixa de documento fechado: deixa explícito que estes números são um
         // instantâneo, e de quem — o snapshot congela a visão de uma pessoa,

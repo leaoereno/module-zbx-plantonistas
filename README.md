@@ -4,7 +4,7 @@ Módulo único de gestão de plantonistas para Zabbix 7.0 LTS. Unifica os antigo
 `module-zbx-escala-plantao` (v3.0.1) e `module-zbx-repasse-plantao` (v2.5.0)
 em um só módulo, menu e repositório.
 
-**Versão:** 5.3.0 · **Autor:** Rafael M. A. Leão Ereno (MALE)
+**Versão:** 5.4.0 · **Autor:** Rafael M. A. Leão Ereno (MALE)
 Forks de origem: [pandradee/zabbix-escala-de-plantao](https://github.com/pandradee/zabbix-escala-de-plantao) e [JohnnyIver/zabbix-report-module](https://github.com/JohnnyIver/zabbix-report-module)
 
 **Requisitos:** Zabbix 7.0 LTS · PHP 8.0+ nos frontends · MySQL 5.7+/8.0,
@@ -50,6 +50,8 @@ MariaDB 10.x **ou** PostgreSQL.
   Telegram, webhook), além do banner na tela — opcional, por cron.
 - **Fechar turno** — o repasse vira documento imutável, com os números do
   momento em que o turno acabou (imune ao housekeeper).
+- **Lista de repasses** (abertos e fechados), com o histórico completo de
+  fechamentos — inclusive os refeitos, que o banner da tela não alcança.
 - **Export em PDF.**
 - **Rastreador de presença** por cron, sem depender da API do Zabbix.
 
@@ -70,6 +72,17 @@ MariaDB 10.x **ou** PostgreSQL.
 - **Rollback documentado** para os módulos antigos, sem perda de dados.
 
 ---
+
+## Novidades da 5.4.0
+
+| O quê | Precisa de configuração? |
+|---|---|
+| **Tela nova "Repasses (abertos/fechados)"** (`plantonistas.report.list`), no menu Plantão e num botão do cabeçalho do Repasse. Lista o período inteiro: uma linha por **documento fechado** — inclusive os refechamentos, que o banner do Repasse não alcançava porque só mostra o último — e uma linha por **turno aberto**, que é o turno com movimento no Diário de Bordo e sem fechamento. Filtro de datas, atalhos de 7/30/90 dias e filtro por situação | Não |
+| **Botão "Baixar PDF" dentro do documento**, ao lado de "Lista de repasses". A página do documento já era a versão imprimível, mas nada nela dizia como baixar; a barra some na impressão | Não |
+| Visibilidade **sem regra nova**: fechado passa pelo mesmo `canReadSnapshot()` do PDF (os grupos do autor têm que caber nos do leitor) e aberto vem da contagem de notas, já segmentada por grupo compartilhado | Não |
+
+Teto de 500 fechamentos por consulta: acima disso a tela avisa e pede um
+intervalo menor, em vez de varrer a tabela inteira.
 
 ## Novidades da 5.3.0
 
@@ -183,7 +196,7 @@ no `CLAUDE.md`; o estado por issue, no `ROADMAP.md`.
 2. Abrir qualquer tela uma vez — o `Module::init()` faz as migrações de schema
    (entre elas, `report_json` para `LONGTEXT`, se o schema antigo deixou
    `TEXT`).
-3. Conferir as 6 telas, exercitando salvar/remover/importar/escrever nota: o
+3. Conferir as 7 telas, exercitando salvar/remover/importar/escrever nota: o
    CSRF e a troca da camada de banco tocaram todas elas.
 4. Nos arquivos de cron, acrescentar `DB_TYPE` (`mysql` ou `pgsql`).
 5. Opcional: configurar o cron de escalonamento (#5) e a notificação de
@@ -200,14 +213,14 @@ detectado em tempo de execução (`$DB['TYPE']`, que o Zabbix já expõe em
 | Parte | MySQL / MariaDB | PostgreSQL |
 |---|---|---|
 | Criação e migração das tabelas (`Module::init()`) | ✅ | ✅ `Schema.php` gera o DDL por dialeto; `RENAME`, `ADD COLUMN`, `MODIFY`, índices e introspecção têm ramo próprio |
-| Consultas das 6 telas | ✅ | ✅ `SqlFn` gera `to_char`/`to_timestamp`/`EXTRACT`/`ON CONFLICT`; `insert_id` usa `lastval()` |
+| Consultas das 7 telas | ✅ | ✅ `SqlFn` gera `to_char`/`to_timestamp`/`EXTRACT`/`ON CONFLICT`; `insert_id` usa `lastval()` |
 | Armadilhas semânticas | ✅ | ✅ chaves do `INFORMATION_SCHEMA` em minúsculo, booleano `t`/`f`, comparação de texto com caixa, `SELECT DISTINCT` + `ORDER BY` |
 | Crons (`cron_presence_tracker`, `cron_sync_oncall`, `cron_notify_mentions`) | ✅ | ✅ PDO via `scripts/CliDb.php`, dialeto pela env `DB_TYPE` |
 | Homologação | ✅ **em produção** | ⚠️ **pendente** — o código está portado, mas ainda não foi executado contra um PostgreSQL de verdade |
 
 > ⚠️ **PostgreSQL: homologação pendente.** O suporte está implementado e é
 > exercitado pelo mesmo caminho de código do MySQL, mas nenhum lab PostgreSQL
-> validou as 6 telas e os crons até agora. Suba primeiro em ambiente de teste.
+> validou as 7 telas e os crons até agora. Suba primeiro em ambiente de teste.
 
 Nos crons, acrescente `DB_TYPE=pgsql` ao arquivo (o default é `mysql`, e a
 porta acompanha: 3306 ou 5432).
@@ -229,6 +242,7 @@ Tudo fica no menu **Plantão** (após Reports):
 | Histórico | `plantonistas.history` | Admin | Log de alterações da escala |
 | Telefones | `plantonistas.phones.list` | Admin | Telefone de contato por usuário, com máscara brasileira; export CSV e importação em massa |
 | Repasse Plantão | `plantonistas.report.view` | User | Relatório de repasse NOC (eventos, MTTA, presença, diário de bordo com editor rico e menções, fechar turno, PDF) |
+| Repasses (abertos/fechados) | `plantonistas.report.list` | User | Lista de todos os repasses do período: um item por documento fechado (inclusive os refechamentos) e um por turno ainda aberto. Abre o documento congelado com botão de baixar em PDF |
 | Gerenciar Turnos | `plantonistas.shifts.view` | Admin | Turnos por equipe + vínculo analista→turno |
 
 Usuário do tipo **User (1)** enxerga apenas **Visão Geral** e **Repasse
