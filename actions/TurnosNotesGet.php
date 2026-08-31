@@ -27,7 +27,15 @@ class TurnosNotesGet extends CController {
     }
 
     protected function checkInput(): bool {
-        return true;
+        // Era `return true` com leitura direta de $_GET/$_POST logo abaixo —
+        // a única action do módulo que não passava pelo validateInput() do
+        // Zabbix. Não havia caller, mas a rota existe no manifest e continua
+        // alcançável por URL: quem chega por ela agora passa pela mesma
+        // validação das outras.
+        return $this->validateInput([
+            'shift'      => 'string',
+            'shift_date' => 'string',
+        ]);
     }
 
     protected function checkPermissions(): bool {
@@ -42,8 +50,8 @@ class TurnosNotesGet extends CController {
     protected function doAction(): void {
         header('Content-Type: application/json; charset=utf-8');
 
-        $shift_raw = $_GET['shift']      ?? $_POST['shift']      ?? '24h';
-        $date_raw  = $_GET['shift_date'] ?? $_POST['shift_date'] ?? date('Y-m-d');
+        $shift_raw = $this->getInput('shift', '24h');
+        $date_raw  = $this->getInput('shift_date', date('Y-m-d'));
 
         // 'shift' aceita os códigos legados OU o ID numérico de um turno
         // cadastrado em module_plantonistas_shifts (v2.5+). O nome gravado na nota
@@ -73,7 +81,7 @@ class TurnosNotesGet extends CController {
             if ($isSuperAdmin) {
                 if ($filterByShiftId) {
                     $stmt = $db->prepare(
-                        "SELECT id, analyst_userid, analyst_name, notes, created_at
+                        "SELECT id, analyst_userid, analyst_name, notes, notes_format, created_at
                          FROM module_plantonistas_shift_notes
                          WHERE shift_date = ? AND shift_id = ?
                          ORDER BY created_at DESC"
@@ -81,7 +89,7 @@ class TurnosNotesGet extends CController {
                     $stmt->bind_param('si', $shift_date, $shiftIdInt);
                 } else {
                     $stmt = $db->prepare(
-                        "SELECT id, analyst_userid, analyst_name, notes, created_at
+                        "SELECT id, analyst_userid, analyst_name, notes, notes_format, created_at
                          FROM module_plantonistas_shift_notes
                          WHERE shift_date = ? AND shift_name = ?
                          ORDER BY created_at DESC"
@@ -93,7 +101,7 @@ class TurnosNotesGet extends CController {
                 if ($filterByShiftId) {
                     $stmt = $db->prepare(
                         "SELECT DISTINCT csn.id, csn.analyst_userid, csn.analyst_name,
-                             csn.notes, csn.created_at
+                             csn.notes, csn.notes_format, csn.created_at
                          FROM module_plantonistas_shift_notes csn
                          WHERE csn.shift_date = ? AND csn.shift_id = ?
                            AND $sameGroup
@@ -103,7 +111,7 @@ class TurnosNotesGet extends CController {
                 } else {
                     $stmt = $db->prepare(
                         "SELECT DISTINCT csn.id, csn.analyst_userid, csn.analyst_name,
-                             csn.notes, csn.created_at
+                             csn.notes, csn.notes_format, csn.created_at
                          FROM module_plantonistas_shift_notes csn
                          WHERE csn.shift_date = ? AND csn.shift_name = ?
                            AND $sameGroup
@@ -116,12 +124,18 @@ class TurnosNotesGet extends CController {
             $stmt->execute();
             echo json_encode([
                 'success' => true,
-                'notes'   => $stmt->get_result()->fetch_all(),
+                // notes_format no SELECT + sanitização na leitura: sem eles
+                // esta rota devolveria o HTML da nota cru, sem o consumidor
+                // ter como saber se era texto puro ou HTML (ver
+                // sanitizeNotesForDisplay()).
+                'notes'   => $this->sanitizeNotesForDisplay($stmt->get_result()->fetch_all()),
             ]);
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
+            // Mensagem fixa: a exceção do ZbxDb traz o SQL inteiro.
+            error_log('[plantonistas] notes.get falhou: ' . $e->getMessage());
             echo json_encode([
                 'success' => false,
-                'message' => 'Erro: ' . $e->getMessage(),
+                'message' => 'Erro ao consultar as notas. Confira o log do PHP-FPM.',
                 'notes'   => [],
             ]);
         }

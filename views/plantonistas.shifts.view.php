@@ -85,8 +85,8 @@ include __DIR__ . '/_theme.php';
                 <?php foreach ($g['shifts'] as $s): ?>
                 <tr data-shift-id="<?= (int)$s['id'] ?>">
                     <td><input type="text" class="rp-input rp-shift-name" value="<?= htmlspecialchars($s['name']) ?>" maxlength="50"></td>
-                    <td><input type="time" class="rp-input rp-shift-start" value="<?= substr($s['start_time'],0,5) ?>"></td>
-                    <td><input type="time" class="rp-input rp-shift-end" value="<?= substr($s['end_time'],0,5) ?>"></td>
+                    <td><input type="time" class="rp-input rp-shift-start" value="<?= htmlspecialchars(substr($s['start_time'],0,5)) ?>"></td>
+                    <td><input type="time" class="rp-input rp-shift-end" value="<?= htmlspecialchars(substr($s['end_time'],0,5)) ?>"></td>
                     <td><input type="number" class="rp-input rp-shift-order" style="width:60px" value="<?= (int)$s['sort_order'] ?>"></td>
                     <td class="td-center">
                         <button type="button" class="rp-action rp-action-save rp-shift-save" title="Salvar"><i class="fas fa-save"></i></button>
@@ -118,7 +118,7 @@ include __DIR__ . '/_theme.php';
             <div class="rp-alert rp-alert-danger">
                 <i class="fas fa-exclamation-triangle"></i>
                 Não consegui carregar os analistas desta equipe (erro de consulta, não é que o grupo esteja vazio).
-                Verifique o log do PHP-FPM (<code>[plantonistas] listUsersByGroup()</code>).
+                Verifique o log do PHP-FPM (<code>[plantonistas] listUsersByGroups()</code>).
             </div>
         <?php elseif (empty($g['users'])): ?>
             <div class="rp-empty">Nenhum usuário Zabbix neste grupo.</div>

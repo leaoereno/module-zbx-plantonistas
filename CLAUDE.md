@@ -2,7 +2,7 @@
 
 Contexto, memória e instruções de trabalho deste projeto. Portável: serve como
 knowledge de projeto no Claude.ai e como contexto de agente ao trabalhar neste
-repositório. Atualizado em 2026-08-28.
+repositório. Atualizado em 2026-08-31.
 
 ---
 
@@ -1949,6 +1949,125 @@ filtrado por nome) **não foram tocados** — filtrar pelo nome do host/trigger
 pra ver o histórico dele é o uso pretendido ali; só a lupa (que promete "ver
 ESTE alarme") estava linkando errado.
 
+### Auditoria de queries e escrita (2026-08-31)
+
+Revisão criteriosa do módulo inteiro (queries, código, segurança). O que foi
+corrigido, do mais grave para o mais simples:
+
+**A multiplicação de linhas do JOIN `functions`/`items` inflava 5 números da
+tela.** A cadeia `events → triggers → functions → items → hosts` devolve UMA
+LINHA POR ITEM referenciado na expressão da trigger — uma trigger com 2 itens
+duplica cada evento. `queryTopHosts`/`queryTopTriggers` já usavam
+`COUNT(DISTINCT ev.eventid)`; cinco pontos não usavam:
+
+- `queryEventTotals`: os recortes vinham de `SUM(CASE ...)` enquanto o total
+  vinha de `COUNT(DISTINCT ...)` — crítico + médio + baixo somavam MAIS que o
+  total, no mesmo SELECT.
+- `querySeverityDistribution`: `COUNT(*)` — a rosca mostrava mais eventos que
+  o KPI ao lado.
+- `queryCalendarHeatmap`: célula com mais "críticos" que eventos no dia.
+- `queryMTTA`: `COUNT(*)` contava o mesmo ACK várias vezes e o `AVG` ficava
+  ponderado pelo número de itens da trigger — evento de trigger com 3 itens
+  pesava 3× no MTTA do analista, e o MTTA global herdava a distorção.
+- `queryMttaTimeline`: mesma ponderação indevida no gráfico por hora.
+
+Correção: `COUNT(DISTINCT ... CASE ...)` nos agregados e `SELECT DISTINCT` na
+subconsulta do MTTA (as colunas são idênticas nas linhas duplicadas, então o
+DISTINCT colapsa exatamente o excesso). O `queryMttaTimeline` virou média sobre
+subconsulta com DISTINCT. **Regra que fica: agregado sobre essa cadeia de JOIN
+sempre por evento distinto, nunca `COUNT(*)`/`SUM(CASE ...)`.**
+
+**`LIMIT 50` virava o valor do KPI.** As 4 tabelas de alarme cortam em 50
+linhas e a tela imprimia `count()` desse array no card: 213 alertas sem ACK
+apareciam como "50", sem nada indicando corte. Agora a consulta pede 51 (a
+linha a mais é sonda), `capAlertRows()` corta e devolve se houve truncamento, e
+a tela/PDF mostram "50+" com aviso no rodapé da tabela. Sem consulta extra de
+COUNT. O snapshot de Fechar Turno grava a marca junto (`snapshotVersion()` foi
+para 3; documento v1/v2 sem a chave = "não houve corte").
+
+**Escrita não conferida na família escala.** `\DBexecute()` devolve `false` em
+erro — não lança — e o retorno era ignorado em `PlantaoSave`, `PlantaoDelete`,
+`PlantaoImport` e `PhonesSave`. INSERT recusado pelo banco seguia como sucesso:
+"30 linhas importadas" sem nada gravado, "Plantão removido" com a linha ainda no
+calendário. E o `try/catch` em volta dos laços nunca disparava, porque não havia
+exceção. Novo trait `actions/DbWrite.php` com duas formas: `dbExec()` lança
+(dado principal) e `dbExecOptional()` só loga (histórico — acessório não derruba
+o principal). A mensagem da exceção é **fixa e sem SQL**, porque o import a ecoa
+na lista de avisos da tela.
+
+**`WHERE al.eventid IN (...) OR al.p_eventid IN (...)`** virou `UNION ALL` de
+dois ramos, cada um filtrando por uma coluna: o OR entre colunas diferentes
+tirava o índice e varria a tabela `alerts`. O segundo ramo exclui o que o
+primeiro já trouxe, e a âncora do evento sai pronta do SQL.
+
+**`MYSQLI_ASSOC` no `cron_sync_oncall`** (3 ocorrências): o script fala com o
+banco pelo `CliDb`, que é PDO. Resolver a constante exige `ext-mysqli` — em
+host sem ela (o frontend PostgreSQL, que é a razão de o CliDb existir) o PHP 8
+aborta com "Undefined constant" e o cron morre. O argumento era ignorado.
+
+**Migração de schema rodava em TODA requisição do frontend.** O `init()` é
+chamado a cada página do Zabbix, para todo usuário, e disparava 3 consultas ao
+`INFORMATION_SCHEMA` (tabelas, colunas, índices) — que em MariaDB obrigam a
+abrir a definição de cada tabela. Agora há marcador em `sys_get_temp_dir()`
+com banco+servidor+`SCHEMA_VERSION` no nome, revalidado a cada 24 h (rede de
+segurança para tabela removida na mão ou restore por cima). **Ao adicionar
+migração nova, subir `Module::SCHEMA_VERSION`** — é ele que invalida o
+marcador. Perder o marcador é inofensivo: a migração é idempotente.
+
+**N+1 em Gerenciar Turnos.** A tela chamava `listShiftsByGroup()` e
+`listUsersByGroup()` dentro do laço de equipes — Super Admin com 40 grupos
+abria 80 consultas. Novos `listShiftsByGroups()`/`listUsersByGroups()` fazem
+duas, para todas as equipes. Os métodos no singular continuam no trait (sem
+chamador hoje) para não mexer em contrato que outra tela possa vir a usar.
+
+**`host_filter` com dezenas de KB de ids.** `resolveUserContext()`
+materializava TODOS os hostids visíveis num `IN (...)` literal, repetido em ~10
+consultas por carga de página. Agora a leitura tem `LIMIT 501`: até 500 hosts o
+filtro continua sendo a lista literal de sempre (plano conhecido, testado em
+produção), acima disso vira subconsulta com aliases `_hf` (escolhidos para não
+colidir com `ev`/`t`/`f`/`i`/`h`/`p`/`ak` nem com o `ugx` do
+`enabledUserClause()`). "Sem rights → sem filtro" continua igual.
+
+**Segurança:**
+
+- `TurnosNotesSave`/`TurnosNotesGet` ecoavam `$e->getMessage()` para o
+  navegador — e a `\RuntimeException` do `ZbxDb` carrega o **SQL montado
+  inteiro**, com o texto da nota dentro. Mensagem fixa + `error_log`, como o
+  `TurnosReportClose` já fazia.
+- `TurnosNotesGet` era a única action sem `validateInput()` (lia `$_GET`/
+  `$_POST` direto). Passou a validar como as outras. Continua sem chamador,
+  mas a rota existe no manifest e é alcançável por URL.
+- Nota com `notes_format='html'` é impressa crua confiando na sanitização
+  feita no save — qualquer falha futura do `sanitizeNoteHtml()`, ou uma linha
+  inserida por fora do módulo, viraria XSS armazenado permanente. Novo
+  `sanitizeNotesForDisplay()` sanitiza de novo na exibição (`queryNotes()`,
+  `TurnosNotesGet` e o caminho de snapshot do PDF).
+- `CURRENT_FULLNAME` saía por `addslashes()`, que não trata quebra de linha
+  nem U+2028/U+2029 (fim de instrução em JS). Virou `json_encode()` com
+  `JSON_HEX_TAG`, como todas as outras constantes do mesmo bloco.
+
+**Outros:**
+
+- Relatório e PDF não tinham tratamento nenhum nas consultas principais: falha
+  virava 500 mudo. Agora cai no mesmo aviso já usado para "sem conexão", com a
+  tela renderizando vazia e `[plantonistas]` no log.
+- `queryNotes()` era o último ponto com `prepare()`/`bind_param()` FORA do try.
+- Corrida no upsert da escala: `PlantaoSave`/`PlantaoImport` faziam
+  SELECT-then-INSERT contra a unique key `uniq_group_day_shift`. Agora usam
+  `SqlFn::upsert()`, como `PhonesSave`/`PhonesImport`.
+- `PlantaoList` passava `''` no lugar do username ao montar o rótulo do
+  técnico (mesmo defeito corrigido para o reserva em 2026-08-24) e a view
+  tapava o buraco repetindo a regra com `CONCAT` cru. Corrigido na origem, e o
+  remendo saiu da view.
+- Fallback de aba do XLSX **nunca funcionou**: montava `xl/worksheets/rId1.xml`
+  a partir do ID de RELACIONAMENTO. O caminho real está em
+  `xl/_rels/workbook.xml.rels` — planilha com a primeira aba fora do nome
+  padrão voltava "formato não reconhecido".
+- Busca da sessão do dia no cron de presença usava
+  `CAST(session_start AS DATE) = ...`, que não usa o índice; virou intervalo.
+- Rodapé do Repasse dizia "v2.5.0" desde o fork; agora lê a versão do
+  `manifest.json`.
+
 ### Backlog conhecido
 
 - ~~Salvar vínculo analista→turno em massa~~ — **resolvido em 2026-08-19**:
@@ -1982,6 +2101,21 @@ ESTE alarme") estava linkando errado.
   na ausência dos dois, gera unidades systemd (`.service`+`.timer`) —
   cobre os três crons do módulo (presença, sincronismo de escalonamento,
   fila de menções), não só o de presença.
+- **Pendências da auditoria de 2026-08-31** (não aplicadas por exigirem
+  regeneração dos `sql/*.sql`, que precisa de `php scripts/gen_schema.php`):
+  guardar `author_is_superadmin`/`author_group_ids` em colunas próprias de
+  `module_plantonistas_shift_reports` — hoje `findClosedReport()` lê o
+  `report_json` (LONGTEXT) de TODOS os fechamentos da data só para decidir
+  visibilidade e depois descarta; e índice composto `(shift_date, shift_id)`
+  em `module_plantonistas_shift_notes`, que hoje só tem `(shift_date,
+  shift_name)` e `(shift_id)` enquanto o caminho normal filtra pelos dois.
+  Editar `Schema.php` sem regenerar os `sql/*.sql` cria divergência entre
+  instalação nova e migrada — o defeito que o gerador existe para evitar.
+- Também da mesma auditoria, **não** aplicado por ser refactor grande sem ganho
+  funcional: extrair um renderizador único para as 4 tabelas de alarme. Hoje o
+  `TurnosReportPdf` reimplementa ~500 linhas da view e a própria view repete o
+  mesmo `<tr>` quatro vezes — uma coluna nova é seis edições. Vale fazer, mas
+  numa janela em que dê para revalidar tela e PDF lado a lado.
 - Suíte de testes automatizados (`tests/`) foi escrita e revisada
   manualmente linha a linha contra o código-fonte, mas **ainda não foi
   executada** — o shell desta sessão ficou indisponível o tempo todo

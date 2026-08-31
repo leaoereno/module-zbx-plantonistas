@@ -77,85 +77,130 @@ class TurnosReportView extends CController {
             'noite' => 'Noite (19h–07h)',
         ];
 
+        // Pacote vazio: usado quando a conexão não abre E quando uma consulta
+        // do relatório falha (ver o catch no fim do else). A tela renderiza
+        // inteira, com o aviso no topo, em vez de devolver 500 mudo.
+        $empty_pack = [
+            'mtta' => [], 'inherited' => [], 'unacked' => [], 'top_hosts' => [],
+            'top_triggers' => [], 'totals' => ['total'=>0,'critical'=>0,'average'=>0,'low'=>0],
+            'presence' => [], 'notes' => [], 'mtta_timeline' => [],
+            'sev_dist' => [], 'calendar' => [], 'shift_analysts' => [], 'limit' => $limitStr,
+            'pending_mentions' => [],
+            'mention_history'  => [],
+            'in_progress' => [], 'resolved' => [], 'actions' => [],
+            'truncated' => [], 'alert_limit' => $this->alertRowLimit(),
+        ];
+        $ctx_vazio = [
+            'is_superadmin' => false, 'host_filter' => '', 'display_groups' => [],
+            'group_ids' => [], 'role_type' => 1, 'userid' => $current_userid,
+        ];
+
         if (!$db) {
             $db_error     = 'Erro ao conectar ao banco de dados.';
-            $ctx          = ['is_superadmin' => false, 'host_filter' => '', 'display_groups' => [], 'group_ids' => [], 'role_type' => 1, 'userid' => $current_userid];
+            $ctx          = $ctx_vazio;
             $shift        = array_key_exists($shiftRaw, $legacyOptions) ? $shiftRaw : '24h';
             $shiftOptions = $legacyOptions;
             [$ts_start, $ts_end] = [strtotime("$date 00:00:00"), strtotime("$date 23:59:59")];
-            $data_pack = [
-                'mtta' => [], 'inherited' => [], 'unacked' => [], 'top_hosts' => [],
-                'top_triggers' => [], 'totals' => ['total'=>0,'critical'=>0,'average'=>0,'low'=>0],
-                'presence' => [], 'notes' => [], 'mtta_timeline' => [],
-                'sev_dist' => [], 'calendar' => [], 'shift_analysts' => [], 'limit' => $limitStr,
-                'pending_mentions' => [],
-                'mention_history'  => [],
-                'in_progress' => [], 'resolved' => [], 'actions' => [],
-            ];
+            $data_pack     = $empty_pack;
             $closed_report = null;
         } else {
-            $ctx          = $this->resolveUserContext($db, $current_userid);
-            $hostFilter   = $ctx['host_filter'];
-            $isSuperadmin = $ctx['is_superadmin'];
-            $roleType     = $ctx['role_type'];
+            try {
+                $ctx          = $this->resolveUserContext($db, $current_userid);
+                $hostFilter   = $ctx['host_filter'];
+                $isSuperadmin = $ctx['is_superadmin'];
+                $roleType     = $ctx['role_type'];
 
-            $shiftOptionsFull = $this->queryShiftOptions($db, $ctx);
-            $shiftOptions     = $shiftOptionsFull['options'];
-            $shift            = $this->normalizeShift($shiftRaw, $shiftOptions);
+                $shiftOptionsFull = $this->queryShiftOptions($db, $ctx);
+                $shiftOptions     = $shiftOptionsFull['options'];
+                $shift            = $this->normalizeShift($shiftRaw, $shiftOptions);
 
-            [$ts_start, $ts_end] = $this->getShiftBounds($db, $date, $shift);
+                [$ts_start, $ts_end] = $this->getShiftBounds($db, $date, $shift);
 
-            $severities = $this->querySeverities($db);
+                $severities = $this->querySeverities($db);
 
-            $mtta = $this->queryMTTA($db, $ts_start, $ts_end, $hostFilter);
-            $mtta = $this->restrictMttaByRole($mtta, $roleType, $current_userid);
+                $mtta = $this->queryMTTA($db, $ts_start, $ts_end, $hostFilter);
+                $mtta = $this->restrictMttaByRole($mtta, $roleType, $current_userid);
 
-            $shiftAnalysts = ctype_digit($shift) ? $this->queryShiftAnalysts($db, (int)$shift) : [];
+                $shiftAnalysts = ctype_digit($shift) ? $this->queryShiftAnalysts($db, (int)$shift) : [];
 
-            $inherited   = $this->queryInheritedAlerts($db, $ts_start, $hostFilter);
-            $unacked     = $this->queryUnackedAlerts($db, $ts_start, $ts_end, $hostFilter);
-            $in_progress = $this->queryInProgressAlerts($db, $ts_start, $ts_end, $hostFilter);
-            $resolved    = $this->queryResolvedAlerts($db, $ts_start, $ts_end, $hostFilter);
-            // Coluna Ações das 4 tabelas acima: uma query só, pelos eventids
-            // já trazidos por elas (ver queryEventActions()).
-            $actions = $this->queryEventActions($db, array_merge(
-                array_column($inherited, 'eventid'),
-                array_column($unacked, 'eventid'),
-                array_column($in_progress, 'eventid'),
-                array_column($resolved, 'eventid')
-            ));
+                $inherited   = $this->queryInheritedAlerts($db, $ts_start, $hostFilter);
+                $unacked     = $this->queryUnackedAlerts($db, $ts_start, $ts_end, $hostFilter);
+                $in_progress = $this->queryInProgressAlerts($db, $ts_start, $ts_end, $hostFilter);
+                $resolved    = $this->queryResolvedAlerts($db, $ts_start, $ts_end, $hostFilter);
 
-            $data_pack = [
-                'mtta'           => $mtta,
-                'inherited'      => $inherited,
-                'unacked'        => $unacked,
-                'in_progress'    => $in_progress,
-                'resolved'       => $resolved,
-                'actions'        => $actions,
-                'top_hosts'      => $this->queryTopHosts($db, $ts_start, $ts_end, $limit, $hostFilter),
-                'top_triggers'   => $this->queryTopTriggers($db, $ts_start, $ts_end, $limit, $hostFilter),
-                'totals'         => $this->queryEventTotals($db, $ts_start, $ts_end, $hostFilter),
-                'presence'       => $this->queryPresence($db, $ts_start, $ts_end, $current_userid, $isSuperadmin),
-                'notes'          => $this->queryNotes($db, $date, $shift, $current_userid, $isSuperadmin),
-                'mtta_timeline'  => $this->queryMttaTimeline($db, $ts_start, $ts_end, $hostFilter),
-                'sev_dist'       => $this->querySeverityDistribution($db, $ts_start, $ts_end, $hostFilter),
-                'calendar'       => $this->queryCalendarHeatmap($db, $hostFilter),
-                'shift_analysts' => $shiftAnalysts,
-                'limit'          => $limitStr,
-                // Menções [user] pendentes pro banner de notificação — busca
-                // antes de fechar a conexão, some da tela quando o usuário
-                // marca como lida (ver plantonistas.report.mentions.read).
-                'pending_mentions' => $this->queryPendingMentions($db, $current_userid),
-                // Histórico: pendentes E lidas. O banner é notificação e some
-                // quando a pessoa marca como lida; sem o histórico, achar de
-                // novo a nota de ontem não tinha por onde.
-                'mention_history'  => $this->queryMentionHistory($db, $current_userid),
-            ];
-            // Fechamento do turno (issue #2): só o metadado, para a tela saber
-            // que existe e por quem. O documento em si é renderizado pelo PDF,
-            // a partir do snapshot — a tela continua consultando ao vivo.
-            $closed_report = $this->findClosedReport($db, $date, $shift, $current_userid, $isSuperadmin, $ctx);
-            $db->close();
+                // Corte no teto ANTES de montar as ações: a linha-sonda a mais não
+                // deve virar consulta de ação nem entrar na contagem do KPI (ver
+                // capAlertRows()).
+                $truncated = [
+                    'inherited'   => $this->capAlertRows($inherited),
+                    'unacked'     => $this->capAlertRows($unacked),
+                    'in_progress' => $this->capAlertRows($in_progress),
+                    'resolved'    => $this->capAlertRows($resolved),
+                ];
+
+                // Coluna Ações das 4 tabelas acima: uma query só, pelos eventids
+                // já trazidos por elas (ver queryEventActions()).
+                $actions = $this->queryEventActions($db, array_merge(
+                    array_column($inherited, 'eventid'),
+                    array_column($unacked, 'eventid'),
+                    array_column($in_progress, 'eventid'),
+                    array_column($resolved, 'eventid')
+                ));
+
+                $data_pack = [
+                    'mtta'           => $mtta,
+                    'inherited'      => $inherited,
+                    'unacked'        => $unacked,
+                    'in_progress'    => $in_progress,
+                    'resolved'       => $resolved,
+                    'actions'        => $actions,
+                    // Quais das 4 tabelas bateram no teto de linhas — a view usa
+                    // para escrever "50+" no KPI em vez de mentir "50".
+                    'truncated'      => $truncated,
+                    'alert_limit'    => $this->alertRowLimit(),
+                    'top_hosts'      => $this->queryTopHosts($db, $ts_start, $ts_end, $limit, $hostFilter),
+                    'top_triggers'   => $this->queryTopTriggers($db, $ts_start, $ts_end, $limit, $hostFilter),
+                    'totals'         => $this->queryEventTotals($db, $ts_start, $ts_end, $hostFilter),
+                    'presence'       => $this->queryPresence($db, $ts_start, $ts_end, $current_userid, $isSuperadmin),
+                    'notes'          => $this->queryNotes($db, $date, $shift, $current_userid, $isSuperadmin),
+                    'mtta_timeline'  => $this->queryMttaTimeline($db, $ts_start, $ts_end, $hostFilter),
+                    'sev_dist'       => $this->querySeverityDistribution($db, $ts_start, $ts_end, $hostFilter),
+                    'calendar'       => $this->queryCalendarHeatmap($db, $hostFilter),
+                    'shift_analysts' => $shiftAnalysts,
+                    'limit'          => $limitStr,
+                    // Menções [user] pendentes pro banner de notificação — busca
+                    // antes de fechar a conexão, some da tela quando o usuário
+                    // marca como lida (ver plantonistas.report.mentions.read).
+                    'pending_mentions' => $this->queryPendingMentions($db, $current_userid),
+                    // Histórico: pendentes E lidas. O banner é notificação e some
+                    // quando a pessoa marca como lida; sem o histórico, achar de
+                    // novo a nota de ontem não tinha por onde.
+                    'mention_history'  => $this->queryMentionHistory($db, $current_userid),
+                ];
+                // Fechamento do turno (issue #2): só o metadado, para a tela saber
+                // que existe e por quem. O documento em si é renderizado pelo PDF,
+                // a partir do snapshot — a tela continua consultando ao vivo.
+                $closed_report = $this->findClosedReport($db, $date, $shift, $current_userid, $isSuperadmin, $ctx);
+                $db->close();
+            } catch (\Throwable $e) {
+                // As consultas principais do relatório (MTTA, alarmes, top hosts,
+                // totais) não tinham tratamento nenhum: o ZbxDb lança quando a
+                // camada do Zabbix devolve false, a exceção subia e o usuário via
+                // erro 500 — sem mensagem na tela e sem nada no log do módulo.
+                // Agora a falha vira o mesmo aviso já usado para "sem conexão",
+                // com o relatório renderizando vazio em vez de não renderizar.
+                error_log('[plantonistas] report.view falhou: ' . $e->getMessage());
+
+                $db_error      = 'Não foi possível carregar os dados do relatório.'
+                               . ' Confira o log do PHP-FPM.';
+                $ctx           = $ctx ?? $ctx_vazio;
+                $shift         = $shift ?? (array_key_exists($shiftRaw, $legacyOptions) ? $shiftRaw : '24h');
+                $shiftOptions  = $shiftOptions ?? $legacyOptions;
+                $ts_start      = $ts_start ?? strtotime("$date 00:00:00");
+                $ts_end        = $ts_end   ?? strtotime("$date 23:59:59");
+                $data_pack     = $empty_pack;
+                $closed_report = null;
+            }
         }
 
         // Label de exibição: nomes dos grupos de usuário Zabbix

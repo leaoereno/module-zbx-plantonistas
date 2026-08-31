@@ -104,19 +104,8 @@ trait SpreadsheetReader {
 
         $sheet1 = $zip->getFromName('xl/worksheets/sheet1.xml');
         if ($sheet1 === false) {
-            $wbXml = $zip->getFromName('xl/workbook.xml');
-            if ($wbXml !== false) {
-                $wb = @simplexml_load_string($wbXml);
-                if ($wb) {
-                    $wb->registerXPathNamespace(
-                        'r', 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
-                    );
-                    $rid = (string) ($wb->sheets->sheet[0]->attributes('r', true)['id'] ?? '');
-                    if ($rid) {
-                        $sheet1 = $zip->getFromName("xl/worksheets/$rid.xml");
-                    }
-                }
-            }
+            $sheet1 = $this->readFirstSheetByRels($zip);
+
             if ($sheet1 === false) {
                 $zip->close();
                 return null;
@@ -165,6 +154,65 @@ trait SpreadsheetReader {
         }
 
         return $rows ?: null;
+    }
+
+    /**
+     * Primeira planilha quando ela NÃO se chama `sheet1.xml`.
+     *
+     * O `workbook.xml` referencia a aba por um ID de RELACIONAMENTO (`rId1`),
+     * não pelo nome do arquivo — o caminho real está em
+     * `xl/_rels/workbook.xml.rels`, no atributo Target do mesmo Id. A versão
+     * anterior montava `xl/worksheets/rId1.xml`, que não existe em arquivo
+     * nenhum: o fallback nunca funcionou, e planilha com a primeira aba fora
+     * do nome padrão (export do LibreOffice/Sheets, ou aba renomeada e
+     * regravada) voltava "arquivo vazio ou formato não reconhecido".
+     *
+     * @return string|false conteúdo XML da planilha, ou false
+     */
+    private function readFirstSheetByRels(\ZipArchive $zip) {
+        $wbXml = $zip->getFromName('xl/workbook.xml');
+        if ($wbXml === false) {
+            return false;
+        }
+
+        $wb = @simplexml_load_string($wbXml);
+        if (!$wb || !isset($wb->sheets->sheet[0])) {
+            return false;
+        }
+
+        $rid = (string) ($wb->sheets->sheet[0]->attributes(
+            'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
+        )['id'] ?? '');
+        if ($rid === '') {
+            return false;
+        }
+
+        $relsXml = $zip->getFromName('xl/_rels/workbook.xml.rels');
+        if ($relsXml === false) {
+            return false;
+        }
+
+        $rels = @simplexml_load_string($relsXml);
+        if (!$rels) {
+            return false;
+        }
+
+        foreach ($rels->Relationship as $rel) {
+            if ((string) $rel['Id'] !== $rid) {
+                continue;
+            }
+
+            // Target vem relativo à pasta xl/ ("worksheets/sheet2.xml") e, em
+            // alguns geradores, absoluto ("/xl/worksheets/sheet2.xml").
+            $alvo = ltrim((string) $rel['Target'], '/');
+            if (strpos($alvo, 'xl/') !== 0) {
+                $alvo = 'xl/' . $alvo;
+            }
+
+            return $zip->getFromName($alvo);
+        }
+
+        return false;
     }
 
     /** "AB" → 27. Referência de coluna do Excel é base-26 sem zero. */

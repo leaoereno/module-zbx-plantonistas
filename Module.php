@@ -17,7 +17,10 @@ use Zabbix\Core\CModule,
  * Migração de dados: na primeira carga com o módulo habilitado, init()
  * renomeia as tabelas antigas para os nomes novos via RENAME TABLE
  * (operação atômica de metadados no MariaDB — sem cópia de dados).
- * Tudo idempotente: rodar a cada request não tem efeito depois de migrado.
+ * Tudo idempotente: rodar de novo não tem efeito depois de migrado. O init()
+ * é chamado a cada requisição do frontend, mas a migração em si é guardada por
+ * um marcador (ver schemaMarkerPath()) para não consultar o INFORMATION_SCHEMA
+ * em toda página do Zabbix.
  *
  * Não existe hook onInstall/onUninstall no core do Zabbix (CModuleManager
  * só chama init()) — por isso o provisionamento inteiro vive aqui, e este
@@ -35,6 +38,18 @@ class Module extends CModule {
         'custom_user_sessions'    => 'module_plantonistas_user_sessions',
         'custom_shift_reports'    => 'module_plantonistas_shift_reports',
     ];
+
+    /**
+     * Versão do provisionamento de schema.
+     *
+     * **Subir este número sempre que migrateSchema()/migrateColumns()/Schema
+     * ganharem alguma coisa nova** — é ele que decide se a migração precisa
+     * rodar de novo num frontend que já a executou (ver migrateSchema()).
+     */
+    private const SCHEMA_VERSION = 1;
+
+    /** Revalidação periódica do marcador (1 dia). Ver migrateSchema(). */
+    private const SCHEMA_RECHECK_SEC = 86400;
 
     public function init(): void {
         try {
@@ -117,7 +132,55 @@ class Module extends CModule {
 
     // ── Migração idempotente ────────────────────────────────────────────────
 
+    /**
+     * Arquivo-marca de "a migração desta versão já rodou neste frontend".
+     *
+     * O init() é chamado em TODA requisição do frontend, para todo usuário, e
+     * a migração disparava três consultas ao INFORMATION_SCHEMA a cada uma
+     * (tabelas, colunas e índices) — em MariaDB isso obriga o servidor a abrir
+     * a definição de cada tabela. Custo permanente, em toda página do Zabbix,
+     * para um trabalho que só tem o que fazer uma vez na vida da versão.
+     *
+     * O marcador é um arquivo no diretório temporário, e não uma linha no
+     * banco, porque ler o banco é justamente o que se quer evitar. As
+     * consequências de perdê-lo são todas benignas: a migração é idempotente,
+     * então na pior das hipóteses ela roda de novo (limpeza do /tmp, reboot,
+     * PrivateTmp do systemd, cada nó do balanceador com o seu). O nome carrega
+     * banco + servidor + versão, então trocar de banco ou subir a
+     * SCHEMA_VERSION invalida o marcador sozinho.
+     */
+    private function schemaMarkerPath(): string {
+        $chave = md5(implode('|', [
+            (string) ($GLOBALS['DB']['SERVER']   ?? ''),
+            (string) ($GLOBALS['DB']['PORT']     ?? ''),
+            (string) ($GLOBALS['DB']['DATABASE'] ?? ''),
+            (string) ($GLOBALS['DB']['TYPE']     ?? ''),
+            (string) self::SCHEMA_VERSION,
+        ]));
+
+        return rtrim(sys_get_temp_dir(), '/') . '/plantonistas-schema-' . $chave . '.ok';
+    }
+
     private function migrateSchema(): void {
+        $marca = $this->schemaMarkerPath();
+
+        // A revalidação diária é rede de segurança para o que o marcador não
+        // tem como saber: tabela removida na mão, restore de backup por cima,
+        // schema mexido fora do módulo. Uma vez por dia por nó, contra uma vez
+        // por requisição, é diferença de ordem de grandeza — e a migração é
+        // idempotente, então revalidar não custa nada além das consultas.
+        if (is_file($marca) && (time() - (int) @filemtime($marca)) < self::SCHEMA_RECHECK_SEC) {
+            return;
+        }
+
+        $this->runSchemaMigration();
+
+        // Só marca depois de tudo ter passado: exceção no meio deixa o
+        // marcador de fora e a próxima requisição tenta de novo.
+        @touch($marca);
+    }
+
+    private function runSchemaMigration(): void {
         $exists = $this->existingTables(array_merge(
             array_keys(self::TABLE_RENAMES),
             array_values(self::TABLE_RENAMES)

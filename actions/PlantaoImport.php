@@ -16,6 +16,10 @@ class PlantaoImport extends CController {
     // aceitava só CSV.
     use SpreadsheetReader;
 
+    // Escrita conferida (ver DbWrite): sem isso o \DBexecute() que falhava
+    // passava batido e a linha entrava na conta de "importadas".
+    use DbWrite;
+
     protected function checkInput(): bool { return true; }
 
     public function checkPermissions(): bool {
@@ -216,10 +220,11 @@ class PlantaoImport extends CController {
                 ));
 
                 if ($existing) {
-                    DBexecute(
+                    $this->dbExec(
                         'UPDATE module_plantonistas_schedule SET userid=' . $userid . $r_set .
                         ', created_by=' . $current_userid . ', created_at=' . time() .
-                        ' WHERE scheduleid=' . (int)$existing['scheduleid']
+                        ' WHERE scheduleid=' . (int)$existing['scheduleid'],
+                        'atualizar a escala de ' . $date
                     );
                     $this->logHistory(
                         (int)$existing['scheduleid'], $usrgrpid, $date, 'update',
@@ -229,12 +234,19 @@ class PlantaoImport extends CController {
                         $current_userid, $shift_id, $shift_name
                     );
                 } else {
-                    DBexecute(
+                    // Upsert: fecha a janela entre o SELECT acima e este
+                    // INSERT (dois operadores importando ao mesmo tempo, ou a
+                    // mesma data repetida na planilha) — a unique key
+                    // uniq_group_day_shift faria o segundo INSERT estourar.
+                    $this->dbExec(
                         'INSERT INTO module_plantonistas_schedule' .
                         ' (usrgrpid,userid,userid_reserva,schedule_date,shift_id,created_by,created_at)' .
                         ' VALUES (' . $usrgrpid . ',' . $userid . ',' . $r_sql . ',' .
                         zbx_dbstr($date) . ',' . $shift_id . ',' .
-                        $current_userid . ',' . time() . ')'
+                        $current_userid . ',' . time() . ')' .
+                        SqlFn::upsert('usrgrpid, schedule_date, shift_id',
+                            ['userid', 'userid_reserva', 'created_by', 'created_at']),
+                        'gravar a escala de ' . $date
                     );
                     $new_id = DBfetch(DBselect(
                         'SELECT scheduleid FROM module_plantonistas_schedule' . $where_dia
@@ -420,7 +432,8 @@ class PlantaoImport extends CController {
         ?int $reserva_old, ?int $reserva_new,
         int $changed_by, int $shift_id = 0, ?string $shift_name = null
     ): void {
-        DBexecute(
+        // Acessório: histórico que falha não invalida a linha já importada.
+        $this->dbExecOptional(
             'INSERT INTO module_plantonistas_history' .
             ' (scheduleid,usrgrpid,schedule_date,shift_id,shift_name,action,' .
             '  userid_old,userid_new,reserva_old,reserva_new,changed_by,changed_at)' .
@@ -437,7 +450,8 @@ class PlantaoImport extends CController {
                 ($reserva_old !== null ? $reserva_old : 'NULL') . ',' .
                 ($reserva_new !== null ? $reserva_new : 'NULL') . ',' .
                 $changed_by . ',' . time() .
-            ')'
+            ')',
+            'registrar o histórico da escala de ' . $date
         );
     }
 

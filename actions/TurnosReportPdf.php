@@ -52,6 +52,23 @@ class TurnosReportPdf extends CController {
         return [0=>'notclass',1=>'info',2=>'warn',3=>'avg',4=>'high',5=>'disaster'][$s] ?? 'info';
     }
 
+    /**
+     * Contagem exibível de uma das 4 tabelas de alarme: "50+" quando a
+     * consulta bateu no teto de linhas. Mesma regra da tela ao vivo — ver
+     * rp_alertCount() na view e TurnosReportBase::capAlertRows().
+     */
+    private function alertCount(array $rows, array $truncated, string $chave): string {
+        return count($rows) . (!empty($truncated[$chave]) ? '+' : '');
+    }
+
+    /** Aviso impresso abaixo da tabela quando houve corte. */
+    private function alertCut(array $truncated, string $chave): string {
+        return empty($truncated[$chave])
+            ? ''
+            : '<div class="rp-muted" style="padding:6px 12px">Exibindo as ' . $this->alertRowLimit()
+              . ' primeiras linhas: há mais alarmes neste recorte do que a tabela mostra.</div>';
+    }
+
     private function fmtDuration(int $s): string {
         if ($s < 60)   return $s . 's';
         if ($s < 3600) return floor($s / 60) . 'm ' . ($s % 60) . 's';
@@ -260,11 +277,17 @@ class TurnosReportPdf extends CController {
             // TurnosReportBase::snapshotVersion()).
             $in_progress  = $d['in_progress']  ?? [];
             $resolved     = $d['resolved']     ?? [];
+            // Fechamento gravado antes desta mudança não tem a chave: sem
+            // marca de corte, é o mesmo que dizer "não houve corte".
+            $truncated    = $snap['truncated'] ?? [];
             $actions      = $d['actions']      ?? [];
             $top_hosts    = $d['top_hosts']    ?? [];
             $top_triggers = $d['top_triggers'] ?? [];
             $totals       = $d['totals']       ?? ['total'=>0,'critical'=>0,'average'=>0,'low'=>0];
-            $notes        = $d['notes']        ?? [];
+            // Sanitiza também o que veio do snapshot: as notas foram gravadas
+            // no JSON no dia do fechamento e não passam mais por queryNotes()
+            // na leitura (ver sanitizeNotesForDisplay()).
+            $notes        = $this->sanitizeNotesForDisplay($d['notes'] ?? []);
             // Recalculado sobre o MTTA já restrito: usar o global_mtta do
             // snapshot devolveria um agregado de todos os analistas no KPI.
             $gmtta        = $this->calcGlobalMTTA($mtta);
@@ -273,42 +296,61 @@ class TurnosReportPdf extends CController {
             $user_fn      = $snap['closed_by'] ?? ($closedMeta['closed_by_label'] ?? '');
         }
         else {
-            $hostFilter   = $nocCtx['host_filter'];
-            $roleType     = $nocCtx['role_type'];
-            $nocLabel     = !empty($nocCtx['display_groups'])
-                            ? implode(' / ', $nocCtx['display_groups'])
-                            : null;
+            // As consultas do relatório não tinham tratamento: falha em
+            // qualquer uma delas subia como exceção e o PDF virava erro 500 em
+            // branco, sem mensagem e sem rastro no log do módulo.
+            try {
+                $hostFilter   = $nocCtx['host_filter'];
+                $roleType     = $nocCtx['role_type'];
+                $nocLabel     = !empty($nocCtx['display_groups'])
+                                ? implode(' / ', $nocCtx['display_groups'])
+                                : null;
 
-            $shiftOptions = $this->queryShiftOptions($db, $nocCtx)['options'];
-            $shift        = $this->normalizeShift($shiftRaw, $shiftOptions);
+                $shiftOptions = $this->queryShiftOptions($db, $nocCtx)['options'];
+                $shift        = $this->normalizeShift($shiftRaw, $shiftOptions);
 
-            [$ts_start, $ts_end] = $this->getShiftBounds($db, $date, $shift);
+                [$ts_start, $ts_end] = $this->getShiftBounds($db, $date, $shift);
 
-            $mtta         = $this->queryMTTA($db, $ts_start, $ts_end, $hostFilter);
-            $mtta         = $this->restrictMttaByRole($mtta, $roleType, $userid);
-            $inherited    = $this->queryInheritedAlerts($db, $ts_start, $hostFilter);
-            $unacked      = $this->queryUnackedAlerts($db, $ts_start, $ts_end, $hostFilter);
-            $in_progress  = $this->queryInProgressAlerts($db, $ts_start, $ts_end, $hostFilter);
-            $resolved     = $this->queryResolvedAlerts($db, $ts_start, $ts_end, $hostFilter);
-            $actions      = $this->queryEventActions($db, array_merge(
-                array_column($inherited, 'eventid'),
-                array_column($unacked, 'eventid'),
-                array_column($in_progress, 'eventid'),
-                array_column($resolved, 'eventid')
-            ));
-            $top_hosts    = $this->queryTopHosts($db, $ts_start, $ts_end, $limit, $hostFilter);
-            $top_triggers = $this->queryTopTriggers($db, $ts_start, $ts_end, $limit, $hostFilter);
-            $totals       = $this->queryEventTotals($db, $ts_start, $ts_end, $hostFilter);
-            $notes        = $this->queryNotes($db, $date, $shift, $userid, $isSuperadmin);
-            $severities   = $this->querySeverities($db);
-            $db->close();
+                $mtta         = $this->queryMTTA($db, $ts_start, $ts_end, $hostFilter);
+                $mtta         = $this->restrictMttaByRole($mtta, $roleType, $userid);
+                $inherited    = $this->queryInheritedAlerts($db, $ts_start, $hostFilter);
+                $unacked      = $this->queryUnackedAlerts($db, $ts_start, $ts_end, $hostFilter);
+                $in_progress  = $this->queryInProgressAlerts($db, $ts_start, $ts_end, $hostFilter);
+                $resolved     = $this->queryResolvedAlerts($db, $ts_start, $ts_end, $hostFilter);
+                // Corte no teto antes das ações e dos KPIs (ver capAlertRows()).
+                $truncated    = [
+                    'inherited'   => $this->capAlertRows($inherited),
+                    'unacked'     => $this->capAlertRows($unacked),
+                    'in_progress' => $this->capAlertRows($in_progress),
+                    'resolved'    => $this->capAlertRows($resolved),
+                ];
+                $actions      = $this->queryEventActions($db, array_merge(
+                    array_column($inherited, 'eventid'),
+                    array_column($unacked, 'eventid'),
+                    array_column($in_progress, 'eventid'),
+                    array_column($resolved, 'eventid')
+                ));
+                $top_hosts    = $this->queryTopHosts($db, $ts_start, $ts_end, $limit, $hostFilter);
+                $top_triggers = $this->queryTopTriggers($db, $ts_start, $ts_end, $limit, $hostFilter);
+                $totals       = $this->queryEventTotals($db, $ts_start, $ts_end, $hostFilter);
+                $notes        = $this->queryNotes($db, $date, $shift, $userid, $isSuperadmin);
+                $severities   = $this->querySeverities($db);
+                $db->close();
 
-            $gmtta   = $this->calcGlobalMTTA($mtta);
-            $user_fn = $this->formatUserLabel(
-                CWebUser::$data['name']    ?? '',
-                CWebUser::$data['surname'] ?? '',
-                CWebUser::$data['username'] ?? 'Admin'
-            );
+                $gmtta   = $this->calcGlobalMTTA($mtta);
+                $user_fn = $this->formatUserLabel(
+                    CWebUser::$data['name']    ?? '',
+                    CWebUser::$data['surname'] ?? '',
+                    CWebUser::$data['username'] ?? 'Admin'
+                );
+            } catch (\Throwable $e) {
+                // Mensagem fixa, sem $e->getMessage(): a exceção do ZbxDb carrega
+                // o SQL inteiro e isto aqui é saída para o navegador.
+                error_log('[plantonistas] report.pdf falhou: ' . $e->getMessage());
+                echo '<h1>Não foi possível gerar o relatório.</h1>';
+                echo '<p>Uma das consultas ao banco falhou. Confira o log do PHP-FPM.</p>';
+                die();
+            }
         }
 
         $isUserRole = ($roleType < 2);
@@ -405,10 +447,10 @@ class TurnosReportPdf extends CController {
         echo '<div class="rp-kpi"><div class="rp-kpi-icon bg-blue"><i class="fas fa-bell"></i></div><div class="rp-kpi-body"><span class="rp-kpi-val">' . (int)$totals['total'] . '</span><span class="rp-kpi-label">Total Eventos</span></div></div>';
         echo '<div class="rp-kpi"><div class="rp-kpi-icon bg-red"><i class="fas fa-fire"></i></div><div class="rp-kpi-body"><span class="rp-kpi-val">' . (int)$totals['critical'] . '</span><span class="rp-kpi-label">Críticos</span></div></div>';
         echo '<div class="rp-kpi"><div class="rp-kpi-icon bg-orange"><i class="fas fa-clock"></i></div><div class="rp-kpi-body"><span class="rp-kpi-val">' . $this->fmtDuration($gmtta) . '</span><span class="rp-kpi-label">' . $mttaKpiLabel . '</span></div></div>';
-        echo '<div class="rp-kpi"><div class="rp-kpi-icon bg-yellow"><i class="fas fa-exclamation-circle"></i></div><div class="rp-kpi-body"><span class="rp-kpi-val">' . count($unacked) . '</span><span class="rp-kpi-label">Sem ACK</span></div></div>';
-        echo '<div class="rp-kpi"><div class="rp-kpi-icon bg-purple"><i class="fas fa-history"></i></div><div class="rp-kpi-body"><span class="rp-kpi-val">' . count($inherited) . '</span><span class="rp-kpi-label">Herdados</span></div></div>';
-        echo '<div class="rp-kpi"><div class="rp-kpi-icon bg-blue"><i class="fas fa-tools"></i></div><div class="rp-kpi-body"><span class="rp-kpi-val">' . count($in_progress) . '</span><span class="rp-kpi-label">Em Tratativas</span></div></div>';
-        echo '<div class="rp-kpi"><div class="rp-kpi-icon bg-green"><i class="fas fa-check-circle"></i></div><div class="rp-kpi-body"><span class="rp-kpi-val">' . count($resolved) . '</span><span class="rp-kpi-label">Resolvidos</span></div></div>';
+        echo '<div class="rp-kpi"><div class="rp-kpi-icon bg-yellow"><i class="fas fa-exclamation-circle"></i></div><div class="rp-kpi-body"><span class="rp-kpi-val">' . $this->alertCount($unacked, $truncated, 'unacked') . '</span><span class="rp-kpi-label">Sem ACK</span></div></div>';
+        echo '<div class="rp-kpi"><div class="rp-kpi-icon bg-purple"><i class="fas fa-history"></i></div><div class="rp-kpi-body"><span class="rp-kpi-val">' . $this->alertCount($inherited, $truncated, 'inherited') . '</span><span class="rp-kpi-label">Herdados</span></div></div>';
+        echo '<div class="rp-kpi"><div class="rp-kpi-icon bg-blue"><i class="fas fa-tools"></i></div><div class="rp-kpi-body"><span class="rp-kpi-val">' . $this->alertCount($in_progress, $truncated, 'in_progress') . '</span><span class="rp-kpi-label">Em Tratativas</span></div></div>';
+        echo '<div class="rp-kpi"><div class="rp-kpi-icon bg-green"><i class="fas fa-check-circle"></i></div><div class="rp-kpi-body"><span class="rp-kpi-val">' . $this->alertCount($resolved, $truncated, 'resolved') . '</span><span class="rp-kpi-label">Resolvidos</span></div></div>';
         echo '</div>';
 
         // MTTA por analista
@@ -441,7 +483,7 @@ class TurnosReportPdf extends CController {
                 // 6 colunas: Início, Severidade, Host, Problema, Idade, Ações.
                 echo $this->actionDetailRow($actions[(int)$r['eventid']]['items'] ?? [], $severities, 6, $sc);
             }
-            echo '</tbody></table></div>';
+            echo '</tbody></table>' . $this->alertCut($truncated, 'inherited') . '</div>';
         }
 
         // Alertas sem ACK
@@ -460,7 +502,7 @@ class TurnosReportPdf extends CController {
                 echo '<td>' . $this->actionChips($actions[(int)$r['eventid']]['items'] ?? [], $severities) . '</td></tr>';
                 echo $this->actionDetailRow($actions[(int)$r['eventid']]['items'] ?? [], $severities, $acDetailCols, $sc);
             }
-            echo '</tbody></table></div>';
+            echo '</tbody></table>' . $this->alertCut($truncated, 'unacked') . '</div>';
         }
 
         // Alarmes em tratativas
@@ -479,7 +521,7 @@ class TurnosReportPdf extends CController {
                 echo '<td>' . $this->actionChips($actions[(int)$r['eventid']]['items'] ?? [], $severities) . '</td></tr>';
                 echo $this->actionDetailRow($actions[(int)$r['eventid']]['items'] ?? [], $severities, $acDetailCols, $sc);
             }
-            echo '</tbody></table></div>';
+            echo '</tbody></table>' . $this->alertCut($truncated, 'in_progress') . '</div>';
         }
 
         // Alarmes resolvidos (histórico do turno)
@@ -501,7 +543,7 @@ class TurnosReportPdf extends CController {
                 // Resolvido por, Ações.
                 echo $this->actionDetailRow($actions[(int)$r['eventid']]['items'] ?? [], $severities, 7, $sc);
             }
-            echo '</tbody></table></div>';
+            echo '</tbody></table>' . $this->alertCut($truncated, 'resolved') . '</div>';
         }
 
         // Top Hosts + Top Triggers

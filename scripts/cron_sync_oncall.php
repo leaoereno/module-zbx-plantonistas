@@ -274,7 +274,13 @@ try {
     );
     $stmt->bind_param('s', $since);
     $stmt->execute();
-    $teams = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    // fetch_all() sem argumento: este script fala com o banco pelo CliDb, que
+    // é PDO por baixo. Passar MYSQLI_ASSOC aqui exigia a extensão mysqli só
+    // para resolver a constante — em host sem ext-mysqli (o caso do frontend
+    // com PostgreSQL, que é justamente para onde o CliDb existe) o PHP 8 aborta
+    // com "Undefined constant" e o cron morre antes de sincronizar nada.
+    // CliDbResult::fetch_all() ignora o argumento de qualquer forma.
+    $teams = $stmt->get_result()->fetch_all();
     $stmt->close();
 } catch (Throwable $e) {
     logMsg('CRITICAL: Falha ao listar equipes com escala: ' . $e->getMessage());
@@ -310,7 +316,7 @@ foreach ($teams as $team) {
         );
         $stmt->bind_param('i', $usrgrpid);
         $stmt->execute();
-        $shifts = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+        $shifts = $stmt->get_result()->fetch_all();
         $stmt->close();
     } catch (Throwable $e) {
         // NÃO cai para o modo legado aqui. Turno não é dado acessório: é o que
@@ -487,7 +493,7 @@ foreach ($teams as $team) {
         $stmt->execute();
         $atuais = array_map(
             fn($r) => (int) $r['userid'],
-            $stmt->get_result()->fetch_all(MYSQLI_ASSOC)
+            $stmt->get_result()->fetch_all()
         );
         $stmt->close();
     } catch (Throwable $e) {

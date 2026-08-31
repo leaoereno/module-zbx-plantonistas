@@ -4,7 +4,7 @@ Módulo único de gestão de plantonistas para Zabbix 7.0 LTS. Unifica os antigo
 `module-zbx-escala-plantao` (v3.0.1) e `module-zbx-repasse-plantao` (v2.5.0)
 em um só módulo, menu e repositório.
 
-**Versão:** 5.2.1 · **Autor:** Rafael M. A. Leão Ereno (MALE)
+**Versão:** 5.3.0 · **Autor:** Rafael M. A. Leão Ereno (MALE)
 Forks de origem: [pandradee/zabbix-escala-de-plantao](https://github.com/pandradee/zabbix-escala-de-plantao) e [JohnnyIver/zabbix-report-module](https://github.com/JohnnyIver/zabbix-report-module)
 
 **Requisitos:** Zabbix 7.0 LTS · PHP 8.0+ nos frontends · MySQL 5.7+/8.0,
@@ -70,6 +70,26 @@ MariaDB 10.x **ou** PostgreSQL.
 - **Rollback documentado** para os módulos antigos, sem perda de dados.
 
 ---
+
+## Novidades da 5.3.0
+
+Auditoria de queries, escrita e segurança. Nada de configuração nova; a maior
+parte é número errado na tela que passou a ser número certo.
+
+| O quê | Precisa de configuração? |
+|---|---|
+| **Contagens do Repasse deixaram de ser infladas.** O JOIN em `functions`/`items` devolve uma linha por item da trigger, então uma trigger com 2 itens contava cada evento duas vezes: "críticos + médios + baixos" somava mais que o total, a rosca de severidade não batia com o KPI, o heatmap mostrava mais críticos que eventos no dia, e o MTTA por analista era ponderado pelo tamanho da expressão da trigger | Não |
+| **KPI de alarme não mente mais.** As 4 tabelas mostram no máximo 50 linhas e o card exibia esse 50 como se fosse o total — um turno com 213 alertas sem ACK aparecia como "50". Agora sai **50+**, com aviso no rodapé da tabela | Não |
+| **Gravação que falha deixou de ser reportada como sucesso.** `\DBexecute()` devolve `false` em vez de lançar, e o retorno era ignorado em Escala, Telefones e nos dois imports: "30 linhas importadas" sem nada gravado, "Plantão removido" com a linha ainda no calendário | Não |
+| **Menos consultas por página.** A migração de schema saiu do caminho de toda requisição do frontend (3 consultas ao `INFORMATION_SCHEMA` por página, para todo usuário), Gerenciar Turnos passou de 2 consultas por equipe para 2 no total, e o filtro de hosts deixou de repetir milhares de ids em cada consulta | Não |
+| **Mensagem de erro parou de expor SQL** no Diário de Bordo, e a nota HTML passa pela sanitização também na exibição | Não |
+| **Importação de XLSX** aceita planilha cuja primeira aba não se chama `sheet1.xml` (export do LibreOffice/Sheets) — o caminho alternativo existia mas nunca funcionou | Não |
+| Cron de sincronismo de escalonamento não depende mais da extensão `mysqli` estar instalada (só afetava frontend com PostgreSQL) | Não |
+
+Detalhe de operação: ao adicionar migração de schema nova, **suba
+`Module::SCHEMA_VERSION`** — é ele que invalida o marcador que evita a
+revalidação a cada requisição (a revalidação de segurança roda a cada 24 h de
+qualquer forma). Ver `CLAUDE.md`.
 
 ## Novidades da 5.2.1
 

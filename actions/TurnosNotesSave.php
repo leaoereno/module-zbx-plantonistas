@@ -152,10 +152,14 @@ class TurnosNotesSave extends CController {
                 'message' => 'Nota salva com sucesso!',
                 'id'      => $noteId,
             ]);
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
+            // Mensagem FIXA, como no TurnosReportClose: a \RuntimeException do
+            // ZbxDb carrega o SQL montado inteiro — aqui, com o texto da nota
+            // dentro — e SQL não vai para a UI. O detalhe fica no log.
+            error_log('[plantonistas] notes.save falhou: ' . $e->getMessage());
             echo json_encode([
                 'success' => false,
-                'message' => 'Erro ao salvar nota: ' . $e->getMessage(),
+                'message' => 'Erro ao salvar a nota. Confira o log do PHP-FPM.',
             ]);
         }
 

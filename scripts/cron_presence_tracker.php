@@ -266,7 +266,11 @@ $updated  = 0;
 // linha gravada às 21h05 nunca casaria, e o script criaria uma sessão nova a
 // cada ciclo — duplicando a presença justamente no turno da noite. Mesmo tipo
 // de bug do heatmap do Repasse (ver CLAUDE.md).
-$today  = date('Y-m-d');
+// Limites do dia como intervalo, para a busca abaixo poder usar o índice
+// idx_cus_session_start: com CAST(session_start AS DATE) = ... o banco tem de
+// calcular a função em cada linha e o índice fica de fora.
+$dia_ini = date('Y-m-d 00:00:00');
+$dia_fim = date('Y-m-d 00:00:00', strtotime('+1 day'));
 $cutoff = date('Y-m-d H:i:s', $now - 7 * 86400);
 
 foreach ($active_users as $userid => $lastaccess_ts) {
@@ -292,11 +296,12 @@ foreach ($active_users as $userid => $lastaccess_ts) {
             SELECT id
             FROM " . PRESENCE_TABLE . "
             WHERE userid = ?
-              AND CAST(session_start AS DATE) = CAST(? AS DATE)
+              AND session_start >= ?
+              AND session_start <  ?
             ORDER BY session_start DESC
             LIMIT 1
         ");
-        $stmt->bind_param('is', $userid, $today);
+        $stmt->bind_param('iss', $userid, $dia_ini, $dia_fim);
         $stmt->execute();
         $existing = $stmt->get_result()->fetch_assoc();
         $stmt->close();

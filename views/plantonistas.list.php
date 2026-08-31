@@ -246,7 +246,9 @@ output.msg-bad * { color: var(--plt-text) !important; }
             <thead><tr><th>Nome</th><th>Usuário</th><th>Telefone</th></tr></thead>
             <tbody id="plt-modal-tbody">
             <?php foreach ($users as $u):
-                $np  = $u['label'] ?? trim($u['name'].' '.$u['surname']);
+                // Rótulo vem pronto do controller (UserLabel), já com o
+                // username como reserva — a view não remonta nome de usuário.
+                $np  = (string) ($u['label'] ?? '');
                 $lbl = $np !== '' ? $np : $u['username'];
                 $disp = $lbl.($u['phone'] ? ' ('.$u['phone'].')' : '');
             ?>
@@ -642,8 +644,9 @@ document.addEventListener('click', function (ev) {
 var PLT_SHIFT_IDS    = <?= $shift_ids_json ?>;
 var PLT_SHIFT_LABELS = <?= $shift_labels_json ?>;
 var PLT_USERS  = <?= json_encode(array_values(array_map(function($u){
-    $n = $u['label'] ?? trim($u['name'].' '.$u['surname']);
-    $l = $n!=='' ? $n : $u['username'];
+    // Idem: rótulo montado no controller.
+    $l = (string) ($u['label'] ?? '');
+    $l = $l !== '' ? $l : $u['username'];
     return ['userid'=>(int)$u['userid'],'name'=>$l,
             'display'=>$l.($u['phone']?' ('.$u['phone'].')':'')];
 }, $users))) ?>;
