@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mapa do menu Plantão — 7 telas e o perfil mínimo de cada uma.
+
+  Diagrama, não screenshot: é desenhado à mão e não reflete pixel a pixel a
+  tela do Zabbix. Fundo próprio (não transparente) para ficar legível tanto no
+  tema claro quanto no escuro do GitHub, que renderiza SVG como <img> e não
+  aplica o tema da página ao conteúdo do arquivo.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 476" width="900" height="476"
+     font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+
+  <rect width="900" height="476" rx="10" fill="#f7f9fa"/>
+
+  <!-- Cabeçalho, no mesmo azul-ardósia do cabeçalho das telas do módulo -->
+  <rect x="0" y="0" width="900" height="58" rx="10" fill="#2b3c51"/>
+  <rect x="0" y="40" width="900" height="18" fill="#2b3c51"/>
+  <text x="26" y="35" fill="#ffffff" font-size="17" font-weight="700">Menu Plantão</text>
+  <text x="150" y="35" fill="#aebfcd" font-size="13">7 telas, após o menu Reports do Zabbix</text>
+  <text x="874" y="35" fill="#8fb6d6" font-size="12" text-anchor="end">v5.4.0</text>
+
+  <!-- ── Coluna: acesso de qualquer usuário autenticado ─────────────── -->
+  <text x="30" y="88" fill="#46606f" font-size="12" font-weight="700" letter-spacing="0.6">
+    USER (1) — E TAMBÉM ADMIN E SUPER ADMIN
+  </text>
+
+  <g>
+    <rect x="30" y="98" width="410" height="76" rx="7" fill="#ffffff" stroke="#d6dee4"/>
+    <rect x="30" y="98" width="4" height="76" rx="2" fill="#0275b8"/>
+    <text x="48" y="122" fill="#1f2d38" font-size="14" font-weight="700">Visão Geral</text>
+    <text x="48" y="142" fill="#46606f" font-size="12">Quem está de plantão agora, por grupo e por turno.</text>
+    <text x="48" y="161" fill="#7b8d99" font-size="11" font-family="ui-monospace, SFMono-Regular, Menlo, monospace">plantonistas.overview</text>
+  </g>
+
+  <g>
+    <rect x="30" y="186" width="410" height="76" rx="7" fill="#ffffff" stroke="#d6dee4"/>
+    <rect x="30" y="186" width="4" height="76" rx="2" fill="#0275b8"/>
+    <text x="48" y="210" fill="#1f2d38" font-size="14" font-weight="700">Repasse Plantão</text>
+    <text x="48" y="230" fill="#46606f" font-size="12">Eventos, MTTA, presença, Diário de Bordo e fechar turno.</text>
+    <text x="48" y="249" fill="#7b8d99" font-size="11" font-family="ui-monospace, SFMono-Regular, Menlo, monospace">plantonistas.report.view</text>
+  </g>
+
+  <g>
+    <rect x="30" y="274" width="410" height="76" rx="7" fill="#ffffff" stroke="#0275b8" stroke-width="1.5"/>
+    <rect x="30" y="274" width="4" height="76" rx="2" fill="#0275b8"/>
+    <text x="48" y="298" fill="#1f2d38" font-size="14" font-weight="700">Repasses (abertos/fechados)</text>
+    <rect x="262" y="285" width="52" height="17" rx="8" fill="#e3f0fa" stroke="#b9d8ee"/>
+    <text x="288" y="298" fill="#12608f" font-size="10" font-weight="700" text-anchor="middle">NOVO</text>
+    <text x="48" y="318" fill="#46606f" font-size="12">Histórico completo de fechamentos e o que falta fechar.</text>
+    <text x="48" y="337" fill="#7b8d99" font-size="11" font-family="ui-monospace, SFMono-Regular, Menlo, monospace">plantonistas.report.list</text>
+  </g>
+
+  <!-- ── Coluna: restrito a Admin ────────────────────────────────────── -->
+  <text x="470" y="88" fill="#46606f" font-size="12" font-weight="700" letter-spacing="0.6">
+    ADMIN (2) E SUPER ADMIN (3)
+  </text>
+
+  <g>
+    <rect x="470" y="98" width="400" height="59" rx="7" fill="#ffffff" stroke="#d6dee4"/>
+    <rect x="470" y="98" width="4" height="59" rx="2" fill="#a35c00"/>
+    <text x="488" y="122" fill="#1f2d38" font-size="14" font-weight="700">Escala</text>
+    <text x="488" y="142" fill="#46606f" font-size="12">Calendário mensal, por turno ou titular/reserva.</text>
+  </g>
+
+  <g>
+    <rect x="470" y="169" width="400" height="59" rx="7" fill="#ffffff" stroke="#d6dee4"/>
+    <rect x="470" y="169" width="4" height="59" rx="2" fill="#a35c00"/>
+    <text x="488" y="193" fill="#1f2d38" font-size="14" font-weight="700">Histórico</text>
+    <text x="488" y="213" fill="#46606f" font-size="12">Quem mudou a escala, o quê e quando.</text>
+  </g>
+
+  <g>
+    <rect x="470" y="240" width="400" height="59" rx="7" fill="#ffffff" stroke="#d6dee4"/>
+    <rect x="470" y="240" width="4" height="59" rx="2" fill="#a35c00"/>
+    <text x="488" y="264" fill="#1f2d38" font-size="14" font-weight="700">Telefones</text>
+    <text x="488" y="284" fill="#46606f" font-size="12">Contato por usuário, com máscara e importação em massa.</text>
+  </g>
+
+  <g>
+    <rect x="470" y="311" width="400" height="59" rx="7" fill="#ffffff" stroke="#d6dee4"/>
+    <rect x="470" y="311" width="4" height="59" rx="2" fill="#a35c00"/>
+    <text x="488" y="335" fill="#1f2d38" font-size="14" font-weight="700">Gerenciar Turnos</text>
+    <text x="488" y="355" fill="#46606f" font-size="12">Turnos por equipe e vínculo analista→turno, em massa.</text>
+  </g>
+
+  <!-- ── Rodapé: a regra que sustenta o desenho ──────────────────────── -->
+  <rect x="30" y="392" width="840" height="60" rx="7" fill="#fff8e1" stroke="#f0d18a"/>
+  <text x="48" y="415" fill="#8a5a00" font-size="12" font-weight="700">Esconder o item do menu não basta.</text>
+  <text x="48" y="435" fill="#8a5a00" font-size="12">
+    A action continua acessível pela URL, então o perfil é validado de novo no checkPermissions() de cada uma.
+  </text>
+</svg>

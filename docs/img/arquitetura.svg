@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Arquitetura do módulo: as duas famílias de código, a camada que fala com o
+  banco e os três crons.
+
+  Diagrama desenhado à mão (não é screenshot). Fundo próprio para ficar
+  legível nos temas claro e escuro do GitHub.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 560" width="900" height="560"
+     font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+
+  <defs>
+    <marker id="seta" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#7b8d99"/>
+    </marker>
+  </defs>
+
+  <rect width="900" height="560" rx="10" fill="#f7f9fa"/>
+
+  <rect x="0" y="0" width="900" height="52" rx="10" fill="#2b3c51"/>
+  <rect x="0" y="34" width="900" height="18" fill="#2b3c51"/>
+  <text x="26" y="33" fill="#ffffff" font-size="16" font-weight="700">Arquitetura</text>
+  <text x="128" y="33" fill="#aebfcd" font-size="13">um módulo, duas famílias de código, um banco</text>
+
+  <!-- ── Frontend ─────────────────────────────────────────────────────── -->
+  <rect x="30" y="80" width="560" height="252" rx="8" fill="#eef3f7" stroke="#b9c6cf"/>
+  <text x="48" y="104" fill="#1f2d38" font-size="13" font-weight="700">Frontend Zabbix 7.0 · PHP 8.0+</text>
+  <text x="48" y="122" fill="#46606f" font-size="11">dois nós atrás do F5 BIG-IP</text>
+
+  <rect x="48" y="136" width="256" height="94" rx="7" fill="#ffffff" stroke="#d6dee4"/>
+  <text x="64" y="158" fill="#1f2d38" font-size="13" font-weight="700">Família escala</text>
+  <text x="64" y="177" fill="#46606f" font-size="11.5">Escala · Visão Geral · Histórico · Telefones</text>
+  <text x="64" y="196" fill="#7b8d99" font-size="11" font-family="ui-monospace, SFMono-Regular, Menlo, monospace">Plantao*.php · Phones*.php</text>
+  <text x="64" y="215" fill="#7b8d99" font-size="11">camada nativa: DBselect / DBexecute</text>
+
+  <rect x="320" y="136" width="254" height="94" rx="7" fill="#ffffff" stroke="#d6dee4"/>
+  <text x="336" y="158" fill="#1f2d38" font-size="13" font-weight="700">Família repasse</text>
+  <text x="336" y="177" fill="#46606f" font-size="11.5">Repasse · Repasses · Turnos</text>
+  <text x="336" y="196" fill="#7b8d99" font-size="11" font-family="ui-monospace, SFMono-Regular, Menlo, monospace">Turnos*.php</text>
+  <text x="336" y="215" fill="#7b8d99" font-size="11">consultas com ? via ZbxDb</text>
+
+  <rect x="48" y="244" width="526" height="70" rx="7" fill="#e3f0fa" stroke="#b9d8ee"/>
+  <text x="64" y="266" fill="#12608f" font-size="13" font-weight="700">ZbxDb · ZbxDbStmt · SqlFn · Schema</text>
+  <text x="64" y="285" fill="#12608f" font-size="11.5">
+    Placeholders escapados em um lugar só; o dialeto (MySQL ou PostgreSQL) é decidido aqui,
+  </text>
+  <text x="64" y="302" fill="#12608f" font-size="11.5">
+    nunca dentro da consulta. Sem conexão própria: usa a que o Zabbix já abriu.
+  </text>
+
+  <!-- ── Crons ────────────────────────────────────────────────────────── -->
+  <rect x="620" y="80" width="250" height="252" rx="8" fill="#eef3f7" stroke="#b9c6cf"/>
+  <text x="638" y="104" fill="#1f2d38" font-size="13" font-weight="700">Três crons (CLI)</text>
+  <text x="638" y="122" fill="#46606f" font-size="11">rodam em UM nó só</text>
+
+  <rect x="638" y="136" width="214" height="52" rx="6" fill="#ffffff" stroke="#d6dee4"/>
+  <text x="652" y="156" fill="#1f2d38" font-size="12" font-weight="700">Presença</text>
+  <text x="652" y="174" fill="#46606f" font-size="11">quem esteve logado no turno · 5 min</text>
+
+  <rect x="638" y="196" width="214" height="52" rx="6" fill="#ffffff" stroke="#d6dee4"/>
+  <text x="652" y="216" fill="#1f2d38" font-size="12" font-weight="700">Escalonamento</text>
+  <text x="652" y="234" fill="#46606f" font-size="11">grupo do Zabbix com o plantonista</text>
+
+  <rect x="638" y="256" width="214" height="58" rx="6" fill="#ffffff" stroke="#d6dee4"/>
+  <text x="652" y="276" fill="#1f2d38" font-size="12" font-weight="700">Menções</text>
+  <text x="652" y="294" fill="#46606f" font-size="11">fila do Diário de Bordo, pelo media</text>
+  <text x="652" y="309" fill="#46606f" font-size="11">type que a pessoa já tem</text>
+
+  <text x="745" y="352" fill="#7b8d99" font-size="11" text-anchor="middle">CliDb (PDO)</text>
+
+  <!-- ── Banco ────────────────────────────────────────────────────────── -->
+  <line x1="311" y1="332" x2="311" y2="380" stroke="#7b8d99" stroke-width="1.5" marker-end="url(#seta)"/>
+  <line x1="745" y1="358" x2="745" y2="380" stroke="#7b8d99" stroke-width="1.5" marker-end="url(#seta)"/>
+
+  <rect x="30" y="388" width="840" height="94" rx="8" fill="#ffffff" stroke="#b9c6cf"/>
+  <text x="48" y="412" fill="#1f2d38" font-size="13" font-weight="700">
+    Banco do próprio Zabbix — MySQL/MariaDB ou PostgreSQL
+  </text>
+  <text x="48" y="432" fill="#46606f" font-size="11.5">
+    Sem cadastro paralelo de pessoas: equipe é grupo de usuário (users_groups) e visibilidade de evento é rights.
+  </text>
+  <text x="48" y="454" fill="#7b8d99" font-size="11" font-family="ui-monospace, SFMono-Regular, Menlo, monospace">
+    module_plantonistas_ · schedule · history · phones · shifts · user_shift · shift_notes · shift_reports · mentions · user_sessions
+  </text>
+  <text x="48" y="471" fill="#46606f" font-size="11">
+    Provisionamento e migração idempotentes no init(); o módulo nunca dropa tabela com dados.
+  </text>
+
+  <!-- ── Restrição do ambiente ────────────────────────────────────────── -->
+  <rect x="30" y="496" width="840" height="44" rx="7" fill="#fff8e1" stroke="#f0d18a"/>
+  <!-- Dois <text> em vez de um com <tspan>: renderizador que não avança o x do
+       tspan empilha as duas partes no mesmo ponto, e o aviso vira borrão. -->
+  <text x="48" y="524" fill="#8a5a00" font-size="12" font-weight="700">Restrição do ambiente:</text>
+  <text x="190" y="524" fill="#8a5a00" font-size="12">o F5 BIG-IP bloqueia arquivo .js estático — todo o JavaScript das telas é inline.</text>
+</svg>

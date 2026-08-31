@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Ciclo do repasse: turno em andamento, fechamento, e as duas portas de saída
+  (documento congelado e lista).
+
+  Diagrama desenhado à mão (não é screenshot). Fundo próprio para ficar
+  legível nos temas claro e escuro do GitHub.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 508" width="900" height="508"
+     font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+
+  <defs>
+    <marker id="seta2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#7b8d99"/>
+    </marker>
+  </defs>
+
+  <rect width="900" height="508" rx="10" fill="#f7f9fa"/>
+
+  <rect x="0" y="0" width="900" height="52" rx="10" fill="#2b3c51"/>
+  <rect x="0" y="34" width="900" height="18" fill="#2b3c51"/>
+  <text x="26" y="33" fill="#ffffff" font-size="16" font-weight="700">Ciclo do repasse</text>
+  <text x="182" y="33" fill="#aebfcd" font-size="13">do turno em andamento ao documento assinado</text>
+
+  <!-- 1. Turno em andamento -->
+  <rect x="30" y="84" width="248" height="128" rx="8" fill="#ffffff" stroke="#d6dee4"/>
+  <rect x="30" y="84" width="248" height="30" rx="8" fill="#eef3f7"/>
+  <rect x="30" y="106" width="248" height="8" fill="#eef3f7"/>
+  <text x="46" y="104" fill="#1f2d38" font-size="13" font-weight="700">1 · Turno em andamento</text>
+  <text x="46" y="136" fill="#46606f" font-size="11.5">Relatório ao vivo: eventos, MTTA,</text>
+  <text x="46" y="153" fill="#46606f" font-size="11.5">presença, 4 tabelas de alarme.</text>
+  <text x="46" y="176" fill="#46606f" font-size="11.5">O analista escreve no</text>
+  <text x="46" y="193" fill="#46606f" font-size="11.5">Diário de Bordo e menciona colegas.</text>
+
+  <line x1="278" y1="148" x2="322" y2="148" stroke="#7b8d99" stroke-width="1.5" marker-end="url(#seta2)"/>
+
+  <!-- 2. Fechar turno -->
+  <rect x="326" y="84" width="248" height="128" rx="8" fill="#ffffff" stroke="#1f7a3f" stroke-width="1.5"/>
+  <rect x="326" y="84" width="248" height="30" rx="8" fill="#e6f4ea"/>
+  <rect x="326" y="106" width="248" height="8" fill="#e6f4ea"/>
+  <text x="342" y="104" fill="#1f7a3f" font-size="13" font-weight="700">2 · Fechar turno</text>
+  <text x="342" y="136" fill="#46606f" font-size="11.5">Grava um snapshot JSON com os</text>
+  <text x="342" y="153" fill="#46606f" font-size="11.5">números do momento em que o</text>
+  <text x="342" y="170" fill="#46606f" font-size="11.5">turno acabou.</text>
+  <text x="342" y="193" fill="#1f7a3f" font-size="11.5" font-weight="700">Append-only: refechar nunca sobrescreve.</text>
+
+  <line x1="574" y1="148" x2="618" y2="148" stroke="#7b8d99" stroke-width="1.5" marker-end="url(#seta2)"/>
+
+  <!-- 3. Documento -->
+  <rect x="622" y="84" width="248" height="128" rx="8" fill="#ffffff" stroke="#d6dee4"/>
+  <rect x="622" y="84" width="248" height="30" rx="8" fill="#eef3f7"/>
+  <rect x="622" y="106" width="248" height="8" fill="#eef3f7"/>
+  <text x="638" y="104" fill="#1f2d38" font-size="13" font-weight="700">3 · Documento congelado</text>
+  <text x="638" y="136" fill="#46606f" font-size="11.5">Imune ao housekeeper do Zabbix,</text>
+  <text x="638" y="153" fill="#46606f" font-size="11.5">que vai apagando os eventos.</text>
+  <text x="638" y="176" fill="#46606f" font-size="11.5">Abre com botão</text>
+  <text x="638" y="193" fill="#12608f" font-size="11.5" font-weight="700">Baixar PDF.</text>
+
+  <!-- Ligações para a lista -->
+  <path d="M 450 212 L 450 246" stroke="#7b8d99" stroke-width="1.5" fill="none" marker-end="url(#seta2)"/>
+  <path d="M 154 212 L 154 232 L 380 232 L 380 246" stroke="#a35c00" stroke-width="1.5"
+        fill="none" stroke-dasharray="4 3" marker-end="url(#seta2)"/>
+  <path d="M 746 212 L 746 232 L 520 232 L 520 246" stroke="#7b8d99" stroke-width="1.5"
+        fill="none" marker-end="url(#seta2)"/>
+
+  <text x="168" y="228" fill="#a35c00" font-size="11">sem fechamento</text>
+
+  <!-- 4. Lista -->
+  <rect x="150" y="250" width="600" height="128" rx="8" fill="#ffffff" stroke="#0275b8" stroke-width="1.5"/>
+  <rect x="150" y="250" width="600" height="30" rx="8" fill="#e3f0fa"/>
+  <rect x="150" y="272" width="600" height="8" fill="#e3f0fa"/>
+  <text x="168" y="270" fill="#12608f" font-size="13" font-weight="700">4 · Repasses (abertos/fechados)</text>
+  <text x="600" y="270" fill="#12608f" font-size="11">a porta de entrada de todo documento</text>
+
+  <rect x="168" y="296" width="270" height="64" rx="6" fill="#fff4e0" stroke="#f0d3a0"/>
+  <text x="184" y="317" fill="#a35c00" font-size="12" font-weight="700">Aberto</text>
+  <text x="184" y="336" fill="#a35c00" font-size="11">Teve nota no Diário de Bordo e</text>
+  <text x="184" y="351" fill="#a35c00" font-size="11">nenhum fechamento visível para você.</text>
+
+  <rect x="462" y="296" width="270" height="64" rx="6" fill="#e6f4ea" stroke="#b7dfc4"/>
+  <text x="478" y="317" fill="#1f7a3f" font-size="12" font-weight="700">Fechado</text>
+  <text x="478" y="336" fill="#1f7a3f" font-size="11">Uma linha por documento — os</text>
+  <text x="478" y="351" fill="#1f7a3f" font-size="11">refechamentos anteriores também.</text>
+
+  <!-- Regra de visibilidade -->
+  <rect x="30" y="398" width="840" height="86" rx="8" fill="#eef3f7" stroke="#b9c6cf"/>
+  <text x="48" y="422" fill="#1f2d38" font-size="12.5" font-weight="700">
+    O documento congela a visão de UMA pessoa — por isso a leitura tem regra própria.
+  </text>
+  <text x="48" y="443" fill="#46606f" font-size="11.5">
+    O payload do repasse muda conforme quem olha: eventos seguem os rights de host, o MTTA é restrito ao próprio
+  </text>
+  <text x="48" y="460" fill="#46606f" font-size="11.5">
+    usuário quando o papel é User, e notas e presença são segmentadas por grupo compartilhado. Entregar o snapshot a
+  </text>
+  <text x="48" y="477" fill="#46606f" font-size="11.5">
+    quem enxerga menos furaria essa segmentação: Super Admin lê tudo; nos demais casos, os grupos do autor têm que caber nos do leitor.
+  </text>
+</svg>

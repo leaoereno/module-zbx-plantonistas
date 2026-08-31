@@ -1,11 +1,26 @@
 # module-zbx-plantonistas
 
-Módulo único de gestão de plantonistas para Zabbix 7.0 LTS. Unifica os antigos
-`module-zbx-escala-plantao` (v3.0.1) e `module-zbx-repasse-plantao` (v2.5.0)
-em um só módulo, menu e repositório.
+**Escala de plantão, repasse de turno e escalonamento para o Zabbix 7.0 LTS —
+em um módulo só, sem cadastro paralelo de pessoas.**
 
-**Versão:** 5.4.0 · **Autor:** Rafael M. A. Leão Ereno (MALE)
-Forks de origem: [pandradee/zabbix-escala-de-plantao](https://github.com/pandradee/zabbix-escala-de-plantao) e [JohnnyIver/zabbix-report-module](https://github.com/JohnnyIver/zabbix-report-module)
+[![Versão](https://img.shields.io/badge/versão-5.4.1-0275b8)](CHANGELOG.md)
+[![Zabbix](https://img.shields.io/badge/Zabbix-7.0%20LTS-d40000)](https://www.zabbix.com/documentation/7.0/)
+[![PHP](https://img.shields.io/badge/PHP-8.0%2B-777bb4)](https://www.php.net/)
+[![Banco](https://img.shields.io/badge/banco-MySQL%20%7C%20MariaDB%20%7C%20PostgreSQL-4479a1)](#banco-de-dados-mysqlmariadb-e-postgresql)
+[![Frontend](https://img.shields.io/badge/frontend-módulo%20nativo-2b3c51)](#como-funciona)
+
+Quem está de plantão hoje, o que aconteceu no turno e para quem o alerta deve
+ir às 3h da manhã — as três perguntas no mesmo lugar, usando os grupos de
+usuário e os `rights` que o Zabbix já tem. Unifica os antigos
+`module-zbx-escala-plantao` (v3.0.1) e `module-zbx-repasse-plantao` (v2.5.0)
+em um módulo, um menu e um repositório.
+
+<p align="center">
+  <img src="docs/img/menu-telas.svg" alt="Menu Plantão com as sete telas do módulo e o perfil mínimo de cada uma" width="880">
+</p>
+
+**Autor:** Rafael M. A. Leão Ereno (MALE) ·
+**Forks de origem:** [pandradee/zabbix-escala-de-plantao](https://github.com/pandradee/zabbix-escala-de-plantao) e [JohnnyIver/zabbix-report-module](https://github.com/JohnnyIver/zabbix-report-module)
 
 **Requisitos:** Zabbix 7.0 LTS · PHP 8.0+ nos frontends · MySQL 5.7+/8.0,
 MariaDB 10.x **ou** PostgreSQL.
@@ -17,8 +32,170 @@ MariaDB 10.x **ou** PostgreSQL.
 
 ---
 
-## Funcionalidades
+## Índice
 
+**Começando**
+[Instalação](#instalação) ·
+[Telas](#telas) ·
+[Como funciona](#como-funciona) ·
+[Ciclo do repasse](#ciclo-do-repasse) ·
+[Funcionalidades](#funcionalidades)
+
+**Operação**
+[Banco de dados](#banco-de-dados-mysqlmariadb-e-postgresql) ·
+[Migração em produção](#migração-em-produção-frontends-atrás-de-balanceador) ·
+[Escalonamento](#escalonamento-mandar-o-alerta-para-quem-está-de-plantão) ·
+[Notificar menção](#notificar-menção-do-diário-de-bordo-opcional) ·
+[Notas de operação](#notas-de-operação) ·
+[Rollback](#rollback)
+
+**Referência**
+[De-para da v4](#de-para-completo-a-v4-renomeou-tudo) ·
+[Testes](#testes-automatizados) ·
+[Segurança](#segurança-e-dados-sensíveis) ·
+[Changelog](CHANGELOG.md) ·
+[Checklist de lab](CHECKLIST-LAB.md)
+
+---
+
+## Instalação
+
+Pré-requisito: Zabbix 7.0 LTS com backend **MySQL 5.7+/8.0, MariaDB 10.x ou
+PostgreSQL**, e PHP 8.0+ no frontend. PostgreSQL segue com homologação
+pendente — ver a nota em [Banco de dados](#banco-de-dados-mysqlmariadb-e-postgresql)
+antes de usar em produção.
+
+```bash
+cd /usr/share/zabbix/modules
+git clone https://github.com/leaoereno/module-zbx-plantonistas.git
+chown -R apache:apache module-zbx-plantonistas   # Ubuntu/Debian: www-data
+systemctl restart php-fpm
+```
+
+Depois: **Administration → General → Modules → Scan directory** e habilitar
+*Plantonistas*. O menu **Plantão** aparece logo após *Reports*.
+
+Não precisa rodar SQL: o módulo cria e migra as tabelas sozinho no primeiro
+carregamento de página, de forma idempotente, e **nunca dropa tabela com
+dados**. Se preferir provisionar à mão:
+
+```bash
+# MySQL / MariaDB
+mysql -h<host-do-banco> -u<usuario-do-banco> -p zabbix \
+  < module-zbx-plantonistas/sql/schema.mysql.sql
+
+# PostgreSQL
+psql -h <host-do-banco> -U <usuario-do-banco> -d zabbix \
+  -f module-zbx-plantonistas/sql/schema.pgsql.sql
+```
+
+O `scripts/install.sh` interativo também funciona (Docker, all-in-one ou
+segmentado): detecta MySQL/PostgreSQL sozinho (ou pergunta, se não conseguir
+ler `zabbix.conf.php`), detecta se o host tem `/etc/cron.d` — caindo para
+`crontab` do usuário ou timer systemd quando não tem, caso do Amazon Linux
+2023 — e pergunta se o banco é novo antes de rodar o schema.
+
+Dois recursos são **opcionais e exigem configuração**, cada um com sua seção
+abaixo: [escalonamento pela escala](#escalonamento-mandar-o-alerta-para-quem-está-de-plantão)
+e [notificação de menção](#notificar-menção-do-diário-de-bordo-opcional).
+
+### Já usa uma versão anterior?
+
+Ambiente com os módulos antigos (`plantao` / `turnos-noc-report`) tem um
+caminho próprio, com backup e ordem de desligamento:
+[Migração em produção](#migração-em-produção-frontends-atrás-de-balanceador).
+
+Vindo da 4.x:
+
+1. `git pull` + `chown -R apache:apache .` + `systemctl restart php-fpm`
+   **em todos os frontends**.
+2. Abrir qualquer tela uma vez — o `Module::init()` faz as migrações de schema
+   (entre elas, `report_json` para `LONGTEXT`, se o schema antigo deixou
+   `TEXT`).
+3. Conferir as 7 telas, exercitando salvar/remover/importar/escrever nota: o
+   CSRF e a troca da camada de banco tocaram todas elas.
+4. Nos arquivos de cron, acrescentar `DB_TYPE` (`mysql` ou `pgsql`).
+5. Opcional: configurar o
+   [cron de escalonamento](#escalonamento-mandar-o-alerta-para-quem-está-de-plantão)
+   e a [notificação de menção](#notificar-menção-do-diário-de-bordo-opcional).
+
+O que mudou em cada versão está no [CHANGELOG.md](CHANGELOG.md).
+
+---
+
+## Telas
+
+Sete telas no menu **Plantão**, todas seguindo o tema ativo do Zabbix (claro,
+escuro ou customizado — a paleta é detectada pela luminância do fundo já
+renderizado, não pelo nome do arquivo de tema).
+
+| Item de menu | Action | Perfil | O que resolve |
+|---|---|---|---|
+| **Visão Geral** | `plantonistas.overview` | User | Quem está de plantão agora, por grupo e por turno, com telefone no hover. Distingue cobertura total, parcial e ausente |
+| **Escala** | `plantonistas.list` | Admin | Calendário mensal. Grupo com turnos cadastrados escala um titular por turno; grupo sem turnos, titular e reserva. Import/export CSV e XLSX |
+| **Histórico** | `plantonistas.history` | Admin | Quem mudou a escala, o quê e quando — com o nome do turno congelado na época da alteração |
+| **Telefones** | `plantonistas.phones.list` | Admin | Contato por usuário, com máscara brasileira. Importação em massa pelo mesmo CSV que a exportação gera |
+| **Repasse Plantão** | `plantonistas.report.view` | User | O relatório do turno: eventos, MTTA, presença, quatro tabelas de alarme, Diário de Bordo com menções e o botão de fechar turno |
+| **Repasses (abertos/fechados)** | `plantonistas.report.list` | User | Todo repasse do período: um item por documento fechado (inclusive os refeitos) e um por turno que ainda falta fechar |
+| **Gerenciar Turnos** | `plantonistas.shifts.view` | Admin | Turnos por equipe e vínculo analista→turno, individual ou em massa |
+
+**User (1)** enxerga Visão Geral, Repasse e a lista de Repasses; as demais são
+**Admin (2)+**. Guest não vê o menu. A restrição vale na action, não só no
+menu — esconder o item não adianta, a URL continua lá.
+
+A segmentação por equipe é a do próprio Zabbix: grupos de usuário
+(`users_groups`) para escala, notas e presença; `rights` para visibilidade de
+evento no Repasse. Sem `rights` configurada por host, todo mundo vê tudo — que
+é o comportamento nativo.
+
+---
+
+## Como funciona
+
+<p align="center">
+  <img src="docs/img/arquitetura.svg" alt="Arquitetura: frontend com as duas famílias de código sobre a camada ZbxDb/SqlFn, três crons em CLI, e o banco do próprio Zabbix" width="880">
+</p>
+
+O módulo é frontend puro: nenhum agente, nenhum serviço, nenhum banco próprio.
+As nove tabelas `module_plantonistas_*` moram no banco do Zabbix e são criadas
+pelo `Module::init()`.
+
+Por dentro convivem **duas famílias de código** de propósito — a que veio da
+Escala e a que veio do Repasse. Elas têm estilos diferentes de view e de
+consulta, e unificá-las seria um refactor sem ganho para quem usa. O que foi
+unificado é o que importa: a paleta (tema do Zabbix), a camada de banco
+(`ZbxDb`), o dialeto (`SqlFn`) e o DDL (`Schema.php`, fonte única que gera
+`sql/schema.mysql.sql` e `sql/schema.pgsql.sql`).
+
+Os **três crons** são opcionais e independentes: presença de analistas,
+escalonamento pela escala e fila de notificação de menções. Cada um roda em
+**um nó só** — todos escrevem no banco compartilhado.
+
+---
+
+## Ciclo do repasse
+
+<p align="center">
+  <img src="docs/img/fluxo-repasse.svg" alt="Ciclo do repasse: turno em andamento, fechar turno, documento congelado e a lista de repasses abertos e fechados" width="880">
+</p>
+
+O relatório do Repasse é **sempre ao vivo** — e é justamente por isso que ele
+muda com o tempo: o housekeeper do Zabbix vai apagando os eventos do período,
+e o repasse de um turno de dois meses atrás não mostra mais os mesmos números
+que mostrava no dia.
+
+**Fechar turno** resolve isso gravando um snapshot com os números do momento
+em que o turno acabou. É append-only: refechar cria outro documento e mantém o
+anterior, então o histórico é imutável por construção.
+
+A tela **Repasses (abertos/fechados)** é a porta de entrada desses documentos
+— inclusive dos refechamentos, que o banner do Repasse não alcança porque só
+mostra o último. Ela lista também o que ainda **não** foi fechado: turno com
+movimento no Diário de Bordo e sem documento.
+
+---
+
+## Funcionalidades
 ### Escala
 
 - **Calendário mensal por equipe**, usando os grupos de usuário do Zabbix
@@ -73,139 +250,9 @@ MariaDB 10.x **ou** PostgreSQL.
 
 ---
 
-## Novidades da 5.4.0
-
-| O quê | Precisa de configuração? |
-|---|---|
-| **Tela nova "Repasses (abertos/fechados)"** (`plantonistas.report.list`), no menu Plantão e num botão do cabeçalho do Repasse. Lista o período inteiro: uma linha por **documento fechado** — inclusive os refechamentos, que o banner do Repasse não alcançava porque só mostra o último — e uma linha por **turno aberto**, que é o turno com movimento no Diário de Bordo e sem fechamento. Filtro de datas, atalhos de 7/30/90 dias e filtro por situação | Não |
-| **Botão "Baixar PDF" dentro do documento**, ao lado de "Lista de repasses". A página do documento já era a versão imprimível, mas nada nela dizia como baixar; a barra some na impressão | Não |
-| Visibilidade **sem regra nova**: fechado passa pelo mesmo `canReadSnapshot()` do PDF (os grupos do autor têm que caber nos do leitor) e aberto vem da contagem de notas, já segmentada por grupo compartilhado | Não |
-
-Teto de 500 fechamentos por consulta: acima disso a tela avisa e pede um
-intervalo menor, em vez de varrer a tabela inteira.
-
-## Novidades da 5.3.0
-
-Auditoria de queries, escrita e segurança. Nada de configuração nova; a maior
-parte é número errado na tela que passou a ser número certo.
-
-| O quê | Precisa de configuração? |
-|---|---|
-| **Contagens do Repasse deixaram de ser infladas.** O JOIN em `functions`/`items` devolve uma linha por item da trigger, então uma trigger com 2 itens contava cada evento duas vezes: "críticos + médios + baixos" somava mais que o total, a rosca de severidade não batia com o KPI, o heatmap mostrava mais críticos que eventos no dia, e o MTTA por analista era ponderado pelo tamanho da expressão da trigger | Não |
-| **KPI de alarme não mente mais.** As 4 tabelas mostram no máximo 50 linhas e o card exibia esse 50 como se fosse o total — um turno com 213 alertas sem ACK aparecia como "50". Agora sai **50+**, com aviso no rodapé da tabela | Não |
-| **Gravação que falha deixou de ser reportada como sucesso.** `\DBexecute()` devolve `false` em vez de lançar, e o retorno era ignorado em Escala, Telefones e nos dois imports: "30 linhas importadas" sem nada gravado, "Plantão removido" com a linha ainda no calendário | Não |
-| **Menos consultas por página.** A migração de schema saiu do caminho de toda requisição do frontend (3 consultas ao `INFORMATION_SCHEMA` por página, para todo usuário), Gerenciar Turnos passou de 2 consultas por equipe para 2 no total, e o filtro de hosts deixou de repetir milhares de ids em cada consulta | Não |
-| **Mensagem de erro parou de expor SQL** no Diário de Bordo, e a nota HTML passa pela sanitização também na exibição | Não |
-| **Importação de XLSX** aceita planilha cuja primeira aba não se chama `sheet1.xml` (export do LibreOffice/Sheets) — o caminho alternativo existia mas nunca funcionou | Não |
-| Cron de sincronismo de escalonamento não depende mais da extensão `mysqli` estar instalada (só afetava frontend com PostgreSQL) | Não |
-
-Detalhe de operação: ao adicionar migração de schema nova, **suba
-`Module::SCHEMA_VERSION`** — é ele que invalida o marcador que evita a
-revalidação a cada requisição (a revalidação de segurança roda a cada 24 h de
-qualquer forma). Ver `CLAUDE.md`.
-
-## Novidades da 5.2.1
-
-Correção de dois bugs que a 5.2.0 introduziu no Repasse de Plantão:
-
-| O quê | Precisa de configuração? |
-|---|---|
-| **MTTA por Hora, Distribuição por Severidade e Volume de Alertas (30 dias) pararam de renderizar**, com um bloco de texto cru no fim da página. Um comentário do JavaScript continha, por extenso, a própria sequência de fechamento do `<script>` que ele explicava ser perigosa — o navegador fechou a tag ali e jogou o resto do script como texto | Não |
-| **Lupa "Ver no Zabbix"** nas 4 tabelas de alarme (Herdados, Sem ACK, Em Tratativas, Resolvidos) abria a lista geral de Alarmes filtrada por nome, não o alarme clicado — agora abre a página nativa "Detalhes do evento" (`tr_events.php`) direto no evento | Não |
-
-## Novidades da 5.2.0
-
-Repasse de Plantão ganhou histórico de ações e mais duas tabelas de alarme:
-
-| O quê | Precisa de configuração? |
-|---|---|
-| **Coluna Ações** em Alertas Herdados e Alertas Sem ACK: o que o analista fez no alarme (ACK, mensagem, mudança de severidade, fechar, suprimir) e o que o Zabbix notificou sozinho (e-mail/SMS/webhook das Ações configuradas), num chip por evento | Não |
-| **Alarmes em Tratativas** (nova tabela): alarmes abertos durante o turno que já têm alguma ação — complemento direto de Alertas Sem ACK | Não |
-| **Alarmes Resolvidos** (nova tabela, histórico do turno): alarmes cuja resolução caiu dentro da janela do turno, com MTTR e se o fechamento foi manual (e por quem) ou automático | Não |
-| As duas tabelas novas e a coluna Ações entram também no PDF e no documento de "Fechar Turno" | Não |
-
-Alarmes Resolvidos depende da tabela `problem` do Zabbix, que o housekeeper
-limpa depois de um tempo configurável — turnos antigos podem aparecer vazios
-ali mesmo tendo tido resolução (mesma limitação que Alertas Herdados já tinha,
-ver `CLAUDE.md`).
-
-## Novidades da 5.1.0
-
-Rodada de correções e revisão pré-produção, em cima da 5.0.0:
-
-| O quê | Precisa de configuração? |
-|---|---|
-| **Repasse usa as cores e nomes REAIS de severidade** de Administração > Geral > Opções de exibição de acionadores, em vez de rótulos/cores fixos no PHP e no CSS (que nem batiam com o padrão de fábrica do Zabbix) | Não |
-| **Escala: reserva sem nome no hover/card** quando o cadastro não tinha `name`/`surname` preenchido — faltava o `username` como reserva (a Visão Geral já fazia certo) | Não |
-| **`<select>` desalinhado** no cabeçalho do Repasse e em Gerenciar Turnos — Zabbix vencia a disputa de altura/padding contra a classe do módulo | Não |
-| **`install.sh` detecta o caminho certo do módulo e o dialeto MySQL/PostgreSQL sozinho**, e funciona em host sem `/etc/cron.d` (Amazon Linux 2023 e afins) — cai para `crontab` do usuário e, na ausência dele, gera timer systemd. Passa a oferecer os 3 crons (presença, escalonamento, menções) na instalação, não só o de presença | Não |
-| **Suíte de testes automatizados** (`tests/`, ver seção própria abaixo) | Não |
-
-## O que mudou na 5.0.0
-
-Fecha as 6 issues abertas. As decisões e os modos de falha de cada uma estão
-no `CLAUDE.md`; o estado por issue, no `ROADMAP.md`.
-
-| O quê | Issue | Precisa de configuração? |
-|---|---|---|
-| **PostgreSQL** — DDL, consultas, migrações e crons por dialeto; o módulo inteiro roda nos dois bancos | [#1](https://github.com/leaoereno/module-zbx-plantonistas/issues/1) | Só `DB_TYPE=pgsql` nos crons |
-| **Fechar turno** — o repasse vira documento imutável, com trava contra corrida | [#2](https://github.com/leaoereno/module-zbx-plantonistas/issues/2) | Não |
-| **CSRF ligado** nas 10 actions que escrevem no banco | [#3](https://github.com/leaoereno/module-zbx-plantonistas/issues/3) | Não |
-| **Cron de presença sem a API do Zabbix** — some o TLS sem verificação e o token de API | [#4](https://github.com/leaoereno/module-zbx-plantonistas/issues/4) | Limpeza: tirar `ZABBIX_*` do cron e revogar o token |
-| **Escala alimenta o escalonamento do Zabbix** — grupo por equipe com o plantonista do turno | [#5](https://github.com/leaoereno/module-zbx-plantonistas/issues/5) | **Sim** — criar os grupos e agendar o cron |
-| **Menção notifica pelo media type** do usuário, com fila e dedupe | [#6](https://github.com/leaoereno/module-zbx-plantonistas/issues/6) | **Sim** — token de API; opcional |
-
-### Segurança
-
-- **CSRF exigido** nas actions de escrita (antes: `disableCsrfValidation()` em
-  todas). Um `GET` numa aba qualquer não escala mais ninguém nem apaga turno.
-- **Fim do TLS sem verificação** no cron de presença — ele não chama mais a
-  API do Zabbix, lê tudo do banco. O `ZABBIX_API_TOKEN` sai do arquivo de cron
-  e pode ser revogado.
-- **Fim da conexão `mysqli` própria** — tudo passa pela camada de banco do
-  Zabbix (`ZbxDb`), com bind de parâmetro no lugar de concatenação.
-- **Credencial só em arquivo `chmod 600`**, nunca no repositório.
-
-### Corretude e concorrência
-
-- **Fechar turno com trava consultiva** — dois analistas fechando o mesmo
-  turno não geram dois snapshots.
-- **`PhonesSave` por upsert** — fecha a janela de corrida entre ler e gravar.
-- **Duplo clique não gera dois POSTs.**
-- **Fuso do PHP × fuso do banco** duplicando presença no turno da noite.
-- **Nome em branco** de conta de serviço, **nome longo** descartando a linha de
-  presença e **nome com apóstrofo** quebrando o botão "remover" da Escala.
-- **Telefones filtra por grupo, não por papel.**
-- **SQL de "marcar menção como lida"** que nunca marcava.
-
-### Interface e usabilidade
-
-- **Visual unificado** seguindo o tema do Zabbix.
-- **Histórico de menções** no Repasse.
-- **Vínculo analista→turno em massa** em Gerenciar Turnos.
-- **CSV/XLSX da Escala** passa a conhecer turnos; import de telefones aceita
-  XLSX.
-- **Actions de escrita respondem JSON** em request AJAX — erro aparece na tela
-  em vez de virar página em branco.
-- **Aviso quando o gráfico não carrega**, em vez de área vazia sem explicação.
-
-### Ao atualizar da 4.x
-
-1. `git pull` + `chown -R apache:apache .` + `systemctl restart php-fpm`
-   **em todos os frontends**.
-2. Abrir qualquer tela uma vez — o `Module::init()` faz as migrações de schema
-   (entre elas, `report_json` para `LONGTEXT`, se o schema antigo deixou
-   `TEXT`).
-3. Conferir as 7 telas, exercitando salvar/remover/importar/escrever nota: o
-   CSRF e a troca da camada de banco tocaram todas elas.
-4. Nos arquivos de cron, acrescentar `DB_TYPE` (`mysql` ou `pgsql`).
-5. Opcional: configurar o cron de escalonamento (#5) e a notificação de
-   menção (#6) — as duas seções estão mais abaixo.
-
 ---
 
 ## Banco de dados: MySQL/MariaDB **e** PostgreSQL
-
 A partir da 5.0.0 o mesmo código roda nos dois backends. O tipo de banco é
 detectado em tempo de execução (`$DB['TYPE']`, que o Zabbix já expõe em
 `zabbix.conf.php`); nos crons, pela env `DB_TYPE`.
@@ -231,67 +278,9 @@ Os artefatos SQL são gerados por dialeto:
 
 ---
 
-## Telas
-
-Tudo fica no menu **Plantão** (após Reports):
-
-| Item de menu | Action | Perfil mínimo | O que faz |
-|---|---|---|---|
-| Visão Geral | `plantonistas.overview` | User | Quem está de plantão hoje, por grupo (por turno, se o grupo tiver turnos cadastrados) |
-| Escala | `plantonistas.list` | Admin | Calendário mensal; escalar por turno (se o grupo tiver turnos em "Gerenciar Turnos") ou titular/reserva único (grupos sem turno); import/export CSV-XLSX |
-| Histórico | `plantonistas.history` | Admin | Log de alterações da escala |
-| Telefones | `plantonistas.phones.list` | Admin | Telefone de contato por usuário, com máscara brasileira; export CSV e importação em massa |
-| Repasse Plantão | `plantonistas.report.view` | User | Relatório de repasse NOC (eventos, MTTA, presença, diário de bordo com editor rico e menções, fechar turno, PDF) |
-| Repasses (abertos/fechados) | `plantonistas.report.list` | User | Lista de todos os repasses do período: um item por documento fechado (inclusive os refechamentos) e um por turno ainda aberto. Abre o documento congelado com botão de baixar em PDF |
-| Gerenciar Turnos | `plantonistas.shifts.view` | Admin | Turnos por equipe + vínculo analista→turno |
-
-Usuário do tipo **User (1)** enxerga apenas **Visão Geral** e **Repasse
-Plantão**; as demais telas são **Admin (2)+**, bloqueadas tanto no menu
-quanto no `checkPermissions()` de cada action (esconder o item do menu não
-basta — a action continua acessível pela URL). Guest não vê o menu.
-
-A segmentação por equipe continua a mesma dos módulos antigos: grupos de
-usuário do Zabbix (`users_groups`), e `rights` para visibilidade de eventos
-no Repasse.
-
----
-
-## De-para completo (a v4 renomeou tudo)
-
-**Actions / URLs** — links salvos com os nomes antigos param de funcionar:
-
-| Antiga | Nova |
-|---|---|
-| `plantao.overview` | `plantonistas.overview` |
-| `plantao.list` | `plantonistas.list` |
-| `plantao.save` / `plantao.delete` | `plantonistas.save` / `plantonistas.delete` |
-| `plantao.history` | `plantonistas.history` |
-| `plantao.export` / `plantao.import` | `plantonistas.export` / `plantonistas.import` |
-| `phones.list` / `phones.export` / `phones.save` | `plantonistas.phones.list` / `.export` / `.save` |
-| `turnos.report.view` | `plantonistas.report.view` |
-| `turnos.report.notes.save` / `.get` | `plantonistas.report.notes.save` / `.get` |
-| `turnos.report.pdf` | `plantonistas.report.pdf` |
-| `turnos.shifts.view` / `.save` / `.delete` | `plantonistas.shifts.view` / `.save` / `.delete` |
-| `turnos.usershift.save` | `plantonistas.usershift.save` |
-
-**Tabelas** — renomeadas automaticamente pelo módulo (rename atômico, sem
-cópia de dados; dados 100% preservados):
-
-| Antiga | Nova |
-|---|---|
-| `module_plantao_phones` | `module_plantonistas_phones` |
-| `module_plantao_schedule` | `module_plantonistas_schedule` |
-| `module_plantao_history` | `module_plantonistas_history` |
-| `custom_shifts` | `module_plantonistas_shifts` |
-| `custom_user_shift` | `module_plantonistas_user_shift` |
-| `custom_shift_notes` | `module_plantonistas_shift_notes` |
-| `custom_user_sessions` | `module_plantonistas_user_sessions` |
-| `custom_shift_reports` | `module_plantonistas_shift_reports` |
-
 ---
 
 ## Migração em produção (frontends atrás de balanceador)
-
 Faça na janela de menor movimento. Passo a passo:
 
 **0. Backup** — dumpa só as tabelas que existirem (nem todas existem em todo
@@ -466,8 +455,9 @@ atrasada, que impede salvar papel (ver o aviso acima).
 
 ---
 
-## Escalonamento: mandar o alerta para quem está de plantão
+---
 
+## Escalonamento: mandar o alerta para quem está de plantão
 `scripts/cron_sync_oncall.php` mantém, para cada equipe, um grupo de usuários
 do Zabbix contendo **só o plantonista do turno corrente**. A Ação nativa do
 Zabbix escala para esse grupo — o módulo não reimplementa notificação.
@@ -539,8 +529,9 @@ Comportamentos que valem saber:
 
 ---
 
-## Notificar menção do Diário de Bordo (opcional)
+---
 
+## Notificar menção do Diário de Bordo (opcional)
 Quando alguém é mencionado com `@` numa nota, o módulo pode avisar pelo media
 type que a pessoa já tem no Zabbix (e-mail, Telegram, webhook), além do banner
 na tela. **É opcional**: sem a configuração abaixo nada muda e nada quebra —
@@ -614,80 +605,9 @@ próprio, e o colega receberia esse link pelo canal legítimo do Zabbix.
 
 ---
 
-## Rollback
-
-Enquanto as pastas antigas existirem nos frontends, o rollback é rápido:
-
-1. Zabbix UI: desabilitar "Plantonistas" (primeiro! senão o `init()` dele
-   desfaz o passo 2 na próxima carga de página).
-2. Rodar `sql/rollback-to-old-modules.<banco>.sql` (renames reversos,
-   instantâneo; dados gravados durante a vigência da v4/v5 são mantidos).
-3. Zabbix UI: reabilitar os dois módulos antigos.
-4. Restaurar a linha antiga do crontab.
-
----
-
-## Instalação nova (lab / ambiente limpo)
-
-Pré-requisito: Zabbix 7.0 LTS com backend **MySQL 5.7+/8.0, MariaDB 10.x ou
-PostgreSQL**, e PHP 8.0+ no frontend. PostgreSQL segue com homologação
-pendente — ver a nota em [Banco de dados](#banco-de-dados-mysqlmariadb-e-postgresql)
-acima antes de usar em produção.
-
-```bash
-cd /usr/share/zabbix/modules
-git clone https://github.com/leaoereno/module-zbx-plantonistas.git
-chown -R apache:apache module-zbx-plantonistas   # Ubuntu/Debian: www-data
-```
-
-O schema é opcional — o módulo cria as tabelas sozinho no primeiro
-carregamento. Se preferir rodar à mão:
-
-```bash
-# MySQL / MariaDB
-mysql -h<host-do-banco> -u<usuario-do-banco> -p zabbix \
-  < module-zbx-plantonistas/sql/schema.mysql.sql
-
-# PostgreSQL
-psql -h <host-do-banco> -U <usuario-do-banco> -d zabbix \
-  -f module-zbx-plantonistas/sql/schema.pgsql.sql
-```
-
-Zabbix UI → Administration → General → Modules → Scan directory → habilitar
-"Plantonistas". O `scripts/install.sh` interativo também funciona (Docker,
-all-in-one ou segmentado), detecta MySQL/PostgreSQL sozinho (ou pergunta, se
-não conseguir ler `zabbix.conf.php`), detecta se o host tem `/etc/cron.d`
-(caindo para `crontab` do usuário ou timer systemd quando não tem — caso do
-Amazon Linux 2023) e pergunta se o banco é novo antes de rodar o schema.
-
-## Testes automatizados
-
-```bash
-php tests/run.php
-```
-
-Sem dependência (nada de PHPUnit/Composer — o módulo não tem `vendor/`, e
-instalar isso só pra rodar 4 arquivos de teste seria mais atrito que valor).
-Sai com código `0` se tudo passou (ou só pulou) e `1` se algo falhou — dá pra
-plugar num pipeline de CI ou num hook de pre-commit local.
-
-Cobre só a lógica **pura**, sem o framework do Zabbix carregado:
-`UserLabel`/`formatUserLabel()` (dedup de nome duplicado), `PhonesFormat`
-(máscara de telefone brasileira), `SqlFn` (dialeto MySQL × PostgreSQL) e
-`TurnosReportBase::sanitizeNoteHtml()` (sanitização do Diário de Bordo,
-incluindo o bypass aninhado `<iframe><span onclick>` e os esquemas
-`javascript:`/`data:`). Os controllers (`Plantao*`, `Turnos*Save` etc.) e as
-consultas que dependem de `ZbxDb`/`\DBselect` continuam só verificáveis no
-lab — não tem como isso ser unitário sem simular o Zabbix inteiro; ver
-`CHECKLIST-LAB.md`.
-
-Requer PHP 8.0+ com a extensão `dom` (para os testes de sanitização — sem
-ela, aquela suíte é pulada com aviso, o resto roda normal).
-
 ---
 
 ## Notas de operação
-
 - **Balanceador L7 que bloqueia `.js` estático** (F5 BIG-IP, por exemplo).
   Todo o JS das telas é inline nas views. Sobram dois arquivos em
   `assets/js/`: o **Chart.js**, que os dois gráficos do Repasse usam de
@@ -728,8 +648,85 @@ ela, aquela suíte é pulada com aviso, o resto roda normal).
 
 ---
 
-## Segurança e dados sensíveis
+---
 
+## Rollback
+Enquanto as pastas antigas existirem nos frontends, o rollback é rápido:
+
+1. Zabbix UI: desabilitar "Plantonistas" (primeiro! senão o `init()` dele
+   desfaz o passo 2 na próxima carga de página).
+2. Rodar `sql/rollback-to-old-modules.<banco>.sql` (renames reversos,
+   instantâneo; dados gravados durante a vigência da v4/v5 são mantidos).
+3. Zabbix UI: reabilitar os dois módulos antigos.
+4. Restaurar a linha antiga do crontab.
+
+---
+
+---
+
+## De-para completo (a v4 renomeou tudo)
+**Actions / URLs** — links salvos com os nomes antigos param de funcionar:
+
+| Antiga | Nova |
+|---|---|
+| `plantao.overview` | `plantonistas.overview` |
+| `plantao.list` | `plantonistas.list` |
+| `plantao.save` / `plantao.delete` | `plantonistas.save` / `plantonistas.delete` |
+| `plantao.history` | `plantonistas.history` |
+| `plantao.export` / `plantao.import` | `plantonistas.export` / `plantonistas.import` |
+| `phones.list` / `phones.export` / `phones.save` | `plantonistas.phones.list` / `.export` / `.save` |
+| `turnos.report.view` | `plantonistas.report.view` |
+| `turnos.report.notes.save` / `.get` | `plantonistas.report.notes.save` / `.get` |
+| `turnos.report.pdf` | `plantonistas.report.pdf` |
+| `turnos.shifts.view` / `.save` / `.delete` | `plantonistas.shifts.view` / `.save` / `.delete` |
+| `turnos.usershift.save` | `plantonistas.usershift.save` |
+
+**Tabelas** — renomeadas automaticamente pelo módulo (rename atômico, sem
+cópia de dados; dados 100% preservados):
+
+| Antiga | Nova |
+|---|---|
+| `module_plantao_phones` | `module_plantonistas_phones` |
+| `module_plantao_schedule` | `module_plantonistas_schedule` |
+| `module_plantao_history` | `module_plantonistas_history` |
+| `custom_shifts` | `module_plantonistas_shifts` |
+| `custom_user_shift` | `module_plantonistas_user_shift` |
+| `custom_shift_notes` | `module_plantonistas_shift_notes` |
+| `custom_user_sessions` | `module_plantonistas_user_sessions` |
+| `custom_shift_reports` | `module_plantonistas_shift_reports` |
+
+---
+
+---
+
+## Testes automatizados
+```bash
+php tests/run.php
+```
+
+Sem dependência (nada de PHPUnit/Composer — o módulo não tem `vendor/`, e
+instalar isso só pra rodar 4 arquivos de teste seria mais atrito que valor).
+Sai com código `0` se tudo passou (ou só pulou) e `1` se algo falhou — dá pra
+plugar num pipeline de CI ou num hook de pre-commit local.
+
+Cobre só a lógica **pura**, sem o framework do Zabbix carregado:
+`UserLabel`/`formatUserLabel()` (dedup de nome duplicado), `PhonesFormat`
+(máscara de telefone brasileira), `SqlFn` (dialeto MySQL × PostgreSQL) e
+`TurnosReportBase::sanitizeNoteHtml()` (sanitização do Diário de Bordo,
+incluindo o bypass aninhado `<iframe><span onclick>` e os esquemas
+`javascript:`/`data:`). Os controllers (`Plantao*`, `Turnos*Save` etc.) e as
+consultas que dependem de `ZbxDb`/`\DBselect` continuam só verificáveis no
+lab — não tem como isso ser unitário sem simular o Zabbix inteiro; ver
+`CHECKLIST-LAB.md`.
+
+Requer PHP 8.0+ com a extensão `dom` (para os testes de sanitização — sem
+ela, aquela suíte é pulada com aviso, o resto roda normal).
+
+---
+
+---
+
+## Segurança e dados sensíveis
 - Nenhum host, IP, domínio, usuário, senha ou token real neste repositório —
   os exemplos usam placeholders.
 - Arquivos de cron com credencial: **`chmod 600`** e fora do controle de
