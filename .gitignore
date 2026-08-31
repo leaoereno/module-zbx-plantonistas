@@ -1,0 +1,35 @@
+# Documentos gerados (apresentação, manual operacional).
+#
+# Ficam na pasta de trabalho, não no repositório: são binários de alguns MB
+# que mudam por inteiro a cada salvamento — o git guarda uma cópia nova a cada
+# versão, o diff não diz nada e o clone só engorda. A documentação que precisa
+# estar versionada é texto: README.md, CLAUDE.md, CHECKLIST-LAB.md, ROADMAP.md.
+#
+# Se um deles precisar ser publicado, o caminho é anexá-lo a uma Release do
+# GitHub, que é onde binário de distribuição pertence.
+*.pdf
+*.docx
+*.doc
+*.pptx
+*.xlsx
+*.odt
+*.ods
+
+# O import da Escala e o de Telefones aceitam CSV/XLSX. Planilha de teste com
+# nome de analista e telefone é dado pessoal e não entra no repositório.
+*.csv
+
+# Lixo de editor e de sistema
+*~
+*.swp
+*.bak
+*.orig
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Nunca versionar arquivo de cron preenchido: carrega DB_PASS em texto puro
+# (ver README, seção dos crons). Os exemplos do repositório usam placeholder.
+*.cron
+cron.d/
