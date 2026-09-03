@@ -17,6 +17,20 @@
  * Mantido por Rafael M. A. Leão Ereno (MALE)
  */
 
+// ── Só por linha de comando ────────────────────────────────────────────────
+//
+// A pasta scripts/ mora DENTRO do módulo, e o módulo mora dentro da raiz web
+// (o Zabbix serve `modules/` a partir do document root) — ou seja, este arquivo
+// tem URL. Sem esta guarda, qualquer um que a acertasse fazia o servidor web
+// executar um script que escreve no banco, sem autenticação nenhuma, e ainda
+// via na tela o erro de conexão com as pistas de caminho e usuário.
+//
+// 404 e não 403: quem chuta URL não precisa saber que acertou o nome.
+if (PHP_SAPI !== 'cli') {
+    http_response_code(404);
+    exit;
+}
+
 require_once __DIR__ . '/../Schema.php';
 
 use Modules\Plantonistas\Schema;

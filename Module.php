@@ -3,7 +3,6 @@
 namespace Modules\Plantonistas;
 
 use Zabbix\Core\CModule,
-    APP,
     CMenuItem,
     CMenu,
     CWebUser;
@@ -132,12 +131,19 @@ class Module extends CModule {
                 );
             }
 
-            $menu = APP::Component()->get('menu.main');
-            $menu->insertAfter(_('Reports'),
-                (new CMenuItem(_('Plantão')))
-                    ->setIcon('zi-calendar-check')
-                    ->setSubMenu($submenu)
-            );
+            // Plantão não é mais aba de primeiro nível: é um item de SEGUNDO nível
+            // dentro de SRE, e as sete telas acima abrem em pop-up lateral. É a mesma
+            // forma do Administration > General do core (CMenuHelper): um CMenuItem SEM
+            // action carregando um CMenu — a seta e o pop-up saem de graça do
+            // `.has-submenu` do tema, que já trata terceiro nível.
+            //
+            // Quem cria a aba SRE, e em que posição o item entra, é o SreMenu — cópia
+            // idêntica nos três módulos de SRE (ver o cabeçalho dele).
+            //
+            // Sem setIcon() de propósito: no menu do Zabbix só o primeiro nível tem
+            // ícone, e o zi-calendar-check que estava aqui deslocaria o rótulo em
+            // relação aos irmãos.
+            SreMenu::add((new CMenuItem(_('Plantão')))->setSubMenu($submenu));
         } catch (\Throwable $e) {
             // Contexto sem UI (CLI/setup) — segue sem menu.
         }

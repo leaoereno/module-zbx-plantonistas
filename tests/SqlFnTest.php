@@ -68,14 +68,30 @@ test_case('upsert: múltiplas colunas mantêm a ordem', function () {
     );
 });
 
-test_case('now(): PostgreSQL usa LOCALTIMESTAMP (NOW() do PG tem fuso da sessão)', function () {
+test_case('now(): literal do relógio do PHP, não do banco', function () {
+    // Era LOCALTIMESTAMP (PG) / NOW() (MySQL) — o relógio do BANCO. Num
+    // ambiente com o PostgreSQL em UTC e a aplicação em America/Sao_Paulo, o
+    // "online nos últimos 15 min" comparava 12:42 com 15:34 e dava sempre
+    // falso. Ver o docblock do método.
     $GLOBALS['DB']['TYPE'] = 'POSTGRESQL';
-    assert_same('LOCALTIMESTAMP', SqlFn::now());
+    $agora = SqlFn::now();
+    assert_true((bool) preg_match("/^'\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}'$/", $agora), $agora);
+    assert_true(abs(strtotime(trim($agora, "'")) - time()) <= 2, $agora);
 });
 
-test_case('now(): MySQL usa NOW()', function () {
+test_case('now(): mesmo valor nos dois bancos (o literal não tem dialeto)', function () {
+    $GLOBALS['DB']['TYPE'] = 'POSTGRESQL';
+    $pg = SqlFn::now();
     $GLOBALS['DB']['TYPE'] = 'MYSQL';
-    assert_same('NOW()', SqlFn::now());
+    assert_same($pg, SqlFn::now());
+});
+
+test_case('nowMinusMinutes(): N minutos antes do now(), no mesmo relógio', function () {
+    $GLOBALS['DB']['TYPE'] = 'POSTGRESQL';
+    $limite = SqlFn::nowMinusMinutes(15);
+    assert_true((bool) preg_match("/^'\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}'$/", $limite), $limite);
+    $delta = time() - strtotime(trim($limite, "'"));
+    assert_true($delta >= 15 * 60 - 2 && $delta <= 15 * 60 + 2, 'delta=' . $delta);
 });
 
 test_case('tryLock: PostgreSQL embrulha em CASE WHEN (booleano t/f não é (int) direto)', function () {

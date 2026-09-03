@@ -76,31 +76,129 @@ class TurnosReportPdf extends CController {
     }
 
     /**
+     * Idade de alarme no formato da coluna "Duração" de Monitoramento > Problemas
+     * (até três unidades: "1M 3d 4h", "2d 5h 50m", "3h 55m 20s"). Mesma
+     * função nativa que a tela ao vivo usa em rp_age() — o `\` é obrigatório
+     * porque `convertUnitsS()` é global e esta classe está em namespace.
+     * fmtDuration() continua servindo MTTA/MTTR, que são duração medida.
+     */
+    private function fmtAge(int $s): string {
+        if ($s < 1) {
+            return '0s';
+        }
+
+        return function_exists('convertUnitsS') ? \convertUnitsS($s, true) : $this->fmtDuration($s);
+    }
+
+    /**
+     * Nome VISÍVEL do host (`hosts.name`), que é o que o Zabbix mostra nas telas
+     * de monitoramento; cai no técnico (`hosts.host`) só se o visível vier vazio.
+     * Mesma regra de rp_hostLabel() na view ao vivo.
+     */
+    private function hostLabel(array $r): string {
+        $visivel = trim((string)($r['host_name'] ?? ''));
+
+        return $visivel !== '' ? $visivel : (string)($r['host'] ?? '');
+    }
+
+    /**
      * Mesma renderização de rp_actionChips() na view ao vivo — duplicada
      * aqui porque este arquivo não inclui a view compartilhada (é
      * echo/die() próprio, ver cabeçalho da classe e o Backlog do CLAUDE.md).
      * A QUERY e a decodificação do bitmask não são duplicadas — só o HTML.
      */
-    private function actionChips(array $items, array $severities): string {
+    private function actionChips(array $entrada, array $severities): string {
+        $items = $entrada['items'] ?? [];
         if (empty($items)) {
             return '<span class="rp-muted">—</span>';
         }
-        $chips = [];
-        foreach ($items as $it) {
+        // Sem resumo (snapshot fechado antes desta versão), a notificação volta
+        // a ser um selo por item — igual à tela ao vivo, e pelo mesmo motivo:
+        // documento fechado não perde informação por melhoria posterior.
+        $resumo = $entrada['notify_summary'] ?? null;
+
+        // Agrupado por TIPO, como na tela ao vivo: um tipo que se repete vira um
+        // selo com a contagem em vez de três selos iguais. ACK e "ACK removido"
+        // são tipos diferentes e continuam separados — juntar colocar e tirar
+        // num contador só esconderia a diferença entre os dois.
+        $porTipo = [];
+        foreach ($items as $indice => $it) {
+            $tipo = (string)($it['type'] ?? '');
+            // Notificação sai do laço: todas viram um selo só, igual à tela ao
+            // vivo. No papel isso pesa ainda mais — a linha do alarme não
+            // quebra em três por causa de trinta selos iguais.
+            if ($tipo === 'notify') {
+                if ($resumo !== null) {
+                    continue;
+                }
+                // Sem resumo (snapshot antigo): uma por uma, como era. Agrupar
+                // por tipo daria um contador com o rótulo da primeira mídia.
+                $tipo = 'notify#' . $indice;
+            }
             $detail = trim(
                 ($it['who'] ? $it['who'] . ' — ' : '')
                 . date('d/m/Y H:i', (int)$it['when'])
             );
-            if ($it['type'] === 'severity') {
+            if ($tipo === 'severity') {
                 $detail .= ': ' . $this->sevLabel((int)($it['old_severity'] ?? 0), $severities)
                          . ' → ' . $this->sevLabel((int)($it['new_severity'] ?? 0), $severities);
             } elseif (!empty($it['message'])) {
                 $detail .= ': ' . $it['message'];
             }
-            $chips[] = '<span class="rp-act rp-act-' . htmlspecialchars((string)$it['type']) . '" title="'
-                     . htmlspecialchars($detail) . '">' . htmlspecialchars((string)$it['label']) . '</span>';
+            $porTipo[$tipo]['label']     = (string)$it['label'];
+            $porTipo[$tipo]['detalhes'][] = $detail;
         }
+
+        $chips = [];
+        foreach ($porTipo as $chave => $grupo) {
+            $qtd  = count($grupo['detalhes']);
+            // A chave pode ter sufixo (notify#3); a CLASSE é só o tipo.
+            $tipo = explode('#', (string)$chave)[0];
+            $chips[] = '<span class="rp-act rp-act-' . htmlspecialchars($tipo) . '" title="'
+                     . htmlspecialchars(implode(' · ', $grupo['detalhes'])) . '">'
+                     . htmlspecialchars($grupo['label'] . ($qtd > 1 ? ' (' . $qtd . ')' : ''))
+                     . '</span>';
+        }
+
+        if ($resumo) {
+            $falhas = (int)$resumo['falhas'];
+            $chips[] = '<span class="rp-act rp-act-' . ($falhas > 0 ? 'unack' : 'notify') . '" title="'
+                     . htmlspecialchars($this->notifySummaryText($resumo)) . '">'
+                     . htmlspecialchars('Notificações (' . (int)$resumo['total']
+                        . $this->falhasSufixo($falhas) . ')')
+                     . '</span>';
+        }
+
         return '<div class="rp-act-list">' . implode('', $chips) . '</div>';
+    }
+
+    /** " · 3 falhas", " · 1 falha", ou nada. Mesmo texto da tela ao vivo. */
+    private function falhasSufixo(int $falhas): string {
+        if ($falhas <= 0) {
+            return '';
+        }
+
+        return ' · ' . $falhas . ($falhas === 1 ? ' falha' : ' falhas');
+    }
+
+    /**
+     * Resumo das notificações em UMA linha de texto: "E-mail 24 (3 falhas) ·
+     * SMS 8 · Webhook 5".
+     *
+     * No papel não há pop-up, então o que na tela é uma caixa vira esta linha,
+     * impressa na sub-linha de detalhe do alarme (ver actionDetailRow()).
+     * Mesma ordem do resumo: mídia com falha primeiro.
+     */
+    private function notifySummaryText(array $resumo): string {
+        $partes = [];
+        foreach ($resumo['medias'] ?? [] as $m) {
+            $partes[] = $m['nome'] . ' ' . (int)$m['total']
+                      . ((int)$m['falhas'] > 0
+                          ? ' (' . (int)$m['falhas'] . ((int)$m['falhas'] === 1 ? ' falha)' : ' falhas)')
+                          : '');
+        }
+
+        return implode(' · ', $partes);
     }
 
     /**
@@ -124,11 +222,17 @@ class TurnosReportPdf extends CController {
      * @param int $colspan número de <th> da tabela em que a linha entra —
      *        6 Herdados, 5 Sem ACK, 5 Em Tratativas, 7 Resolvidos.
      */
-    private function actionDetailRow(array $items, array $severities, int $colspan, string $sevCls): string {
+    private function actionDetailRow(array $entrada, array $severities, int $colspan, string $sevCls): string {
+        $items = $entrada['items'] ?? [];
         if (empty($items)) {
             return '';
         }
 
+        // A sub-linha imprime CONTEÚDO, não contagem: mensagem escrita,
+        // supressão e notificação que FALHOU (com o texto do erro). O resumo
+        // por mídia chegou a sair aqui e foi retirado a pedido — quem lê o
+        // documento quer o que aconteceu de diferente, e a contagem já está no
+        // selo da linha do alarme, logo acima.
         $lines = [];
         foreach ($items as $it) {
             $type = (string)($it['type'] ?? '');
@@ -385,6 +489,10 @@ class TurnosReportPdf extends CController {
         // ── HTML ─────────────────────────────────────────────
         echo '<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8">';
         echo '<title>' . htmlspecialchars($pdfTitle) . '</title>';
+        // `print-color-adjust: exact` nas .row-*: elas não têm mais fundo (a
+        // tinta de linha por severidade saiu), mas continuam com a BARRA da
+        // esquerda, e é ela que precisa sair impressa — o navegador que estiver
+        // configurado para não imprimir gráficos de fundo levaria a barra junto.
         echo '<style>' . file_get_contents(__DIR__ . '/../assets/css/turnos.report.css') . $sevColorOverride . '
             body{background:#fff!important;font-size:11px}
             .rp-native-container{max-width:100%;padding:20px 30px}
@@ -392,7 +500,8 @@ class TurnosReportPdf extends CController {
             .rp-nh-btn,.rp-note-form{display:none!important}
             .sev-disaster,.sev-high,.sev-avg,.sev-warn,.sev-info,.sev-notclass,
             .bg-blue,.bg-red,.bg-orange,.bg-yellow,.bg-purple,.bg-green,
-            .row-disaster,.row-high,.row-avg,.row-warn,.perf-good,.perf-ok,.perf-bad,
+            .row-disaster,.row-high,.row-avg,.row-warn,.row-info,.row-notclass,
+            .perf-good,.perf-ok,.perf-bad,
             .rp-badge-hist,.rp-kpi-icon{-webkit-print-color-adjust:exact;print-color-adjust:exact}
             .rp-card{break-inside:avoid;box-shadow:none;border:1px solid #ccc}
             .rp-noc-badge{display:inline-block;padding:2px 10px;border-radius:12px;
@@ -520,12 +629,12 @@ class TurnosReportPdf extends CController {
                 echo '<tr class="row-' . $sc . '">';
                 echo '<td class="td-mono">' . date('d/m H:i', (int)$r['clock']) . '</td>';
                 echo '<td><span class="rp-sev sev-' . $sc . '">' . htmlspecialchars($this->sevLabel((int)$r['severity'], $severities)) . '</span></td>';
-                echo '<td>' . htmlspecialchars($r['host']) . '</td>';
+                echo '<td>' . htmlspecialchars($this->hostLabel($r)) . '</td>';
                 echo '<td>' . htmlspecialchars($r['trigger_desc']) . '</td>';
-                echo '<td class="td-bold">' . $this->fmtDuration((int)$r['age_seconds']) . '</td>';
-                echo '<td>' . $this->actionChips($actions[(int)$r['eventid']]['items'] ?? [], $severities) . '</td></tr>';
+                echo '<td class="td-bold">' . $this->fmtAge((int)$r['age_seconds']) . '</td>';
+                echo '<td>' . $this->actionChips($actions[(int)$r['eventid']] ?? [], $severities) . '</td></tr>';
                 // 6 colunas: Início, Severidade, Host, Problema, Idade, Ações.
-                echo $this->actionDetailRow($actions[(int)$r['eventid']]['items'] ?? [], $severities, 6, $sc);
+                echo $this->actionDetailRow($actions[(int)$r['eventid']] ?? [], $severities, 6, $sc);
             }
             echo '</tbody></table>' . $this->alertCut($truncated, 'inherited') . '</div>';
         }
@@ -541,10 +650,10 @@ class TurnosReportPdf extends CController {
                 echo '<tr class="row-' . $sc . '">';
                 echo '<td class="td-mono">' . date('H:i:s', (int)$r['clock']) . '</td>';
                 echo '<td><span class="rp-sev sev-' . $sc . '">' . htmlspecialchars($this->sevLabel((int)$r['severity'], $severities)) . '</span></td>';
-                echo '<td>' . htmlspecialchars($r['host']) . '</td>';
+                echo '<td>' . htmlspecialchars($this->hostLabel($r)) . '</td>';
                 echo '<td>' . htmlspecialchars($r['trigger_desc']) . '</td>';
-                echo '<td>' . $this->actionChips($actions[(int)$r['eventid']]['items'] ?? [], $severities) . '</td></tr>';
-                echo $this->actionDetailRow($actions[(int)$r['eventid']]['items'] ?? [], $severities, $acDetailCols, $sc);
+                echo '<td>' . $this->actionChips($actions[(int)$r['eventid']] ?? [], $severities) . '</td></tr>';
+                echo $this->actionDetailRow($actions[(int)$r['eventid']] ?? [], $severities, $acDetailCols, $sc);
             }
             echo '</tbody></table>' . $this->alertCut($truncated, 'unacked') . '</div>';
         }
@@ -560,10 +669,10 @@ class TurnosReportPdf extends CController {
                 echo '<tr class="row-' . $sc . '">';
                 echo '<td class="td-mono">' . date('H:i:s', (int)$r['clock']) . '</td>';
                 echo '<td><span class="rp-sev sev-' . $sc . '">' . htmlspecialchars($this->sevLabel((int)$r['severity'], $severities)) . '</span></td>';
-                echo '<td>' . htmlspecialchars($r['host']) . '</td>';
+                echo '<td>' . htmlspecialchars($this->hostLabel($r)) . '</td>';
                 echo '<td>' . htmlspecialchars($r['trigger_desc']) . '</td>';
-                echo '<td>' . $this->actionChips($actions[(int)$r['eventid']]['items'] ?? [], $severities) . '</td></tr>';
-                echo $this->actionDetailRow($actions[(int)$r['eventid']]['items'] ?? [], $severities, $acDetailCols, $sc);
+                echo '<td>' . $this->actionChips($actions[(int)$r['eventid']] ?? [], $severities) . '</td></tr>';
+                echo $this->actionDetailRow($actions[(int)$r['eventid']] ?? [], $severities, $acDetailCols, $sc);
             }
             echo '</tbody></table>' . $this->alertCut($truncated, 'in_progress') . '</div>';
         }
@@ -578,14 +687,14 @@ class TurnosReportPdf extends CController {
                 echo '<tr class="row-' . $sc . '">';
                 echo '<td class="td-mono">' . date('d/m H:i', (int)$r['r_clock']) . '</td>';
                 echo '<td><span class="rp-sev sev-' . $sc . '">' . htmlspecialchars($this->sevLabel((int)$r['severity'], $severities)) . '</span></td>';
-                echo '<td>' . htmlspecialchars($r['host']) . '</td>';
+                echo '<td>' . htmlspecialchars($this->hostLabel($r)) . '</td>';
                 echo '<td>' . htmlspecialchars($r['trigger_desc']) . '</td>';
                 echo '<td class="td-bold">' . $this->fmtDuration((int)$r['resolve_seconds']) . '</td>';
                 echo '<td>' . $this->resolvedBy($closedBy) . '</td>';
-                echo '<td>' . $this->actionChips($actions[(int)$r['eventid']]['items'] ?? [], $severities) . '</td></tr>';
+                echo '<td>' . $this->actionChips($actions[(int)$r['eventid']] ?? [], $severities) . '</td></tr>';
                 // 7 colunas: Resolvido, Severidade, Host, Problema, MTTR,
                 // Resolvido por, Ações.
-                echo $this->actionDetailRow($actions[(int)$r['eventid']]['items'] ?? [], $severities, 7, $sc);
+                echo $this->actionDetailRow($actions[(int)$r['eventid']] ?? [], $severities, 7, $sc);
             }
             echo '</tbody></table>' . $this->alertCut($truncated, 'resolved') . '</div>';
         }
@@ -599,7 +708,7 @@ class TurnosReportPdf extends CController {
             foreach ($top_hosts as $r) {
                 $sc = $this->sevClass((int)$r['max_severity']);
                 echo '<tr><td class="td-center">' . $i++ . '</td>';
-                echo '<td>' . htmlspecialchars($r['host']) . '</td>';
+                echo '<td>' . htmlspecialchars($this->hostLabel($r)) . '</td>';
                 echo '<td class="td-center td-bold">' . (int)$r['event_count'] . '</td>';
                 echo '<td><span class="rp-sev sev-' . $sc . '">' . htmlspecialchars($this->sevLabel((int)$r['max_severity'], $severities)) . '</span></td></tr>';
             }

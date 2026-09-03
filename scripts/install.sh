@@ -74,14 +74,109 @@ detect_frontend_dir() {
 
 # Tenta ler $DB['TYPE'] do zabbix.conf.php (MYSQL ou POSTGRESQL) para sugerir
 # o valor certo no prompt, sem obrigar o operador a saber de cor.
+# Caminho do zabbix.conf.php. Nos pacotes RHEL/Amazon o arquivo REAL mora em
+# /etc/zabbix/web/ e o frontend costuma chegar nele por symlink em conf/ — mas
+# nem sempre: em host onde o symlink não existe, procurar só ao lado do
+# index.php não acha nada, e o instalador passava a perguntar dados que já
+# estavam no disco.
+find_zbx_conf() {
+    local frontend_dir="${1:-}"
+    local candidate
+    for candidate in "${ZBX_CONF:-}" \
+                     "${frontend_dir}/conf/zabbix.conf.php" \
+                     "$(dirname "${frontend_dir:-/}")/conf/zabbix.conf.php" \
+                     "/etc/zabbix/web/zabbix.conf.php" \
+                     "/usr/share/zabbix/conf/zabbix.conf.php" \
+                     "/usr/share/zabbix/ui/conf/zabbix.conf.php"; do
+        [[ -n "$candidate" && -f "$candidate" ]] && { echo "$candidate"; return 0; }
+    done
+
+    # Última tentativa: procurar de verdade, com profundidade curta. Instalação
+    # fora do padrão existe, e é melhor achar do que mandar o operador digitar
+    # host, base, usuário e senha de novo.
+    local found
+    found=$(find /etc/zabbix "${frontend_dir:-/usr/share/zabbix}" -maxdepth 3 -name zabbix.conf.php -type f 2>/dev/null | head -1)
+    [[ -n "$found" ]] && { echo "$found"; return 0; }
+
+    echo ""
+    return 1
+}
+
+# Lê um $DB['CHAVE'] do zabbix.conf.php por TEXTO. É a reserva do
+# read_zbx_conf_all() — aceita aspa simples e dupla, mas não entende constante,
+# concatenação nem include.
+read_zbx_conf_value() {
+    local conf="$1" key="$2"
+    [[ -f "$conf" ]] || { echo ""; return; }
+    sed -nE "s/^[[:space:]]*\\\$DB\\['?\"?${key}'?\"?\\][[:space:]]*=[[:space:]]*['\"]([^'\"]*)['\"].*/\\1/p" "$conf" | head -1
+}
+
+# Lê as SEIS chaves do zabbix.conf.php de uma vez, uma por linha, na ordem
+# TYPE SERVER PORT DATABASE USER PASSWORD.
+#
+# Quem lê é o PRÓPRIO PHP, e não um sed: o arquivo é código PHP, e o valor pode
+# estar em aspas duplas, vir de constante, de concatenação ou de um include.
+# Foi assim que a primeira versão falhou em produção enquanto funcionava em
+# homologação — o parser de texto entendia um formato só. O sed continua como
+# reserva, para host sem PHP na linha de comando (que existe: o frontend pode
+# estar em outro nó).
+read_zbx_conf_all() {
+    local conf="$1"
+    [[ -f "$conf" ]] || return 1
+
+    if command -v php &>/dev/null; then
+        php -r '
+            $DB = [];
+            include $argv[1];
+            foreach (["TYPE","SERVER","PORT","DATABASE","USER","PASSWORD"] as $k) {
+                echo str_replace(["\r","\n"], "", (string)($DB[$k] ?? "")), "\n";
+            }
+        ' "$conf" 2>/dev/null && return 0
+    fi
+
+    local k
+    for k in TYPE SERVER PORT DATABASE USER PASSWORD; do
+        read_zbx_conf_value "$conf" "$k"
+    done
+}
+
+# Lê uma diretiva do zabbix_server.conf (DBHost=..., DBName=...). Segunda fonte:
+# em host que roda o server, esses valores existem mesmo quando o frontend está
+# noutro lugar. Ignora linha comentada.
+read_server_conf_value() {
+    local conf="$1" key="$2"
+    [[ -f "$conf" && -r "$conf" ]] || { echo ""; return; }
+    sed -nE "s/^[[:space:]]*${key}[[:space:]]*=[[:space:]]*(.*)$/\\1/p" "$conf" | tail -1 | sed -E 's/[[:space:]]+$//'
+}
+
+# Lê uma env de um agendamento do módulo JÁ instalado (cron.d ou unidade
+# systemd). Terceira fonte, e a mais específica que existe: são exatamente os
+# valores com que o coletor está rodando hoje.
+read_job_env_value() {
+    local key="$1" f
+    for f in /etc/cron.d/plantonistas-* /etc/systemd/system/plantonistas-*.service; do
+        [[ -f "$f" ]] || continue
+        local v
+        v=$(sed -nE "s/^(Environment=\")?${key}=([^\"]*)\"?.*/\\2/p" "$f" | head -1)
+        [[ -n "$v" ]] && { echo "$v"; return; }
+    done
+    echo ""
+}
+
+# Primeiro valor não vazio da lista.
+pick_first() {
+    local v
+    for v in "$@"; do
+        [[ -n "$v" ]] && { echo "$v"; return; }
+    done
+    echo ""
+}
+
 detect_db_type() {
     local frontend_dir="${1:-}"
     [[ -z "$frontend_dir" ]] && { echo ""; return; }
-    local conf=""
-    local candidate
-    for candidate in "${frontend_dir}/conf/zabbix.conf.php" "$(dirname "$frontend_dir")/conf/zabbix.conf.php"; do
-        [[ -f "$candidate" ]] && { conf="$candidate"; break; }
-    done
+    local conf
+    conf=$(find_zbx_conf "$frontend_dir")
     if [[ -z "$conf" ]]; then
         echo ""
         return
@@ -510,8 +605,252 @@ finish_message() {
 }
 
 # ══════════════════════════════════════════════════════════
+#  MODO 4 — SOMENTE OS SERVIÇOS, SEM PERGUNTAS
+# ══════════════════════════════════════════════════════════
+#
+# Por que este modo existe: habilitar o módulo pela tela do Zabbix cria as
+# TABELAS (o init() do módulo faz a migração), mas não cria — e não pode criar —
+# os serviços que rodam fora do frontend. O módulo roda dentro do PHP-FPM, como
+# o usuário do servidor web: não tem root para escrever em /etc/systemd/system,
+# nem para instalar pacote, nem para dar systemctl daemon-reload. E não é só
+# limitação: um módulo de frontend capaz de escrever unidade systemd daria, a
+# quem consegue habilitar módulo na UI, execução de código como root no host.
+#
+# Então a parte de root continua sendo um comando de root — só que agora um só,
+# sem menu e sem redigitar senha de banco:
+#
+#     sudo ./scripts/install.sh --services
+#
+# Idempotente: rodar de novo reescreve as unidades/cron com os mesmos valores.
+# Descobre a configuração do banco SEM perguntar nada, olhando, em ordem, os
+# lugares onde ela já existe no host. Preenche CAMPO A CAMPO: se o frontend tem
+# tudo menos a senha e o zabbix_server.conf tem a senha, sai completo.
+#
+# Ordem (o primeiro não vazio vence):
+#
+#   1. variáveis DB_* já exportadas       — o operador mandou, o operador manda
+#   2. zabbix.conf.php do frontend        — a fonte natural
+#   3. /etc/zabbix/zabbix_server.conf     — existe em host que roda o server
+#   4. agendamento do módulo já instalado — os valores com que ele roda HOJE
+#   5. variáveis ZBX_DB_*                 — convenção das imagens de container
+#
+# Deixa em CFG_TYPE/HOST/PORT/NAME/USER/PASS.
+resolve_db_config() {
+    local frontend conf srvconf
+    frontend="$(detect_frontend_dir || echo '')"
+    conf="$(find_zbx_conf "$frontend" || true)"
+    srvconf="${ZBX_SERVER_CONF:-/etc/zabbix/zabbix_server.conf}"
+
+    local c_type="" c_host="" c_port="" c_name="" c_user="" c_pass=""
+    if [[ -n "$conf" ]]; then
+        { read -r c_type; read -r c_host; read -r c_port; read -r c_name; read -r c_user; read -r c_pass; } \
+            < <(read_zbx_conf_all "$conf") || true
+        ok "Frontend:   ${conf}"
+    else
+        warn "zabbix.conf.php não encontrado — seguindo com as outras fontes."
+    fi
+    if [[ -r "$srvconf" ]]; then ok "Server:     ${srvconf}"; fi
+
+    local job_type job_host job_port job_name job_user job_pass
+    job_type=$(read_job_env_value DB_TYPE); job_host=$(read_job_env_value DB_HOST)
+    job_port=$(read_job_env_value DB_PORT); job_name=$(read_job_env_value DB_NAME)
+    job_user=$(read_job_env_value DB_USER); job_pass=$(read_job_env_value DB_PASS)
+    if [[ -n "$job_name" ]]; then ok "Agendamento anterior do módulo: reaproveitando o que faltar"; fi
+
+    local raw_type
+    raw_type=$(pick_first "${DB_TYPE:-}" "$c_type" "$job_type" "${ZBX_DB_TYPE:-}")
+    CFG_HOST=$(pick_first "${DB_HOST:-}" "$c_host" "$(read_server_conf_value "$srvconf" DBHost)" "$job_host" "${ZBX_DB_HOST:-}" "127.0.0.1")
+    CFG_PORT=$(pick_first "${DB_PORT:-}" "$c_port" "$(read_server_conf_value "$srvconf" DBPort)" "$job_port" "${ZBX_DB_PORT:-}")
+    CFG_NAME=$(pick_first "${DB_NAME:-}" "$c_name" "$(read_server_conf_value "$srvconf" DBName)" "$job_name" "${ZBX_DB_NAME:-}")
+    CFG_USER=$(pick_first "${DB_USER:-}" "$c_user" "$(read_server_conf_value "$srvconf" DBUser)" "$job_user" "${ZBX_DB_USER:-}")
+    CFG_PASS=$(pick_first "${DB_PASS:-}" "$c_pass" "$(read_server_conf_value "$srvconf" DBPassword)" "$job_pass" "${ZBX_DB_PASS:-}")
+
+    case "${raw_type^^}" in
+        POSTGRESQL|PGSQL|POSTGRES) CFG_TYPE="pgsql" ;;
+        MYSQL|MARIADB)             CFG_TYPE="mysql" ;;
+        "")                        CFG_TYPE="" ;;
+        *)                         CFG_TYPE="${raw_type,,}" ;;
+    esac
+
+    # Último recurso para o TIPO: o zabbix_server.conf não diz qual é (quem diz
+    # é o binário instalado), então, se só um cliente existe no host, esse é o
+    # palpite — anunciado, porque palpite errado só aparece depois, no log do
+    # coletor.
+    if [[ -z "$CFG_TYPE" ]]; then
+        if command -v psql &>/dev/null && ! command -v mysql &>/dev/null; then
+            CFG_TYPE="pgsql"; warn "DB_TYPE não estava em lugar nenhum; supondo pgsql (só o cliente psql existe aqui)."
+        elif command -v mysql &>/dev/null && ! command -v psql &>/dev/null; then
+            CFG_TYPE="mysql"; warn "DB_TYPE não estava em lugar nenhum; supondo mysql (só o cliente mysql existe aqui)."
+        fi
+    fi
+
+    # '0' é como o Zabbix grava "porta padrão" no zabbix.conf.php; passar isso
+    # adiante faz o cliente tentar conectar na porta zero.
+    if [[ -z "$CFG_PORT" || "$CFG_PORT" == "0" ]]; then CFG_PORT="$(db_default_port "$CFG_TYPE")"; fi
+
+    if [[ -z "$CFG_TYPE" || -z "$CFG_NAME" || -z "$CFG_USER" ]]; then
+        err "Não consegui montar a configuração do banco. Faltou:"
+        [[ -z "$CFG_TYPE" ]] && err "  DB_TYPE  (mysql ou pgsql)"
+        [[ -z "$CFG_NAME" ]] && err "  DB_NAME"
+        [[ -z "$CFG_USER" ]] && err "  DB_USER"
+        echo ""
+        info "Procurei em:"
+        info "  variáveis DB_* / ZBX_DB_* do ambiente"
+        info "  ${conf:-<zabbix.conf.php não encontrado>}"
+        info "  ${srvconf}$([[ -r "$srvconf" ]] || echo ' (ilegível ou inexistente)')"
+        info "  /etc/cron.d/plantonistas-* e /etc/systemd/system/plantonistas-*.service"
+        echo ""
+        info "Se o frontend está noutro caminho, aponte com: ZBX_CONF=/caminho/zabbix.conf.php $0 --services"
+        die "Ou preencha na mão: DB_TYPE=… DB_NAME=… DB_USER=… DB_PASS=… $0 --services"
+    fi
+
+    ok "Banco:      ${CFG_TYPE} ${CFG_HOST}:${CFG_PORT}/${CFG_NAME} (usuário ${CFG_USER})"
+
+    # `if`, e não `[[ … ]] && warn`: como ESTA é a última linha da função, o
+    # status dela vira o status do `resolve_db_config` — e um `&&` cujo teste dá
+    # falso devolve 1, o que sob `set -e` mata o script inteiro logo depois de
+    # descobrir a configuração, sem imprimir nada. Aconteceu na primeira versão.
+    if [[ -z "$CFG_PASS" ]]; then
+        warn "Senha vazia — ok se o banco autentica por peer/trust ou .pgpass; senão passe DB_PASS."
+    fi
+
+    return 0
+}
+
+install_services_only() {
+    [[ $EUID -ne 0 ]] && die "Este modo escreve em /etc/systemd/system (ou /etc/cron.d) e exige root: sudo $0 --services"
+
+    step "Serviços" "Agendando os coletores do módulo (sem perguntas)"
+
+    # Raiz do módulo = pasta acima desta. É o caminho REAL de onde o script foi
+    # chamado, e não um /usr/share/... fixo: quem serve o módulo por symlink
+    # (o caso desta suíte) precisa que o agendamento aponte para o arquivo que
+    # existe no disco, não para o link.
+    local target
+    target="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+    [[ -n "${SERVICES_TARGET:-}" ]] && target="$SERVICES_TARGET"
+    [[ -f "${target}/scripts/cron_presence_tracker.php" ]] \
+        || die "Não encontrei ${target}/scripts/cron_presence_tracker.php — use SERVICES_TARGET=<dir do módulo> $0 --services"
+    ok "Módulo: ${target}"
+
+    resolve_db_config
+
+    # Usuário de execução: mesma ordem que os modos interativos já usam. Só
+    # importa para permissão de arquivo — a conexão com o banco vai por
+    # DB_USER/DB_PASS, não pelo usuário do sistema. Em host com apache E nginx
+    # instalados (é o caso quando um deles ficou de instalação anterior), vale
+    # apontar na mão o dono do pool do PHP-FPM.
+    local web_user="${SERVICES_USER:-}"
+    if [[ -z "$web_user" ]]; then
+        web_user="www-data"
+        id apache &>/dev/null && web_user="apache"
+        id nginx  &>/dev/null && web_user="nginx"
+    fi
+    id "$web_user" &>/dev/null || die "Usuário '${web_user}' não existe neste host — passe SERVICES_USER=<usuário>."
+    ok "Usuário de execução: ${web_user}"
+
+    local php_bin
+    php_bin=$(command -v php || echo "/usr/bin/php")
+
+    local base_env
+    base_env=$(build_env_block "$CFG_TYPE" "$CFG_HOST" "$CFG_PORT" "$CFG_NAME" "$CFG_USER" "$CFG_PASS")
+
+    # ── Presença: o coletor que alimenta a tabela de presença do Repasse ───
+    install_scheduled_job "plantonistas-presence" "5m" "$web_user" "$php_bin" \
+        "${target}/scripts/cron_presence_tracker.php" "$base_env" "/var/log/plantonistas-presence.log" \
+        || warn "Presença não agendada — veja a mensagem acima."
+
+    # ── Escalonamento: sincroniza o grupo do plantonista do dia ────────────
+    local prefix oncall_env
+    prefix="${ONCALL_GROUP_PREFIX:-Plantonista de Hoje}"
+    oncall_env=$(build_env_block "$CFG_TYPE" "$CFG_HOST" "$CFG_PORT" "$CFG_NAME" "$CFG_USER" "$CFG_PASS" "ONCALL_GROUP_PREFIX=${prefix}")
+    install_scheduled_job "plantonistas-oncall" "5m" "$web_user" "$php_bin" \
+        "${target}/scripts/cron_sync_oncall.php" "$oncall_env" "/var/log/plantonistas-oncall.log" \
+        || warn "Escalonamento não agendado — veja a mensagem acima."
+
+    # ── Menções: só faz sentido com token de API, então é opt-in ───────────
+    if [[ -n "${PLANTONISTAS_ALERT_TOKEN:-}" ]]; then
+        local mentions_env
+        mentions_env=$(build_env_block "$CFG_TYPE" "$CFG_HOST" "$CFG_PORT" "$CFG_NAME" "$CFG_USER" "$CFG_PASS" \
+            "PLANTONISTAS_ALERT_TOKEN=${PLANTONISTAS_ALERT_TOKEN}" \
+            "ZBX_SERVER=${ZBX_SERVER:-127.0.0.1}" \
+            "ZBX_SERVER_PORT=${ZBX_SERVER_PORT:-10051}" \
+            "ZBX_FRONTEND_URL=${ZBX_FRONTEND_URL:-}")
+        install_scheduled_job "plantonistas-mentions" "1m" "$web_user" "$php_bin" \
+            "${target}/scripts/cron_notify_mentions.php" "$mentions_env" "/var/log/plantonistas-mentions.log" \
+            || warn "Notificação de menções não agendada — veja a mensagem acima."
+    else
+        info "Notificação de menções não agendada: exige token de API de Super Admin."
+        info "Para incluir: PLANTONISTAS_ALERT_TOKEN=<token> $0 --services"
+    fi
+
+    echo ""
+    info "RODE EM UM FRONTEND SÓ: os três escrevem no banco compartilhado."
+    info "Conferir:  systemctl list-timers | grep plantonistas   (ou: ls -l /etc/cron.d/plantonistas-*)"
+    info "Logs:      journalctl -u plantonistas-presence.service -f   ou   /var/log/plantonistas-presence.log"
+    echo ""
+    ok "Serviços configurados."
+}
+
+usage() {
+    cat <<'TXT'
+Uso:
+  sudo ./install.sh                 instalação completa, com menu (Docker / All-in-One / Segmentado)
+  sudo ./install.sh --show-config   mostra a configuração de banco que ele descobriu, sem escrever nada
+  sudo ./install.sh --services      SÓ os coletores (presença, escalonamento e, com token, menções),
+                                    sem perguntas — é o passo que a tela de módulos do Zabbix não faz
+
+Variáveis aceitas pelo --services (todas opcionais; o padrão sai do zabbix.conf.php):
+  DB_TYPE DB_HOST DB_PORT DB_NAME DB_USER DB_PASS
+  ZBX_CONF                 caminho do zabbix.conf.php, se estiver fora dos lugares conhecidos
+  ZBX_SERVER_CONF          caminho do zabbix_server.conf (padrão: /etc/zabbix/zabbix_server.conf)
+  SERVICES_TARGET          diretório do módulo, se não for o pai deste script
+  SERVICES_USER            usuário que roda os jobs (padrão: usuário do servidor web)
+  ONCALL_GROUP_PREFIX      prefixo do grupo de escalonamento (padrão: "Plantonista de Hoje")
+  PLANTONISTAS_ALERT_TOKEN token de API; sem ele o cron de menções não é agendado
+  ZBX_SERVER ZBX_SERVER_PORT ZBX_FRONTEND_URL
+TXT
+}
+
+# ══════════════════════════════════════════════════════════
 #  MENU PRINCIPAL
 # ══════════════════════════════════════════════════════════
+#
+# `--services` sai ANTES do menu e de check_deps: ele não instala schema nem
+# copia arquivo, então não tem por que exigir cliente de banco no host nem
+# perguntar modo de instalação.
+case "${1:-}" in
+    --services|--services-only|--crons)
+        banner
+        install_services_only
+        exit 0
+        ;;
+    --show-config)
+        # Diagnóstico: mostra o que o --services descobriria, sem escrever nada.
+        # Existe porque a primeira falha em produção ("faltam dados do banco")
+        # não dizia onde ele tinha procurado.
+        banner
+        step "Config" "Descobrindo a configuração do banco (sem escrever nada)"
+        resolve_db_config
+        echo ""
+        info "DB_TYPE=${CFG_TYPE}  DB_HOST=${CFG_HOST}  DB_PORT=${CFG_PORT}"
+        info "DB_NAME=${CFG_NAME}  DB_USER=${CFG_USER}  DB_PASS=$([[ -n "$CFG_PASS" ]] && echo '<definida>' || echo '<vazia>')"
+        exit 0
+        ;;
+    -h|--help)
+        usage
+        exit 0
+        ;;
+    "")
+        ;;
+    *)
+        err "Argumento desconhecido: $1"
+        echo ""
+        usage
+        exit 1
+        ;;
+esac
+
 banner
 check_deps
 

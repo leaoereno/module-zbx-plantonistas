@@ -25,6 +25,81 @@ function rp_duration(int $s): string {
     if ($s < 3600) return floor($s/60).'m '.($s%60).'s';
     return floor($s/3600).'h '.floor(($s%3600)/60).'m';
 }
+/**
+ * Idade de um alarme no MESMO formato da coluna "Duração" de Monitoramento >
+ * Problemas: até três unidades, começando na maior que existe e pulando as
+ * vazias — "1M 3d 4h", "2d 5h 50m", "3h 55m 20s".
+ *
+ * Quem formata é a função NATIVA do frontend (`convertUnitsS()`, em
+ * include/func.inc.php, que é o que `zbx_date2age()` chama por baixo da tela de
+ * Problemas): "padronizar com o Zabbix" e "reimplementar a regra do Zabbix" são
+ * coisas diferentes — só a primeira continua valendo depois de um upgrade.
+ * `rp_duration()` continua existindo para MTTA/MTTR, que são duração medida,
+ * não idade de alarme.
+ *
+ * O fallback abaixo só entra se a função nativa sumir (ela é global e sempre
+ * carregada no frontend) e reproduz a mesma regra: ano = 365 dias, mês = 30 dias,
+ * corte três níveis abaixo do primeiro preenchido, segundos só quando o maior
+ * nível é hora ou menos.
+ */
+function rp_age(int $s): string {
+    if ($s < 1) {
+        return '0s';
+    }
+    if (function_exists('convertUnitsS')) {
+        return convertUnitsS($s, true);
+    }
+
+    $anos = intdiv($s, 31536000);
+    $rest = $s - $anos * 31536000;
+
+    // 12 meses inteiros no resto viram um ano a mais, e só o ano é impresso
+    // (mesma exceção do convertUnitsS): senão um alarme de 363 dias sairia
+    // como "12M".
+    if (intdiv($rest, 2592000) === 12) {
+        return ($anos + 1).'y';
+    }
+
+    $parts = $anos > 0 ? [$anos.'y'] : [];
+    // $nivel/$inicio: 0=ano, 1=mês, 2=dia, 3=hora, 4=minuto. O corte é três
+    // níveis a partir do primeiro preenchido, contados na ESCALA e não nas
+    // unidades impressas — é por isso que "1M 5h" (dia vazio no meio) para em
+    // duas unidades em vez de buscar uma terceira.
+    $inicio = $anos > 0 ? 0 : null;
+    $nivel  = 1;
+
+    foreach ([['M', 2592000], ['d', 86400], ['h', 3600], ['m', 60]] as [$sufixo, $seg]) {
+        $v = intdiv($rest, $seg);
+        if ($v > 0) {
+            $parts[] = $v.$sufixo;
+            $rest   -= $v * $seg;
+            $inicio  = $inicio ?? $nivel;
+        }
+        if ($inicio !== null && $nivel - $inicio >= 2) {
+            return implode(' ', $parts);
+        }
+        $nivel++;
+    }
+
+    if ($rest > 0 || !$parts) {
+        $parts[] = $rest.'s';
+    }
+
+    return implode(' ', $parts);
+}
+/**
+ * Nome do host para exibição: o VISÍVEL (`hosts.name`), que é o que o Zabbix
+ * mostra em toda tela de monitoramento. O técnico (`hosts.host`) só aparece
+ * quando o visível está vazio — no schema os dois são iguais enquanto ninguém
+ * preenche o campo "Nome visível", então na maioria dos ambientes a troca não
+ * muda nada; onde muda (host cadastrado por IP, por exemplo) o relatório
+ * passa a falar o mesmo nome que o resto do Zabbix.
+ */
+function rp_hostLabel(array $r): string {
+    $visivel = trim((string)($r['host_name'] ?? ''));
+
+    return $visivel !== '' ? $visivel : (string)($r['host'] ?? '');
+}
 function rp_shiftLabel(string $sh): string {
     return ['manha'=>'Manhã (07h–13h)','tarde'=>'Tarde (13h–19h)','noite'=>'Noite (19h–07h)','24h'=>'24 Horas'][$sh] ?? $sh;
 }
@@ -85,26 +160,273 @@ function rp_eventLink(?string $triggerid, $eventid): string {
  * $rp_sev entra só pro item type=severity, pra mostrar o nome REAL da
  * severidade (Administração > Geral), igual ao resto da tela.
  */
-function rp_actionChips(array $items, array $rp_sev): string {
+function rp_actionChips(array $entrada, array $rp_sev): string {
+    $items = $entrada['items'] ?? [];
     if (empty($items)) {
         return '<span class="rp-muted">—</span>';
     }
-    $chips = [];
-    foreach ($items as $it) {
-        $detail = trim(
-            ($it['who'] ? $it['who'] . ' — ' : '')
-            . date('d/m/Y H:i', (int)$it['when'])
-        );
-        if ($it['type'] === 'severity') {
-            $detail .= ': ' . rp_sevLabel((int)($it['old_severity'] ?? 0), $rp_sev)
-                     . ' → ' . rp_sevLabel((int)($it['new_severity'] ?? 0), $rp_sev);
-        } elseif (!empty($it['message'])) {
-            $detail .= ': ' . $it['message'];
+
+    // Snapshot de turno FECHADO gravado antes desta versão não tem o resumo
+    // (ele nasce em queryEventActions()). Nesse caso a notificação volta a ser
+    // um chip por item, como era: documento fechado não pode PERDER informação
+    // por causa de uma melhoria que veio depois dele.
+    $resumo     = $entrada['notify_summary'] ?? null;
+    $consolidar = $resumo !== null;
+
+    // Agrupa por TIPO, preservando a ordem de chegada (os itens já vêm do mais
+    // recente para o mais antigo). Um tipo que aconteceu uma vez só continua
+    // sendo um chip como antes; repetido, vira um chip com a contagem.
+    //
+    // Agrupa por tipo e não por "família": ACK e "ACK removido" são tipos
+    // diferentes e continuam separados de propósito — juntar colocar e tirar
+    // num contador só esconderia justamente a diferença entre os dois.
+    $porTipo = [];
+    foreach ($items as $indice => $it) {
+        $tipo = (string)($it['type'] ?? '');
+
+        // Notificação não entra no agrupamento por tipo: ela já tem
+        // consolidação PRÓPRIA — por mídia, com contagem de falhas, montada no
+        // controller.
+        if ($tipo === 'notify') {
+            if ($consolidar) {
+                continue;
+            }
+            // Sem resumo (snapshot antigo), cada uma volta a ser um chip, como
+            // era. Agrupá-las por tipo aqui daria um contador com o rótulo da
+            // PRIMEIRA — "Notificação: E-mail (34)" contando também os SMS.
+            $porTipo['notify#' . $indice][] = $it;
+            continue;
         }
-        $chips[] = '<span class="rp-act rp-act-' . htmlspecialchars((string)$it['type']) . '" title="'
-                  . htmlspecialchars($detail) . '">' . htmlspecialchars((string)$it['label']) . '</span>';
+
+        $porTipo[$tipo][] = $it;
     }
+
+    $chips = [];
+    foreach ($porTipo as $doTipo) {
+        $chips[] = count($doTipo) === 1
+            ? rp_actionHint($doTipo[0], $rp_sev)
+            : rp_actionGroupHint($doTipo, $rp_sev);
+    }
+
+    // O chip consolidado vai por ÚLTIMO, e não na ordem cronológica dos demais:
+    // ele não é um instante, é um agregado do turno inteiro.
+    if ($consolidar) {
+        $chips[] = rp_notifyHint($resumo);
+    }
+
     return '<div class="rp-act-list">' . implode('', $chips) . '</div>';
+}
+/**
+ * Chip único das notificações, com o resumo por mídia numa caixa.
+ *
+ * O resumo vem pronto do controller (`TurnosReportBase::summarizeNotifications()`)
+ * — a view não conta nada: ela recebe as linhas já agrupadas e ordenadas (falhas
+ * primeiro) e só formata.
+ *
+ * O rótulo do chip carrega o total e, quando existe falha, o número de falhas —
+ * e aí o chip fica vermelho. Isso é deliberado: antes cada notificação era um
+ * chip, então uma falha aparecia sozinha na linha; consolidando sem esse aviso,
+ * um "Falhou: SMTP timeout" ficaria escondido atrás de um clique.
+ */
+function rp_falhasSufixo(int $falhas): string {
+    if ($falhas <= 0) {
+        return '';
+    }
+
+    return ' · ' . $falhas . ($falhas === 1 ? ' falha' : ' falhas');
+}
+function rp_notifyHint(array $resumo): string {
+    $total  = (int)($resumo['total'] ?? 0);
+    $falhas = (int)($resumo['falhas'] ?? 0);
+
+    $linhas = '';
+    foreach ($resumo['medias'] ?? [] as $m) {
+        $qtdFalhas = (int)($m['falhas'] ?? 0);
+        $linhas .= '<tr>'
+                 . '<td>' . htmlspecialchars((string)$m['nome']) . '</td>'
+                 . '<td>' . (int)$m['total'] . '</td>'
+                 . '<td>' . ($qtdFalhas > 0 ? $qtdFalhas : '—') . '</td>'
+                 . '<td>' . ((int)$m['ultima'] > 0 ? date('d/m/Y H:i', (int)$m['ultima']) : '—') . '</td>'
+                 . '</tr>';
+    }
+
+    $conteudo = '<table class="list-table"><thead><tr>'
+              . '<th>Mídia</th><th>Envios</th><th>Falhas</th><th>Última</th>'
+              . '</tr></thead><tbody>' . $linhas . '</tbody></table>';
+
+    $rotulo = 'Notificações (' . $total . rp_falhasSufixo($falhas) . ')';
+    $classe = $falhas > 0 ? 'rp-act-unack' : 'rp-act-notify';
+
+    return '<button type="button" class="rp-act rp-act-btn ' . $classe . '"'
+         . ' data-hintbox="1" data-hintbox-static="1"'
+         . ' data-hintbox-class="hintbox-wrap-horizontal"'
+         . ' data-hintbox-contents="' . htmlspecialchars($conteudo, ENT_QUOTES) . '"'
+         . ' aria-label="' . htmlspecialchars('Detalhes das ' . $total . ' notificações') . '">'
+         . htmlspecialchars($rotulo) . '</button>';
+}
+/**
+ * Um chip da coluna Ações: sempre um botão que abre os detalhes da ação numa
+ * caixa — quem fez, quando, e o que a ação carrega (a mensagem escrita, a
+ * severidade de/para, o status do envio).
+ *
+ * ── Por que TODOS os chips são botão ────────────────────────────────────
+ *
+ * Antes só o de mensagem era; o resto era `<span>`. Num contêiner flex
+ * (`.rp-act-list`) o padrão é `align-items: stretch`, então o span esticava e
+ * o texto ficava colado no topo, enquanto o botão centraliza o próprio texto —
+ * era isso que deixava o "ACK" mais alto que o "Mensagem" na mesma linha. Com
+ * todos iguais o alinhamento deixa de depender do tipo de elemento (e o
+ * `align-items: center` no CSS fecha a porta de vez).
+ *
+ * O ganho não é só visual: a informação que estava só no `title` — que some ao
+ * mover o mouse e não dá para copiar — passa a ter um lugar fixo e igual para
+ * toda ação.
+ *
+ * ── A caixa ─────────────────────────────────────────────────────────────
+ *
+ * É o hintbox NATIVO do Zabbix, o mesmo componente que a tela Monitoramento >
+ * Problemas usa para mensagens de ACK (`makeEventMessagesIcon()`, em
+ * ui/include/actions.inc.php), com a mesma tabela `list-table` por dentro. Não
+ * há JS novo: o `init.js` do frontend roda `hintBox.bindEvents()`, que delega
+ * em `document` para `[data-hintbox=1]`, então marcação de módulo é atendida
+ * igual à do core. O contrato é o do `CTag::setHint()`:
+ *
+ *   data-hintbox="1"                 liga o componente
+ *   data-hintbox-static="1"          clique FIXA a caixa (com botão de fechar);
+ *                                    o passar do mouse continua mostrando
+ *   data-hintbox-class=…             classe do invólucro interno
+ *   data-hintbox-contents="…"        o HTML da caixa
+ *
+ * Três detalhes que o formato exige:
+ *
+ * - **`<button>`, não `<span>`.** Além do alinhamento, o handler nativo escuta
+ *   `keydown` de Enter/Espaço e só elemento focável recebe esse evento — é
+ *   como o core faz (lá é um `CButtonIcon`).
+ * - **Quebra de linha por `str_replace`, não por `nl2br()`.** O `nl2br()`
+ *   INSERE a tag e MANTÉM o `\n`; o `hintBox.createBox()` faz
+ *   `hintText.replace(/\n/g, '<br />')` no que recebe — as duas coisas juntas
+ *   dobrariam toda quebra de linha da mensagem.
+ * - **Sem `title`.** O hintbox já aparece ao passar o mouse; com o atributo, a
+ *   dica nativa do navegador apareceria por cima da caixa.
+ *
+ * O conteúdo é escapado ANTES de virar atributo: `htmlspecialchars()` no texto
+ * (mensagem é escrita por analista, na tela de ACK do Zabbix) e de novo no HTML
+ * inteiro ao entrar em `data-hintbox-contents`. O navegador desfaz a segunda
+ * camada ao ler o atributo e entrega ao JS o HTML já seguro.
+ */
+/**
+ * Terceira coluna da caixa: cabeçalho e conteúdo mudam com o tipo da ação,
+ * porque "Mensagem" e "Enviada" não são a mesma informação com nomes
+ * diferentes. Vive separada porque serve às DUAS caixas — a de uma ação só e a
+ * do grupo, que repete a mesma coluna em N linhas.
+ *
+ * @return array{0: string, 1: string} cabeçalho e valor (o valor já escapado)
+ */
+function rp_actionColuna(array $it, array $rp_sev): array {
+    $tipo   = (string)($it['type'] ?? '');
+    $rotulo = (string)($it['label'] ?? 'Ação');
+    $msg    = trim((string)($it['message'] ?? ''));
+
+    switch ($tipo) {
+        case 'message':
+            $coluna = 'Mensagem';
+            $valor  = str_replace(["\r\n", "\r", "\n"], '<br>', htmlspecialchars($msg));
+            break;
+
+        case 'severity':
+            $coluna = 'Severidade';
+            $valor  = htmlspecialchars(
+                rp_sevLabel((int)($it['old_severity'] ?? 0), $rp_sev)
+                . ' → ' . rp_sevLabel((int)($it['new_severity'] ?? 0), $rp_sev)
+            );
+            break;
+
+        case 'notify':
+            // Notificação não tem autor (é o Zabbix que dispara) e o que ela
+            // carrega é o status do envio — inclusive o erro, quando falhou.
+            $coluna = 'Status';
+            $valor  = htmlspecialchars($msg !== '' ? $msg : 'Pendente');
+            break;
+
+        case 'suppress':
+            // O que a supressão carrega é o PRAZO, montado no controller
+            // (TurnosReportBase::suppressUntilLabel()): "Até dd/mm/aaaa hh:mm"
+            // ou "Por tempo indeterminado", que é o que `suppress_until = 0`
+            // significa no schema do Zabbix.
+            $coluna = 'Supressão';
+            $valor  = htmlspecialchars($msg !== '' ? $msg : $rotulo);
+            break;
+
+        default:
+            // ACK, Fechado, Suprimido, Marcado como causa… A ação é o próprio
+            // rótulo; o que interessa na caixa é quem fez e quando.
+            $coluna = 'Ação';
+            $valor  = htmlspecialchars($rotulo);
+    }
+
+    return [$coluna, $valor];
+}
+/** Uma linha da caixa: hora, quem fez e o valor da coluna do tipo. */
+function rp_actionLinha(array $it, array $rp_sev): string {
+    $quem = trim((string)($it['who'] ?? ''));
+    [, $valor] = rp_actionColuna($it, $rp_sev);
+
+    return '<tr>'
+         . '<td>' . date('d/m/Y H:i:s', (int)($it['when'] ?? 0)) . '</td>'
+         . '<td>' . htmlspecialchars($quem !== '' ? $quem : '—') . '</td>'
+         . '<td>' . ($valor !== '' ? $valor : '—') . '</td>'
+         . '</tr>';
+}
+/** Monta o botão-chip com a caixa. Usado pela ação única e pelo grupo. */
+function rp_actionBotao(string $tipo, string $rotulo, string $coluna, string $linhas, string $aria): string {
+    $conteudo = '<table class="list-table"><thead><tr>'
+              . '<th>Hora</th><th>Usuário</th><th>' . $coluna . '</th>'
+              . '</tr></thead><tbody>' . $linhas . '</tbody></table>';
+
+    return '<button type="button" class="rp-act rp-act-btn rp-act-' . htmlspecialchars($tipo) . '"'
+         . ' data-hintbox="1" data-hintbox-static="1"'
+         . ' data-hintbox-class="hintbox-wrap-horizontal"'
+         . ' data-hintbox-contents="' . htmlspecialchars($conteudo, ENT_QUOTES) . '"'
+         . ' aria-label="' . htmlspecialchars($aria) . '">'
+         . htmlspecialchars($rotulo) . '</button>';
+}
+function rp_actionHint(array $it, array $rp_sev): string {
+    $tipo   = (string)($it['type'] ?? '');
+    $rotulo = (string)($it['label'] ?? 'Ação');
+    [$coluna] = rp_actionColuna($it, $rp_sev);
+
+    return rp_actionBotao($tipo, $rotulo, $coluna, rp_actionLinha($it, $rp_sev), 'Detalhes: ' . $rotulo);
+}
+/**
+ * Chip de um tipo de ação que aconteceu MAIS DE UMA VEZ no mesmo alarme.
+ *
+ * Mesmo princípio do chip de notificações: três ACKs seguidos, ou uma supressão
+ * posta e reposta, viravam três selos iguais na linha e empurravam para fora o
+ * que era diferente. Aqui viram "ACK (3)", e a caixa lista as três — quem fez e
+ * quando, que é a informação que some quando os selos se repetem.
+ *
+ * A ordem das linhas é a que veio do controller: mais recente primeiro.
+ */
+function rp_actionGroupHint(array $items, array $rp_sev): string {
+    $primeiro = $items[0];
+    $tipo     = (string)($primeiro['type'] ?? '');
+    $rotulo   = (string)($primeiro['label'] ?? 'Ação');
+    [$coluna] = rp_actionColuna($primeiro, $rp_sev);
+
+    $linhas = '';
+    foreach ($items as $it) {
+        $linhas .= rp_actionLinha($it, $rp_sev);
+    }
+
+    $total = count($items);
+
+    return rp_actionBotao(
+        $tipo,
+        $rotulo . ' (' . $total . ')',
+        $coluna,
+        $linhas,
+        'Detalhes: ' . $total . ' × ' . $rotulo
+    );
 }
 /**
  * "Quem resolveu" da tabela Alarmes Resolvidos: fechamento manual (item
@@ -469,13 +791,14 @@ $pview_base = "zabbix.php?action=problem.view&filter_set=1&filter_show=3&from=".
         <div class="rp-heatmap" id="calendarHeatmap"></div>
         <div class="rp-heatmap-legend">
             <span>Menos</span>
-            <span class="rp-hm-swatch" style="background:#ebedf0"></span>
-            <span class="rp-hm-swatch" style="background:#9be9a8"></span>
-            <span class="rp-hm-swatch" style="background:#40c463"></span>
-            <span class="rp-hm-swatch" style="background:#30a14e"></span>
-            <span class="rp-hm-swatch" style="background:#E45959"></span>
+            <span class="rp-hm-swatch rp-hm-l0"></span>
+            <span class="rp-hm-swatch rp-hm-l1"></span>
+            <span class="rp-hm-swatch rp-hm-l2"></span>
+            <span class="rp-hm-swatch rp-hm-l3"></span>
+            <span class="rp-hm-swatch rp-hm-l4"></span>
+            <span class="rp-hm-swatch rp-hm-l5"></span>
             <span>Mais</span>
-            <span style="margin-left:20px;color:#888;font-size:11px"><i class="fas fa-mouse-pointer"></i> Clique no dia para ver o relatório</span>
+            <span class="rp-hm-hint"><i class="fas fa-mouse-pointer"></i> Clique no dia para ver o relatório</span>
         </div>
     </div>
 </div>
@@ -540,11 +863,11 @@ $pview_base = "zabbix.php?action=problem.view&filter_set=1&filter_show=3&from=".
         <tr class="<?= $cls ?>">
             <td class="td-mono"><?= date('d/m H:i', (int)$r['clock']) ?></td>
             <td><span class="rp-sev sev-<?= rp_sevClass((int)$r['severity']) ?>"><?= htmlspecialchars(rp_sevLabel((int)$r['severity'], $rp_sev)) ?></span></td>
-            <td><a href="zabbix.php?action=problem.view&filter_set=1&filter_show=3&filter_name=<?= urlencode($r['host']) ?>" target="_blank" class="rp-host-link"><?= htmlspecialchars($r['host']) ?> <i class="fas fa-external-link-alt"></i></a></td>
+            <td><a href="zabbix.php?action=problem.view&filter_set=1&filter_show=3&filter_name=<?= urlencode(rp_hostLabel($r)) ?>" target="_blank" class="rp-host-link"><?= htmlspecialchars(rp_hostLabel($r)) ?> <i class="fas fa-external-link-alt"></i></a></td>
             <td><a href="zabbix.php?action=problem.view&filter_set=1&filter_show=3&filter_name=<?= urlencode($r['trigger_desc']) ?>" class="rp-trigger-link"><?= htmlspecialchars($r['trigger_desc']) ?></a></td>
-            <td class="td-bold"><?= rp_duration((int)$r['age_seconds']) ?></td>
+            <td class="td-bold"><?= rp_age((int)$r['age_seconds']) ?></td>
             <td class="td-center"><?= $r['has_ack'] ? '<i class="fas fa-check-circle rp-ack-yes"></i>' : '<i class="fas fa-times-circle rp-ack-no"></i>' ?></td>
-            <td><?= rp_actionChips($rp_actions[(int)$r['eventid']]['items'] ?? [], $rp_sev) ?></td>
+            <td><?= rp_actionChips($rp_actions[(int)$r['eventid']] ?? [], $rp_sev) ?></td>
             <td class="td-center"><a href="<?= rp_eventLink($r['triggerid'] ?? null, $r['eventid']) ?>" target="_blank" class="rp-action" title="Ver no Zabbix"><i class="fas fa-search"></i></a></td>
         </tr>
         <?php endforeach; ?>
@@ -564,9 +887,9 @@ $pview_base = "zabbix.php?action=problem.view&filter_set=1&filter_show=3&from=".
         <tr class="<?= $cls ?>">
             <td class="td-mono"><?= date('H:i:s', (int)$r['clock']) ?></td>
             <td><span class="rp-sev sev-<?= rp_sevClass((int)$r['severity']) ?>"><?= htmlspecialchars(rp_sevLabel((int)$r['severity'], $rp_sev)) ?></span></td>
-            <td><a href="zabbix.php?action=problem.view&filter_set=1&filter_show=3&filter_name=<?= urlencode($r['host']) ?>" target="_blank" class="rp-host-link"><?= htmlspecialchars($r['host']) ?></a></td>
+            <td><a href="zabbix.php?action=problem.view&filter_set=1&filter_show=3&filter_name=<?= urlencode(rp_hostLabel($r)) ?>" target="_blank" class="rp-host-link"><?= htmlspecialchars(rp_hostLabel($r)) ?></a></td>
             <td><a href="zabbix.php?action=problem.view&filter_set=1&filter_show=3&filter_name=<?= urlencode($r['trigger_desc']) ?>" class="rp-trigger-link"><?= htmlspecialchars($r['trigger_desc']) ?></a></td>
-            <td><?= rp_actionChips($rp_actions[(int)$r['eventid']]['items'] ?? [], $rp_sev) ?></td>
+            <td><?= rp_actionChips($rp_actions[(int)$r['eventid']] ?? [], $rp_sev) ?></td>
             <td class="td-center"><a href="<?= rp_eventLink($r['triggerid'] ?? null, $r['eventid']) ?>" target="_blank" class="rp-action" title="Ver no Zabbix"><i class="fas fa-search"></i></a></td>
         </tr>
         <?php endforeach; ?>
@@ -587,9 +910,9 @@ $pview_base = "zabbix.php?action=problem.view&filter_set=1&filter_show=3&from=".
         <tr class="<?= $cls ?>">
             <td class="td-mono"><?= date('H:i:s', (int)$r['clock']) ?></td>
             <td><span class="rp-sev sev-<?= rp_sevClass((int)$r['severity']) ?>"><?= htmlspecialchars(rp_sevLabel((int)$r['severity'], $rp_sev)) ?></span></td>
-            <td><a href="zabbix.php?action=problem.view&filter_set=1&filter_show=3&filter_name=<?= urlencode($r['host']) ?>" target="_blank" class="rp-host-link"><?= htmlspecialchars($r['host']) ?></a></td>
+            <td><a href="zabbix.php?action=problem.view&filter_set=1&filter_show=3&filter_name=<?= urlencode(rp_hostLabel($r)) ?>" target="_blank" class="rp-host-link"><?= htmlspecialchars(rp_hostLabel($r)) ?></a></td>
             <td><a href="zabbix.php?action=problem.view&filter_set=1&filter_show=3&filter_name=<?= urlencode($r['trigger_desc']) ?>" class="rp-trigger-link"><?= htmlspecialchars($r['trigger_desc']) ?></a></td>
-            <td><?= rp_actionChips($rp_actions[(int)$r['eventid']]['items'] ?? [], $rp_sev) ?></td>
+            <td><?= rp_actionChips($rp_actions[(int)$r['eventid']] ?? [], $rp_sev) ?></td>
             <td class="td-center"><a href="<?= rp_eventLink($r['triggerid'] ?? null, $r['eventid']) ?>" target="_blank" class="rp-action" title="Ver no Zabbix"><i class="fas fa-search"></i></a></td>
         </tr>
         <?php endforeach; ?>
@@ -612,11 +935,11 @@ $pview_base = "zabbix.php?action=problem.view&filter_set=1&filter_show=3&from=".
         <tr class="<?= $cls ?>">
             <td class="td-mono"><?= date('d/m H:i', (int)$r['r_clock']) ?></td>
             <td><span class="rp-sev sev-<?= rp_sevClass((int)$r['severity']) ?>"><?= htmlspecialchars(rp_sevLabel((int)$r['severity'], $rp_sev)) ?></span></td>
-            <td><a href="zabbix.php?action=problem.view&filter_set=1&filter_show=3&filter_name=<?= urlencode($r['host']) ?>" target="_blank" class="rp-host-link"><?= htmlspecialchars($r['host']) ?></a></td>
+            <td><a href="zabbix.php?action=problem.view&filter_set=1&filter_show=3&filter_name=<?= urlencode(rp_hostLabel($r)) ?>" target="_blank" class="rp-host-link"><?= htmlspecialchars(rp_hostLabel($r)) ?></a></td>
             <td><a href="zabbix.php?action=problem.view&filter_set=1&filter_show=3&filter_name=<?= urlencode($r['trigger_desc']) ?>" class="rp-trigger-link"><?= htmlspecialchars($r['trigger_desc']) ?></a></td>
             <td class="td-bold"><?= rp_duration((int)$r['resolve_seconds']) ?></td>
             <td><?= rp_resolvedBy($closedBy) ?></td>
-            <td><?= rp_actionChips($rp_actions[(int)$r['eventid']]['items'] ?? [], $rp_sev) ?></td>
+            <td><?= rp_actionChips($rp_actions[(int)$r['eventid']] ?? [], $rp_sev) ?></td>
             <td class="td-center"><a href="<?= rp_eventLink($r['triggerid'] ?? null, $r['eventid']) ?>" target="_blank" class="rp-action" title="Ver no Zabbix"><i class="fas fa-search"></i></a></td>
         </tr>
         <?php endforeach; ?>
@@ -636,7 +959,7 @@ $pview_base = "zabbix.php?action=problem.view&filter_set=1&filter_show=3&from=".
             <?php $i=1; foreach ($data['top_hosts'] as $r): ?>
             <tr>
                 <td class="td-center td-bold"><?= $i++ ?></td>
-                <td><a href="<?= rp_probLink($r['host']) ?>" target="_blank" class="rp-host-link"><?= htmlspecialchars($r['host']) ?></a></td>
+                <td><a href="<?= rp_probLink(rp_hostLabel($r)) ?>" target="_blank" class="rp-host-link"><?= htmlspecialchars(rp_hostLabel($r)) ?></a></td>
                 <td class="td-center td-bold"><?= $r['event_count'] ?></td>
                 <td><span class="rp-sev sev-<?= rp_sevClass((int)$r['max_severity']) ?>"><?= htmlspecialchars(rp_sevLabel((int)$r['max_severity'], $rp_sev)) ?></span></td>
             </tr>
@@ -667,7 +990,24 @@ $pview_base = "zabbix.php?action=problem.view&filter_set=1&filter_show=3&from=".
 <div class="rp-card" id="table-presence">
     <div class="rp-card-head"><i class="fas fa-user-clock"></i> Presença de Analistas <span class="rp-badge"><?= count($data['presence']) ?></span></div>
     <?php if (empty($data['presence'])): ?>
-        <div class="rp-card-body rp-empty">Nenhum dado de presença. Execute o cron <code>cron_presence_tracker.php</code>.</div>
+        <?php /* Lista vazia tem duas causas MUITO diferentes, e a mensagem antiga
+                 ("execute o cron") tratava as duas como uma: turno em que ninguém
+                 acessou o Zabbix, e ambiente onde o coletor nunca foi agendado.
+                 `presence_last` é a data do último registro que existe na tabela,
+                 sem recorte de turno — ver queryLastPresence(). */ ?>
+        <?php if (($data['presence_last'] ?? null) === null): ?>
+            <div class="rp-card-body rp-empty">
+                Não há registro de presença NENHUM neste ambiente — o coletor
+                provavelmente não está agendado neste servidor.<br>
+                Agende-o uma vez, em UM frontend só:
+                <code>sudo scripts/install.sh --services</code>
+            </div>
+        <?php else: ?>
+            <div class="rp-card-body rp-empty">
+                Nenhum analista ativo nesta janela.
+                Último registro de presença: <?= htmlspecialchars($data['presence_last']) ?>.
+            </div>
+        <?php endif; ?>
     <?php else: ?>
         <table class="rp-table"><thead><tr><th>Analista</th><th>Username</th><th>Turno</th><th>Primeira Atividade</th><th>Última Atividade</th><th>Tempo Online</th></tr></thead><tbody>
         <?php foreach ($data['presence'] as $p): ?>
@@ -810,6 +1150,13 @@ const SEV_DATA = <?= $sev_data ?>;
 const NOTE_SHIFT = '<?= $shift ?>';
 const NOTE_DATE = '<?= $date ?>';
 const CALENDAR_DATA = <?= $calendar_json ?>;
+// Tema de GRÁFICO do Zabbix (tabela `graph_theme` do tema ativo) — cor de
+// rótulo de eixo, de legenda e de grade. Ver TurnosReportBase::graphTheme().
+const GRAPH_THEME = <?= json_encode($data['graph_theme'] ?? ['text' => '#1F2C33', 'grid' => '#CCD5D9', 'dark' => false]) ?>;
+// A pilha de fonte do Zabbix, a mesma do token --rp-font. Aqui precisa estar
+// escrita porque canvas não herda CSS: o Chart.js desenha texto com o que
+// estiver em Chart.defaults.font, não com o que a folha de estilo diz.
+const ZBX_FONT = 'Arial, Tahoma, Verdana, sans-serif';
 // Tokens CSRF das actions de escrita chamadas por esta tela.
 const CSRF_NOTES_SAVE    = <?= json_encode($data['csrf_notes_save'] ?? '') ?>;
 const CSRF_MENTIONS_READ = <?= json_encode($data['csrf_mentions_read'] ?? '') ?>;
@@ -839,25 +1186,69 @@ if (typeof Chart === 'undefined') {
     document.querySelectorAll('.rp-chart-btn').forEach(function (b) { b.hidden = true; });
 }
 
+// Padrão de tipografia/cor dos dois gráficos, aplicado uma vez. Sem isto o
+// Chart.js desenha na fonte DELE (Helvetica) e num cinza próprio, e os
+// gráficos ficavam com tipografia diferente do resto da página.
+if (typeof Chart !== 'undefined') {
+    Chart.defaults.font.family = ZBX_FONT;
+    Chart.defaults.font.size   = 12;
+    Chart.defaults.color       = GRAPH_THEME.text;
+}
+
+// Cor de tema para o canvas: o Chart.js pinta em canvas, que não herda CSS —
+// o valor tem de ser lido do container na mão. Mesmo caminho que o plugin de
+// totalização da rosca já usa; o literal é só a rede de proteção para o caso
+// de o CSS do módulo não ter carregado (o balanceador bloqueia .js, não .css,
+// mas a rede custa uma linha).
+function rpToken(nome, alternativa) {
+    const alvo = document.getElementById('rpContainer') || document.body;
+    return (getComputedStyle(alvo).getPropertyValue(nome) || '').trim() || alternativa;
+}
+
 const maxMtta = Math.max(...MTTA_DATA);
 const mttaSuggestedMax = (maxMtta > 0 && maxMtta < 3600) ? 3600 : undefined;
 
 if (document.getElementById('chartMtta')) {
     new Chart(document.getElementById('chartMtta'), {
         type:'bar', data:{labels:MTTA_LABELS, datasets:[{label:'MTTA Médio',data:MTTA_DATA,
-            backgroundColor: IS_DARK_THEME ? '#02a0ff' : '#0275b8', borderRadius:3}]},
+            backgroundColor: rpToken('--rp-blue', IS_DARK_THEME ? '#4796c4' : '#0275b8'), borderRadius:3}]},
         options:{responsive:true,maintainAspectRatio:false,
             plugins:{legend:{display:false},tooltip:{callbacks:{label:function(c){const s=c.parsed.y;
                 return s<60?s+'s':s<3600?Math.floor(s/60)+'m '+(s%60)+'s':Math.floor(s/3600)+'h '+Math.floor((s%3600)/60)+'m';}}}},
-            scales:{x:{grid:{display:false},ticks:{font:{size:11},color: IS_DARK_THEME ? '#aaa' : '#999'}},
-                y:{grid:{color: IS_DARK_THEME ? 'rgba(255,255,255,0.06)' : '#f0f0f0'}, suggestedMax: mttaSuggestedMax,
-                   beginAtZero:true,ticks:{font:{size:11},color: IS_DARK_THEME ? '#aaa' : '#999',
+            scales:{x:{grid:{display:false},ticks:{color: GRAPH_THEME.text}},
+                y:{grid:{color: GRAPH_THEME.grid}, suggestedMax: mttaSuggestedMax,
+                   beginAtZero:true,ticks:{color: GRAPH_THEME.text,
                     callback:function(v){return v<60?v+'s':Math.floor(v/60)+'m';}}}}}
     });
 }
 
 // Severity chart with click-to-filter
 const sevMap = [0,1,2,3,4,5]; // severity index to value
+
+// Proporção do furo da rosca. Precisa viver AQUI, no escopo do arquivo, e não
+// dentro do if abaixo: o toggleSevChart() é declarado fora dele e também aplica
+// este valor ao voltar de barra para rosca — um `const` dentro do bloco daria
+// ReferenceError no clique do botão. Vale um valor só porque o total impresso no
+// centro é dimensionado pelo furo: se os dois lugares divergirem, o número
+// encolhe depois do primeiro toggle.
+const SEV_CUTOUT = '62%';
+
+// Cinza de "desativado" da legenda. Sai do token do tema (o mesmo dos rótulos
+// de tabela), com o valor literal só como rede se o CSS não tiver carregado.
+const SEV_MUTED = rpToken('--rp-text-muted', GRAPH_THEME.dark ? '#9ca1a4' : '#768d99');
+
+/**
+ * Soma das severidades VISÍVEIS. Clicar na legenda esconde uma fatia
+ * (`chart.toggleDataVisibility()`, comportamento padrão do Chart.js), mas o
+ * array de dados continua inteiro — quem sabe o que está escondido é o
+ * `chart.getDataVisibility(i)`. Somar `data` direto ignorava os cliques e o
+ * total do centro ficava parado enquanto a rosca encolhia.
+ */
+function sevTotalVisivel(chart) {
+    return chart.data.datasets[0].data.reduce(function (soma, v, i) {
+        return soma + (chart.getDataVisibility(i) ? (Number(v) || 0) : 0);
+    }, 0);
+}
 if (document.getElementById('chartSev')) {
     // Chart.js v4 bug: doughnut with borderWidth:0 and a single non-zero slice
     // renders blank. Fix: use borderWidth:2 with matching borderColor so the
@@ -867,19 +1258,148 @@ if (document.getElementById('chartSev')) {
     // TurnosReportBase::querySeverities().
     const sevBgColors = SEV_COLORS;
     const sevTotal = SEV_DATA.reduce((a,b)=>a+b,0);
+
+    // Totalização no centro da rosca.
+    //
+    // Plugin local (declarado no `plugins:` DESTE gráfico, não em Chart.register)
+    // para não desenhar por cima do gráfico de MTTA, que é outro canvas na mesma
+    // página.
+    //
+    // Três cuidados que o desenho exige:
+    //
+    // 1. Só em rosca. O botão "mudar formato" troca o tipo para barra, e aí não
+    //    há furo — o texto ficaria flutuando sobre as colunas.
+    // 2. A fonte encolhe até caber. O furo é medido em pixels a cada desenho
+    //    (o card é responsivo, e a legenda à direita muda a área útil), então um
+    //    tamanho fixo estouraria a borda num painel estreito ou num total de 4
+    //    dígitos. Mede-se o texto e reduz-se até entrar na largura útil.
+    // 3. A cor vem das custom properties do tema (--rp-text/--rp-text-muted),
+    //    não de hex literal: é a regra do módulo, e o canvas não herda CSS, então
+    //    é preciso ler o valor computado na mão.
+    const sevCenterTotal = {
+        id: 'sevCenterTotal',
+        afterDatasetsDraw: function (chart) {
+            if (chart.config.type !== 'doughnut') return;
+
+            // innerRadius de um arco é a medida exata do furo — mas o arco tem
+            // de ser um dos DESENHADOS: com a legenda escondendo severidades, o
+            // primeiro da lista pode ser justamente um escondido, e aí a medida
+            // não serve. Pega-se o primeiro com raio utilizável.
+            const arc  = (chart.getDatasetMeta(0).data || []).find(function (a) {
+                return a && isFinite(a.innerRadius) && a.innerRadius > 0;
+            });
+            const area = chart.chartArea;
+            if (!area) return;
+
+            // Com todos os valores zerados (ou todas as fatias escondidas) o
+            // Chart.js pode não produzir arco utilizável, então o furo é
+            // derivado da área do gráfico — o card continua dizendo "0".
+            let cx, cy, raio;
+            if (arc) {
+                cx = arc.x; cy = arc.y; raio = arc.innerRadius;
+            } else {
+                cx = (area.left + area.right) / 2;
+                cy = (area.top + area.bottom) / 2;
+                raio = Math.min(area.right - area.left, area.bottom - area.top) / 2
+                     * (parseFloat(SEV_CUTOUT) / 100);
+            }
+            if (!isFinite(raio) || raio < 14) return;
+
+            const total  = sevTotalVisivel(chart);
+            const valor  = total.toLocaleString('pt-BR');
+            const rotulo = total === 1 ? 'alarme' : 'alarmes';
+
+            // O número é texto de GRÁFICO: sai da mesma cor que a legenda e os
+            // eixos, a do tema de gráfico do Zabbix. O rótulo abaixo dele é
+            // acessório e continua na tinta auxiliar do módulo.
+            const estilo = getComputedStyle(chart.canvas);
+            const corValor  = GRAPH_THEME.text;
+            const corRotulo = (estilo.getPropertyValue('--rp-text-muted') || '').trim()
+                || (IS_DARK_THEME ? '#9ca1a4' : '#768d99');
+
+            const FONTE = ZBX_FONT;
+            const ctx = chart.ctx;
+
+            ctx.save();
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+
+            // Largura útil: a corda do círculo é 2*raio, mas texto encostado na
+            // curva fica feio e a rosca "aperta" o número. 1.5 deixa respiro.
+            const larguraUtil = raio * 1.5;
+
+            let tamValor = Math.round(raio * 0.60);
+            ctx.font = '700 ' + tamValor + 'px ' + FONTE;
+            while (tamValor > 10 && ctx.measureText(valor).width > larguraUtil) {
+                tamValor -= 1;
+                ctx.font = '700 ' + tamValor + 'px ' + FONTE;
+            }
+
+            const tamRotulo = Math.max(9, Math.round(tamValor * 0.30));
+            const espaco    = Math.round(tamRotulo * 0.45);
+            const alturaBloco = tamValor + espaco + tamRotulo;
+            const topo = cy - alturaBloco / 2;
+
+            ctx.fillStyle = corValor;
+            ctx.fillText(valor, cx, topo + tamValor / 2);
+
+            // O rótulo só entra se sobrar furo para ele: num painel muito
+            // estreito é melhor mostrar só o número do que dois textos colados.
+            if (alturaBloco <= raio * 1.7) {
+                ctx.font = '600 ' + tamRotulo + 'px ' + FONTE;
+                ctx.fillStyle = corRotulo;
+                // letterSpacing só existe em navegador recente; ignorado onde não há.
+                ctx.letterSpacing = '0.6px';
+                ctx.fillText(rotulo.toUpperCase(), cx, topo + tamValor + espaco + tamRotulo / 2);
+                ctx.letterSpacing = '0px';
+            }
+
+            ctx.restore();
+        }
+    };
+
     window.sevChart = new Chart(document.getElementById('chartSev'), {
+        plugins:[sevCenterTotal],
         type:'doughnut', data:{labels:SEV_LABELS, datasets:[{data:SEV_DATA,
             backgroundColor: sevBgColors,
             borderColor: sevBgColors,
             borderWidth: sevTotal > 0 ? 2 : 0,
             hoverOffset: 6}]},
-        options:{responsive:true,maintainAspectRatio:false,cutout:'55%',
+        options:{responsive:true,maintainAspectRatio:false,cutout:SEV_CUTOUT,
             plugins:{
-                legend:{position:'right',labels:{font:{size:11},padding:12,color: IS_DARK_THEME ? '#ccc' : '#666',usePointStyle:true,pointStyle:'circle',
+                // Legenda à direita (posição de sempre), com o marcador e a
+                // tinta do widget de pizza do Zabbix: retângulo de 10x4 e o nome
+                // na cor de texto do tema de gráfico.
+                //
+                // ARMADILHA, e ela custou uma rodada inteira: quem pinta o texto
+                // da legenda é `legendItem.fontColor`, não `labels.color`. O
+                // Chart.js desenha com `ctx.fillStyle = item.fontColor` — e as
+                // implementações PADRÃO de generateLabels() é que copiam
+                // `labels.color` para dentro de cada item. Um generateLabels()
+                // próprio (este existe para juntar o valor ao nome) que não
+                // devolve `fontColor` deixa a propriedade `undefined`; o canvas
+                // ignora fillStyle inválido em silêncio e o texto sai no preto
+                // padrão. Era por isso que o nome da severidade continuava preto
+                // no tema escuro por cima de card escuro, e mexer em
+                // `labels.color` não mudava nada — a opção nunca chegava a ser
+                // lida. `labels.color` fica assim mesmo, para o dia em que este
+                // generateLabels() sumir.
+                legend:{position:'right',labels:{padding:10,color: GRAPH_THEME.text,
+                    usePointStyle:false,boxWidth:10,boxHeight:4,
+                    // `hidden` sai de getDataVisibility(), e NÃO `false` fixo:
+                    // era esse literal que impedia a legenda de mostrar o estado.
+                    // Com ele o Chart.js risca o rótulo da fatia escondida; o
+                    // cinza no marcador e no texto é nosso, porque riscado
+                    // sozinho é discreto demais para o clique parecer ter efeito.
+                    // `index` continua indo no item: é por ele que o onClick
+                    // padrão da legenda sabe qual fatia alternar.
                     generateLabels:function(chart){
                         const d=chart.data; return d.labels.map(function(l,i){
-                            return {text:l+' ('+d.datasets[0].data[i]+')',fillStyle:d.datasets[0].backgroundColor[i],
-                                strokeStyle:'transparent',lineWidth:0,index:i,hidden:false,pointStyle:'circle'};
+                            const visivel = chart.getDataVisibility(i);
+                            return {text:l+' ('+d.datasets[0].data[i]+')',
+                                fillStyle: visivel ? d.datasets[0].backgroundColor[i] : SEV_MUTED,
+                                fontColor: visivel ? GRAPH_THEME.text : SEV_MUTED,
+                                strokeStyle:'transparent',lineWidth:0,index:i,hidden:!visivel};
                         });
                     }
                 }},
@@ -889,9 +1409,13 @@ if (document.getElementById('chartSev')) {
                 // c.parsed direto mostrava "[object Object]" — mas só no modo
                 // barra, que é o menos usado, então o defeito passou batido.
                 // c.raw é o valor do array de dados nos dois tipos.
+                //
+                // A porcentagem é sobre o total VISÍVEL, o mesmo que o centro da
+                // rosca mostra: com uma severidade escondida, dividir pelo total
+                // cheio faria a soma das fatias na tela dar menos de 100%.
                 tooltip:{callbacks:{label:function(c){
                     const v = Number(c.raw) || 0;
-                    const t = c.dataset.data.reduce((a,b)=>a+Number(b),0);
+                    const t = sevTotalVisivel(c.chart);
                     if (window.sevChart && window.sevChart.config.type === 'bar') return c.label+': '+v;
                     return c.label+': '+v+' ('+(t>0?Math.round(v/t*100):0)+'%)';}}}
             },
@@ -912,11 +1436,13 @@ function toggleSevChart() {
         window.sevChart.options.cutout = undefined;
         window.sevChart.options.plugins.legend.display = false;
         window.sevChart.options.scales = {
-            x:{grid:{display:false},ticks:{font:{size:11},color: IS_DARK_THEME ? '#aaa' : '#999'}},
-            y:{grid:{color: IS_DARK_THEME ? 'rgba(255,255,255,0.06)' : '#f0f0f0'},beginAtZero:true,ticks:{font:{size:11},color: IS_DARK_THEME ? '#aaa' : '#999',stepSize:1}}
+            x:{grid:{display:false},ticks:{color: GRAPH_THEME.text}},
+            y:{grid:{color: GRAPH_THEME.grid},beginAtZero:true,ticks:{color: GRAPH_THEME.text,stepSize:1}}
         };
     } else {
-        window.sevChart.options.cutout = '55%';
+        // Mesmo valor da criação: o total do centro é dimensionado pelo furo,
+        // então um 55% esquecido aqui encolheria o número depois do primeiro toggle.
+        window.sevChart.options.cutout = SEV_CUTOUT;
         window.sevChart.options.plugins.legend.display = true;
         window.sevChart.options.scales = {x:{display:false},y:{display:false}};
     }
@@ -948,14 +1474,14 @@ function toggleSevChart() {
         const crit = info ? parseInt(info.critical) : 0;
         const dayNum = d.getDate();
         const mon = d.getMonth();
-        let color = IS_DARK_THEME ? 'rgba(255,255,255,0.06)' : '#ebedf0';
+        // Nível (0 a 5) em vez de cor: fundo e tinta do dia moram no CSS, nas
+        // classes .rp-hm-l0..l5 — os mesmos quadradinhos da legenda. Cor em hex
+        // aqui dentro violaria a regra do módulo e, pior, ficaria fora do par
+        // fundo+tinta que o número do dia precisa para ser legível.
+        let nivel = 0;
         if (cnt > 0) {
             const ratio = cnt / maxCnt;
-            if (ratio > 0.8) color = '#E45959';
-            else if (ratio > 0.6) color = '#30a14e';
-            else if (ratio > 0.4) color = '#40c463';
-            else if (ratio > 0.2) color = '#9be9a8';
-            else color = '#c6e48b';
+            nivel = ratio > 0.8 ? 5 : ratio > 0.6 ? 4 : ratio > 0.4 ? 3 : ratio > 0.2 ? 2 : 1;
         }
         const isSelected = (key === NOTE_DATE);
         const border = isSelected ? 'border:2px solid var(--rp-blue);' : '';
@@ -964,7 +1490,7 @@ function toggleSevChart() {
         lastMonth = mon;
         const tooltip = dayLabel+': '+cnt+' eventos'+(crit>0?' ('+crit+' críticos)':'')+'\nClique para ver relatório';
         html += monthLabel +
-            '<div class="rp-hm-cell'+(isSelected?' rp-hm-selected':'')+'" style="background:'+color+';cursor:pointer;'+border+'" '+
+            '<div class="rp-hm-cell rp-hm-l'+nivel+(isSelected?' rp-hm-selected':'')+'" style="cursor:pointer;'+border+'" '+
             'title="'+tooltip+'" onclick="window.location.href=\'zabbix.php?action=plantonistas.report.view&date='+key+'&shift=24h\'">' +
             '<span class="rp-hm-day">'+String(dayNum).padStart(2,'0')+'</span></div>';
     }
