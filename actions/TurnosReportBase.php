@@ -138,7 +138,9 @@ trait TurnosReportBase {
             $stmt->execute();
             $row = $stmt->get_result()->fetch_assoc();
             return $row ?: null;
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
+            error_log('[plantonistas] getShiftById(' . $shiftId . ') falhou: ' . $e->getMessage());
+
             return null;
         }
     }
@@ -205,7 +207,12 @@ trait TurnosReportBase {
                 $options[$s['id']] = $prefix . $s['name'] . ' (' . $label . ')';
                 $rows[(int)$s['id']] = $s;
             }
-        } catch (\Exception $e) {}
+        } catch (\Throwable $e) {
+            // Sem log, um turno que sumiu do seletor por consulta quebrada fica
+            // indistinguível de equipe que não cadastrou turno nenhum.
+            error_log('[plantonistas] queryShiftOptions() falhou; o seletor pode ficar sem os'
+                . ' turnos da equipe: ' . $e->getMessage());
+        }
 
         return ['options' => $options, 'rows' => $rows];
     }
@@ -245,13 +252,31 @@ trait TurnosReportBase {
             $stmt->execute();
 
             return $this->withFullName($stmt->get_result()->fetch_all());
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
+            error_log('[plantonistas] queryShiftAnalysts() falhou: ' . $e->getMessage());
+
             return [];
         }
     }
 
     // ── Resolução de contexto ─────────────────────────────────
 
+    /**
+     * Tipo do papel do usuário: 1 User, 2 Admin, 3 Super Admin.
+     *
+     * Havia aqui um segundo try, "de reserva", com
+     * `SELECT type AS user_type FROM users`. Era código MORTO: `users.type` saiu do
+     * schema do Zabbix no 5.2, quando o tipo passou a viver em `role.type` — dá para
+     * conferir em `include/schema.inc.php`, onde a tabela `users` não tem essa coluna.
+     * É a mesma armadilha que o CLAUDE.md deste módulo já registra ("nunca SQL em
+     * users.type; a coluna não existe"). Na prática ele lançava, a exceção era engolida
+     * e o método devolvia 1 — ou seja, a "reserva" nunca protegeu de nada; só escondia
+     * a falha da consulta boa. Removido.
+     *
+     * O 1 continua sendo o valor de falha, e de propósito: é o MENOR privilégio, então
+     * uma consulta quebrada restringe em vez de liberar — mesma escolha do host_filter.
+     * A diferença é que agora isso aparece no log em vez de acontecer em silêncio.
+     */
     private function getUserRoleType(ZbxDb $db, int $userid): int {
         try {
             $stmt = $db->prepare(
@@ -263,20 +288,20 @@ trait TurnosReportBase {
             $stmt->bind_param('i', $userid);
             $stmt->execute();
             $row = $stmt->get_result()->fetch_assoc();
+
             if ($row !== false && $row !== null) {
                 return (int)$row['user_type'];
             }
-        } catch (\Exception $e) {}
 
-        try {
-            $stmt = $db->prepare("SELECT type AS user_type FROM users WHERE userid = ?");
-            $stmt->bind_param('i', $userid);
-            $stmt->execute();
-            $row = $stmt->get_result()->fetch_assoc();
-            return $row ? (int)$row['user_type'] : 1;
-        } catch (\Exception $e) {
-            return 1;
+            // Usuário sem papel: a lista de usuários do Zabbix mostra "Disabled".
+            error_log('[plantonistas] getUserRoleType(): userid ' . $userid
+                . ' sem papel associado; assumindo User (1).');
+        } catch (\Throwable $e) {
+            error_log('[plantonistas] getUserRoleType(' . $userid . ') falhou, assumindo o'
+                . ' menor privilégio (User): ' . $e->getMessage());
         }
+
+        return 1;
     }
 
     private function resolveUserContext(ZbxDb $db, int $userid): array {
@@ -363,9 +388,24 @@ trait TurnosReportBase {
                             WHERE ug_hf.userid = ' . (int)$userid . ' AND r_hf.permission >= 2
                          )';
                 }
-            } catch (\Exception $e) {
+            } catch (\Throwable $e) {
+                // FECHA o filtro, não deixa aberto.
+                //
+                // `host_filter` nasce como '' e '' significa "sem restrição": deixá-lo
+                // assim aqui faria uma consulta quebrada a `rights` LIBERAR os eventos de
+                // todos os hosts, em vez de restringir. Filtro de permissão que falha tem
+                // de negar — o pior desfecho passa a ser um relatório vazio com a causa no
+                // log, e não o vazamento silencioso do que o usuário não pode ver.
+                //
+                // Note a diferença para o ramo de sucesso logo acima, onde '' é correto:
+                // lá a consulta respondeu e disse que não há `rights` por host nenhuma,
+                // que é o comportamento documentado (instalação sem permissão por grupo de
+                // host não restringe ninguém). Uma coisa é o banco dizer "não há regra";
+                // outra é o banco não dizer nada.
+                $result['host_filter'] = 'AND 1=0';
+
                 error_log('[plantonistas] resolveUserContext() host_filter falhou (userid='
-                    . $userid . '): ' . $e->getMessage());
+                    . $userid . '), restringindo tudo por segurança: ' . $e->getMessage());
             }
         }
 
@@ -386,7 +426,10 @@ trait TurnosReportBase {
                     $stmt->get_result()->fetch_all(),
                     'name'
                 );
-            } catch (\Exception $e) {}
+            } catch (\Throwable $e) {
+                error_log('[plantonistas] resolveUserContext() display_groups falhou (userid='
+                    . $userid . '): ' . $e->getMessage());
+            }
         }
 
         return $result;
@@ -691,7 +734,7 @@ trait TurnosReportBase {
         try {
             $stmt = $db->prepare(
                 "SELECT a.eventid, a.clock, a.action, a.message,
-                        a.old_severity, a.new_severity,
+                        a.old_severity, a.new_severity, a.suppress_until,
                         u.username, u.name, u.surname
                    FROM acknowledges a
                    LEFT JOIN users u ON u.userid = a.userid
@@ -710,7 +753,17 @@ trait TurnosReportBase {
                         'label'        => $badge['label'],
                         'who'          => $who,
                         'when'         => (int)$r['clock'],
-                        'message'      => $badge['type'] === 'message' ? (string)($r['message'] ?? '') : null,
+                        // `message` é "o que a ação carrega", não só texto
+                        // digitado: para uma supressão, o que ela carrega é o
+                        // prazo. Mesma escolha que 'notify' já fazia com o
+                        // status do envio (ver alertStatusLabel()) — e é ela
+                        // que faz a supressão aparecer na lista expandida do
+                        // PDF, que só imprime item COM conteúdo.
+                        'message'      => $badge['type'] === 'message'
+                            ? (string)($r['message'] ?? '')
+                            : ($badge['type'] === 'suppress'
+                                ? $this->suppressUntilLabel((int)($r['suppress_until'] ?? 0))
+                                : null),
                         'old_severity' => $badge['type'] === 'severity' ? (int)$r['old_severity'] : null,
                         'new_severity' => $badge['type'] === 'severity' ? (int)$r['new_severity'] : null,
                     ];
@@ -772,6 +825,14 @@ trait TurnosReportBase {
                     'label'        => 'Notificação'
                                      . ((int)$r['alerttype'] === 1 ? ' (script)' : '')
                                      . ($r['media_name'] ? ': ' . $r['media_name'] : ''),
+                    // Mídia e status saem SEPARADOS do rótulo, e não extraídos
+                    // dele depois: quem consolida precisa agrupar por mídia, e
+                    // ler isso de volta de uma frase pronta é o tipo de parse
+                    // que quebra no dia em que o texto mudar.
+                    'media'        => (string)($r['media_name'] ?? '') !== ''
+                        ? (string)$r['media_name']
+                        : ((int)$r['alerttype'] === 1 ? 'Script' : 'Sem mídia'),
+                    'status'       => (int)$r['status'],
                     'who'          => null,
                     'when'         => (int)$r['clock'],
                     'message'      => $this->alertStatusLabel((int)$r['status'], (string)($r['error'] ?? '')),
@@ -789,7 +850,8 @@ trait TurnosReportBase {
                 // pegando o turno agora.
                 usort($r['items'], fn($a, $b) => $b['when'] <=> $a['when']);
             }
-            $r['closed_by'] = $r['closed_by'] ?? null;
+            $r['closed_by']      = $r['closed_by'] ?? null;
+            $r['notify_summary'] = $this->summarizeNotifications($r['items'] ?? []);
         }
         unset($r);
 
@@ -832,6 +894,71 @@ trait TurnosReportBase {
     }
 
     /**
+     * Consolida as notificações de UM evento por mídia.
+     *
+     * Com escalonamento configurado, um alarme sozinho gera dezenas de linhas
+     * em `alerts` — uma por destinatário, por passo e por repetição. Na coluna
+     * Ações isso virava dezenas de chips iguais que enterravam o que importa
+     * (a mensagem que o analista escreveu, a supressão, o ACK). Aqui elas
+     * viram uma linha por mídia, com a contagem.
+     *
+     * O que a contagem precisa dizer, e por quê:
+     *
+     * - **total** por mídia: é a pergunta "por onde isso saiu, e quanto".
+     * - **falhas** (`alerts.status = 2`): é o único número que pede ação. Sobe
+     *   para o topo do resumo e continua aparecendo item a item no PDF, com o
+     *   texto do erro — é o que diz QUAL destinatário não recebeu.
+     * - **última**: com escalonamento longo, saber que a última tentativa foi
+     *   há 4 horas ou há 4 minutos muda o que se faz a seguir.
+     *
+     * Ordena por falhas e depois por total: quem tem problema aparece primeiro,
+     * e não a mídia mais falante.
+     *
+     * @param array $items itens de queryEventActions() (todos os tipos)
+     * @return array{total:int,falhas:int,ultima:int,medias:array}|null null
+     *         quando o evento não teve notificação nenhuma
+     */
+    private function summarizeNotifications(array $items): ?array {
+        $porMidia = [];
+        $total    = 0;
+        $falhas   = 0;
+        $ultima   = 0;
+
+        foreach ($items as $it) {
+            if (($it['type'] ?? '') !== 'notify') {
+                continue;
+            }
+
+            $midia = (string)($it['media'] ?? 'Sem mídia');
+            $quando = (int)($it['when'] ?? 0);
+            // status 2 = ALERT_STATUS_FAILED (ver alertStatusLabel()).
+            $falhou = (int)($it['status'] ?? 0) === 2;
+
+            if (!isset($porMidia[$midia])) {
+                $porMidia[$midia] = ['nome' => $midia, 'total' => 0, 'falhas' => 0, 'ultima' => 0];
+            }
+            $porMidia[$midia]['total']++;
+            $porMidia[$midia]['falhas'] += $falhou ? 1 : 0;
+            $porMidia[$midia]['ultima']  = max($porMidia[$midia]['ultima'], $quando);
+
+            $total++;
+            $falhas += $falhou ? 1 : 0;
+            $ultima  = max($ultima, $quando);
+        }
+
+        if ($total === 0) {
+            return null;
+        }
+
+        $medias = array_values($porMidia);
+        usort($medias, function ($a, $b) {
+            return [$b['falhas'], $b['total']] <=> [$a['falhas'], $a['total']];
+        });
+
+        return ['total' => $total, 'falhas' => $falhas, 'ultima' => $ultima, 'medias' => $medias];
+    }
+
+    /**
      * Rótulo do status de envio de uma notificação (`alerts.status`).
      * Valores confirmados em include/defines.inc.php do Zabbix 7.0
      * (ALERT_STATUS_*).
@@ -843,6 +970,24 @@ trait TurnosReportBase {
             case 3:  return 'Na fila';
             default: return 'Pendente';
         }
+    }
+
+    /**
+     * Prazo de uma supressão manual (`acknowledges.suppress_until`).
+     *
+     * `0` é "sem prazo" no schema do Zabbix (ZBX_PROBLEM_SUPPRESS_TIME_INDEFINITE
+     * em include/defines.inc.php) — e não "expirou em 1970", que é no que dá
+     * formatar o valor cru.
+     *
+     * O Zabbix mostra só a HORA quando o prazo cai no dia de hoje e data+hora
+     * nos outros casos. Aqui é sempre data+hora: o Repasse é lido por data, e
+     * um "08:00" solto num relatório de um turno da semana passada não diz de
+     * que dia se trata.
+     */
+    private function suppressUntilLabel(int $until): string {
+        return $until > 0
+            ? 'Até ' . date('d/m/Y H:i', $until)
+            : 'Por tempo indeterminado';
     }
 
     private function queryTopHosts(ZbxDb $db, int $s, int $e, int $limit, string $hostFilter = ''): array {
@@ -1003,6 +1148,70 @@ trait TurnosReportBase {
     }
 
     /**
+     * Paleta de GRÁFICO do tema ativo — a mesma fonte que os gráficos nativos
+     * do Zabbix usam (`getUserGraphTheme()`, tabela `graph_theme`, uma linha
+     * por tema). É por isso que a cor de eixo/rótulo/grade dos dois gráficos
+     * do Repasse não é escolhida aqui: o Zabbix já tem um lugar canônico para
+     * ela, inclusive customizável por quem administra, e um segundo conjunto
+     * de cores divergiria dele na primeira mudança.
+     *
+     * Não usa `ZbxDb`: `getUserGraphTheme()` é função global do frontend e já
+     * faz a consulta pela camada nativa. O `\` é obrigatório — estamos em
+     * namespace.
+     *
+     * Duas armadilhas tratadas aqui:
+     *
+     * - **A função devolve o tema AZUL quando não acha a linha do tema ativo**
+     *   (é o `return` de fallback dela). Num frontend escuro isso significaria
+     *   texto quase preto sobre gráfico escuro, que é pior que não ter cor
+     *   nenhuma. Por isso o retorno só é aceito se o `theme` que veio for o
+     *   tema realmente ativo; senão vale o default local, que tem as duas
+     *   versões.
+     * - **`graph_theme` grava hex SEM `#`** (mesmo formato de
+     *   `config.severity_color_*`), e o CSS/canvas precisa dele com `#`.
+     *
+     * @return array{text: string, grid: string, dark: bool} cores já com '#'
+     */
+    private function graphTheme(): array {
+        $tema = 'blue-theme';
+        try {
+            $tema = (string) \getUserTheme(\CWebUser::$data);
+        }
+        catch (\Throwable $e) {
+            error_log('[plantonistas] graphTheme() não conseguiu ler o tema do usuário: ' . $e->getMessage());
+        }
+
+        $escuro = in_array($tema, ['dark-theme', 'hc-dark'], true);
+
+        // Default de FÁBRICA do Zabbix para cada lado (ui/include/func.inc.php,
+        // getUserGraphTheme(), e a linha correspondente de `graph_theme`).
+        $cores = $escuro
+            ? ['textcolor' => 'F2F2F2', 'gridcolor' => '454545']
+            : ['textcolor' => '1F2C33', 'gridcolor' => 'CCD5D9'];
+
+        try {
+            $linha = \getUserGraphTheme();
+            if (is_array($linha) && ($linha['theme'] ?? '') === $tema) {
+                foreach (['textcolor', 'gridcolor'] as $campo) {
+                    $hex = trim((string) ($linha[$campo] ?? ''));
+                    if (preg_match('/^[0-9A-Fa-f]{6}$/', $hex)) {
+                        $cores[$campo] = $hex;
+                    }
+                }
+            }
+        }
+        catch (\Throwable $e) {
+            error_log('[plantonistas] graphTheme() caiu no default: ' . $e->getMessage());
+        }
+
+        return [
+            'text' => '#' . $cores['textcolor'],
+            'grid' => '#' . $cores['gridcolor'],
+            'dark' => $escuro,
+        ];
+    }
+
+    /**
      * Nomes e cores REAIS de severidade — Administração > Geral > Opções de
      * exibição de acionadores (tabela `config`, colunas severity_name_0..5 /
      * severity_color_0..5). Antes disso a tela usava rótulos e cores FIXOS
@@ -1142,6 +1351,38 @@ trait TurnosReportBase {
         } catch (\Throwable $e) {
             error_log('[plantonistas] queryNotes() falhou: ' . $e->getMessage());
             return [];
+        }
+    }
+
+    /**
+     * Data do ÚLTIMO registro de presença que existe na tabela, sem recorte de
+     * turno — só isso separa "ninguém trabalhou nesta janela" de "o coletor
+     * nunca rodou neste ambiente", que na tela são a mesma lista vazia.
+     *
+     * Roda apenas quando a presença do turno veio vazia: no caminho normal a
+     * pergunta não existe, e uma consulta a mais em toda carga do Repasse teria
+     * de se justificar sozinha.
+     *
+     * Devolve null quando a tabela está vazia OU quando a consulta falha (com
+     * log): as duas levam à mesma mensagem — "não há coleta aqui" — e a
+     * alternativa seria afirmar uma data que não se sabe.
+     */
+    private function queryLastPresence(ZbxDb $db): ?string {
+        try {
+            $stmt = $db->prepare(
+                'SELECT ' . SqlFn::dateTimeBr('MAX(lastaccess)') . ' AS last_seen
+                   FROM module_plantonistas_user_sessions'
+            );
+            $stmt->execute();
+            $row = $stmt->get_result()->fetch_assoc();
+            $val = trim((string) ($row['last_seen'] ?? ''));
+
+            return $val !== '' ? $val : null;
+        }
+        catch (\Throwable $ex) {
+            error_log('[plantonistas] queryLastPresence() falhou: ' . $ex->getMessage());
+
+            return null;
         }
     }
 
@@ -1490,7 +1731,9 @@ trait TurnosReportBase {
             $stmt->bind_param('isssi', $usrgrpid, $name, $start, $end, $sortOrder);
             $stmt->execute();
             return ['success' => true, 'message' => 'Turno criado.', 'id' => $db->insert_id];
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
+            error_log('[plantonistas] saveShift() falhou: ' . $e->getMessage());
+
             return ['success' => false, 'message' => 'Já existe um turno com esse nome nessa equipe, ou erro ao salvar.'];
         }
     }
@@ -1514,7 +1757,9 @@ trait TurnosReportBase {
             $stmt->execute();
 
             return ['success' => true, 'message' => 'Turno removido.'];
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
+            error_log('[plantonistas] deleteShift() falhou: ' . $e->getMessage());
+
             return ['success' => false, 'message' => 'Erro ao remover turno.'];
         }
     }
@@ -1544,7 +1789,10 @@ trait TurnosReportBase {
                 if (!$allowed) {
                     return ['success' => false, 'message' => 'Sem permissão para este usuário.'];
                 }
-            } catch (\Exception $e) {
+            } catch (\Throwable $e) {
+                error_log('[plantonistas] saveUserShift() validação do usuário falhou: '
+                    . $e->getMessage());
+
                 return ['success' => false, 'message' => 'Erro ao validar usuário.'];
             }
         }
@@ -1564,7 +1812,10 @@ trait TurnosReportBase {
             $stmt->bind_param('ii', $userid, $shiftId);
             $stmt->execute();
             return ['success' => true, 'message' => 'Turno atribuído.'];
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
+            error_log('[plantonistas] saveUserShift() gravação do vínculo falhou: '
+                . $e->getMessage());
+
             return ['success' => false, 'message' => 'Erro ao salvar vínculo.'];
         }
     }

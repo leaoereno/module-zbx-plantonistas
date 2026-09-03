@@ -10,8 +10,71 @@
     --rp-dark-light: #3d5166;
     --rp-white: #ffffff;
     --rp-border: #dfe4e7;
-    --rp-text: #333333;
-    --rp-text-muted: #888888;
+    /* Tinta primária e tinta de rótulo do tema claro do Zabbix (body e
+       `.list-table thead th` do blue-theme.css). Eram #333333/#888888 —
+       cinzas neutros de tom parecido, mas de matiz diferente do azulado que o
+       Zabbix usa; lado a lado com uma tabela nativa a diferença aparece. */
+    --rp-text: #1f2c33;
+    --rp-text-muted: #768d99;
+    /* Tinta de ênfase (numeral de KPI, mês do heatmap). Nasceu como
+       `var(--rp-dark)`, que é a cor da FAIXA do topo: no tema escuro a faixa
+       fica mais escura que o card, e o numeral do KPI virava #121c29 sobre
+       card escuro — praticamente invisível. Superfície e tinta agora são
+       tokens separados, que é o que permite inverter um sem o outro. */
+    --rp-strong: #2b3c51;
+    /* Dia sem alerta no mapa de calor. Vale para a legenda E para as células
+       (o JS lê o mesmo token): o valor estava escrito nos dois lugares, e no
+       tema escuro só o do JS tinha sido invertido — a legenda seguia com o
+       quadradinho branco de "menos". */
+    --rp-hm-empty: #ebedf0;
+
+    /* Pilha de fonte do Zabbix (body do blue/dark-theme.css). Não é a pilha de
+       "fonte do sistema": o módulo renderiza DENTRO da página do Zabbix, e duas
+       famílias na mesma tela é o tipo de diferença que se nota sem se saber
+       nomear. Cuidado ao dimensionar rótulo por largura de texto: a fonte mais
+       larga da pilha é o Verdana (~18% mais largo que o Arial), não a primeira. */
+    --rp-font: Arial, Tahoma, Verdana, sans-serif;
+
+    /* Conjunto semântico do Zabbix (classes .red/.orange/.yellow/.green/.teal
+       dos temas). Vermelho e verde mudam entre claro e escuro; laranja,
+       amarelo e teal são iguais nos dois. */
+    --rp-ic-red:    #e33734;
+    --rp-ic-orange: #f24f1d;
+    --rp-ic-yellow: #e99003;
+    --rp-ic-green:  #429e47;
+    --rp-ic-teal:   #0f998b;
+
+    /* Campo de formulário (input e select). O Zabbix dá aos controles um fundo
+       e uma borda PRÓPRIOS, diferentes dos da tabela — no tema claro é
+       #ffffff sobre borda #acbbc2, no escuro #383838 sobre #4f4f4f (regra
+       `.multiselect, …, input[type="text"], …` dos temas, e `select` para o
+       combobox nativo). Usar --rp-white/--rp-border aqui deixava o campo com
+       a mesma cor do card: no claro passa despercebido, no escuro o combobox
+       de turno sumia dentro da linha da tabela. */
+    --rp-field-bg:     #ffffff;
+    --rp-field-border: #acbbc2;
+
+    /* Rampa do mapa de calor = escala de severidade DE FÁBRICA do Zabbix
+       (normal → aviso → média → alta → desastre), com a tinta que o próprio
+       Zabbix usa sobre cada uma delas (`.normal-bg`, `.warning-bg`, … em
+       blue-theme.css). Antes era a escala verde do GitHub com um vermelho solto
+       no fim, e o número do dia era um cinza translúcido por cima — no tema
+       escuro, branco sobre verde-claro.
+
+       A tinta é FIXA nos dois temas, de propósito: é assim no Zabbix, porque o
+       fundo é a cor da severidade e não a cor do tema. Mesmo motivo pelo qual
+       ela não sai de --rp-text. */
+    /* Dia sem alerta: aqui a tinta É do tema (o fundo também é), e não pode ser
+       a de rótulo — #768d99 sobre o cinza vazio dá 2,96:1 e o número do dia
+       some. #3c5563 é o azul-ardósia escuro do próprio blue-theme.css: 6,7:1,
+       legível sem competir com um dia cheio. */
+    --rp-hm-0-ink: #3c5563;
+    --rp-hm-1: #59db8f;   --rp-hm-1-ink: #0e4123;
+    --rp-hm-2: #ffc859;   --rp-hm-2-ink: #734d00;
+    --rp-hm-3: #ffa059;   --rp-hm-3-ink: #733100;
+    --rp-hm-4: #e97659;   --rp-hm-4-ink: #52190b;
+    --rp-hm-5: #e45959;   --rp-hm-5-ink: #4b0c0c;
+
     --rp-radius: 8px;
     /* Superfície um tom abaixo do card, para barra e painel auxiliar.
        Nasceu como `var(--rp-bg-soft, #fafafa)` sem nunca ter sido definida:
@@ -30,17 +93,16 @@
        inventado, --sev-warn tinha a cor real de Information, etc.) — quem
        via a tela sem nenhum SELECT customizado no Zabbix já via cor errada. */
     --sev-disaster: #E45959;
-    --sev-disaster-bg: rgba(228, 89, 89, 0.08);
     --sev-high: #E97659;
-    --sev-high-bg: rgba(233, 118, 89, 0.08);
     --sev-avg: #FFA059;
-    --sev-avg-bg: rgba(255, 160, 89, 0.08);
     --sev-warn: #FFC859;
-    --sev-warn-bg: rgba(255, 200, 89, 0.08);
     --sev-info: #7499FF;
-    --sev-info-bg: rgba(116, 153, 255, 0.08);
     --sev-notclass: #97AAB3;
-    --sev-notclass-bg: rgba(151, 170, 179, 0.08);
+    /* Único fundo lavado de severidade que sobrou: o hover do botão de remover
+       (.rp-action-danger), que precisa de uma área vermelha e não de uma linha.
+       Os outros cinco existiam só para tingir a linha da tabela e saíram com
+       ela. O sufixo -bg fica no nome porque é o que ele é — fundo, não tinta. */
+    --sev-disaster-bg: rgba(228, 89, 89, 0.08);
 }
 
 /* ── Native Container (inside Zabbix frame) ──────────── */
@@ -50,9 +112,11 @@
     margin: 0;
     padding: 0 0 40px;
     box-sizing: border-box;
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-    font-size: 13px;
-    line-height: 1.5;
+    font-family: var(--rp-font);
+    /* 12px/1.4 = o `font-size: 75%` + `line-height: 1.4em` do body do Zabbix
+       (75% de 16px). Estava em 13px/1.5, meio degrau acima de tudo em volta. */
+    font-size: 12px;
+    line-height: 1.4;
     color: var(--rp-text);
 }
 
@@ -180,9 +244,10 @@ select.rp-nh-input {
     color: #fff !important;
 }
 
+/* Mesma regra de tinta sobre severidade das .sev-* (a de Warning, #734d00). */
 .rp-badge-hist {
     background: var(--sev-warn);
-    color: #333;
+    color: #734d00;
     padding: 2px 8px;
     border-radius: 4px;
     font-size: 10px;
@@ -232,18 +297,41 @@ select.rp-nh-input {
     z-index: 1;
 }
 
+/* O número do dia herda a tinta do NÍVEL (classe .rp-hm-l0..l5 na célula), não
+   do tema: o fundo da célula é a cor da rampa nos dois temas, então uma cor de
+   texto por tema estaria errada em um dos dois — e estava: no escuro saía
+   branco sobre verde-claro. 11px porque 9px em cima de cor é o tamanho em que o
+   algarismo vira mancha. */
 .rp-hm-day {
-    font-size: 9px;
+    font-size: 11px;
     font-weight: 700;
-    color: rgba(0, 0, 0, 0.5);
+    color: inherit;
 }
+
+/* Níveis do mapa de calor. A cor sai daqui e não do JS pela regra do módulo
+   (cor nova entra no arquivo de tema, nunca em hex dentro da view) — e porque
+   fundo e tinta são um PAR: separados, um dia alguém troca só um. */
+.rp-hm-l0 { background: var(--rp-hm-empty); color: var(--rp-hm-0-ink); }
+.rp-hm-l1 { background: var(--rp-hm-1); color: var(--rp-hm-1-ink); }
+.rp-hm-l2 { background: var(--rp-hm-2); color: var(--rp-hm-2-ink); }
+.rp-hm-l3 { background: var(--rp-hm-3); color: var(--rp-hm-3-ink); }
+.rp-hm-l4 { background: var(--rp-hm-4); color: var(--rp-hm-4-ink); }
+.rp-hm-l5 { background: var(--rp-hm-5); color: var(--rp-hm-5-ink); }
 
 .rp-heatmap-legend {
     display: flex;
     align-items: center;
     gap: 4px;
     margin-top: 8px;
-    font-size: 10px;
+    font-size: 12px;
+    color: var(--rp-text-muted);
+}
+
+/* Dica de clique ao lado da legenda. Estava com `color:#888` num style inline
+   da view — cinza claro fixo, que no tema escuro é o mesmo cinza do fundo. */
+.rp-hm-hint {
+    margin-left: 20px;
+    font-size: 12px;
     color: var(--rp-text-muted);
 }
 
@@ -319,24 +407,37 @@ select.rp-nh-input {
     flex-shrink: 0;
 }
 
+/* Tinta dos ícones de KPI = conjunto semântico do Zabbix (`.blue`, `.red`,
+   `.orange`, `.yellow`, `.green`, `.teal` dos temas), via tokens --rp-ic-*,
+   porque três deles mudam de valor entre claro e escuro.
+
+   Duas trocas que valem explicação:
+
+   - **Críticos era `--sev-high` (#E97659).** Cor de severidade é feita para ser
+     FUNDO, com tinta escura por cima; como tinta sobre o card claro dá 2,4:1 e
+     o ícone ficava lavado. Passa a ser o vermelho semântico (`.red`), que é o
+     que o Zabbix usa quando a cor é do TEXTO.
+   - **Herdados era roxo (#9c27b0).** Não existe roxo em tema nenhum do Zabbix.
+     O ciano-esverdeado (`.teal`) é o sexto matiz do conjunto e é o único que
+     não colide com os cinco já usados na linha de KPIs. */
 .txt-blue {
     color: var(--rp-blue);
 }
 
 .txt-red {
-    color: var(--sev-high);
+    color: var(--rp-ic-red);
 }
 
 .txt-orange {
-    color: #f28b00;
+    color: var(--rp-ic-orange);
 }
 
 .txt-yellow {
-    color: #f5b700;
+    color: var(--rp-ic-yellow);
 }
 
 .txt-purple {
-    color: #9c27b0;
+    color: var(--rp-ic-teal);
 }
 
 /* Achado ao adicionar os KPIs de Em Tratativas/Resolvidos (2026-08-28):
@@ -348,15 +449,15 @@ select.rp-nh-input {
    diferente). Definindo agora, no mesmo espírito visual (círculo colorido,
    ícone branco) — sem isso o `bg-blue`/`bg-green` novos ficariam com o mesmo
    problema silencioso. */
-.rp-kpi-icon.bg-blue   { background: var(--rp-blue);  color: #fff; border-radius: 50%; }
-.rp-kpi-icon.bg-red    { background: var(--sev-high); color: #fff; border-radius: 50%; }
-.rp-kpi-icon.bg-orange { background: #f28b00;         color: #fff; border-radius: 50%; }
-.rp-kpi-icon.bg-yellow { background: #f5b700;         color: #fff; border-radius: 50%; }
-.rp-kpi-icon.bg-purple { background: #9c27b0;         color: #fff; border-radius: 50%; }
-.rp-kpi-icon.bg-green  { background: #30a14e;         color: #fff; border-radius: 50%; }
+.rp-kpi-icon.bg-blue   { background: var(--rp-blue);      color: #fff; border-radius: 50%; }
+.rp-kpi-icon.bg-red    { background: var(--rp-ic-red);    color: #fff; border-radius: 50%; }
+.rp-kpi-icon.bg-orange { background: var(--rp-ic-orange); color: #fff; border-radius: 50%; }
+.rp-kpi-icon.bg-yellow { background: var(--rp-ic-yellow); color: #fff; border-radius: 50%; }
+.rp-kpi-icon.bg-purple { background: var(--rp-ic-teal);   color: #fff; border-radius: 50%; }
+.rp-kpi-icon.bg-green  { background: var(--rp-ic-green);  color: #fff; border-radius: 50%; }
 
 .txt-green {
-    color: #30a14e;
+    color: var(--rp-ic-green);
 }
 
 .rp-kpi-body {
@@ -367,7 +468,7 @@ select.rp-nh-input {
 .rp-kpi-val {
     font-size: 20px;
     font-weight: 800;
-    color: var(--rp-dark);
+    color: var(--rp-strong);
     line-height: 1.1;
 }
 
@@ -436,12 +537,15 @@ select.rp-nh-input {
     box-shadow: 0 3px 10px rgba(0, 0, 0, 0.07);
 }
 
+/* Título de card = cabeçalho de widget do Zabbix: 1,167em (14px sobre os 12
+   do corpo), negrito, na tinta primária. Era 13px num azul-ardósia (#4a5568)
+   que não existe em tema nenhum do Zabbix. */
 .rp-card-head {
     background: #f6f8fa;
     padding: 10px 18px;
     font-weight: 700;
-    font-size: 13px;
-    color: #4a5568;
+    font-size: 14px;
+    color: var(--rp-text);
     border-bottom: 1px solid var(--rp-border);
     display: flex;
     align-items: center;
@@ -458,7 +562,7 @@ select.rp-nh-input {
 
 .rp-card-desc {
     padding: 8px 18px 0;
-    font-size: 11px;
+    font-size: 12px;
     color: var(--rp-text-muted);
     line-height: 1.5;
 }
@@ -503,14 +607,17 @@ select.rp-nh-input {
     border-collapse: collapse;
 }
 
+/* Cabeçalho no padrão do `.list-table thead th` do Zabbix: mesmo corpo de
+   texto do resto da tabela, caixa normal (não versalete), cor de rótulo e
+   borda inferior de 2px. Era 10px em CAIXA ALTA com espaçamento de letra —
+   a tipografia mais distante do Zabbix que a tela tinha. O padding maior
+   fica: é o respiro do card, não tipografia. */
 .rp-table th {
     text-align: left;
     padding: 8px 14px;
     background: #fafbfc;
-    color: #777;
-    font-size: 10px;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
+    color: var(--rp-text-muted);
+    font-size: 12px;
     border-bottom: 2px solid #eee;
 }
 
@@ -534,8 +641,13 @@ select.rp-nh-input {
     font-weight: 700;
 }
 
+/* Coluna de hora/duração: alinhamento de dígitos SEM trocar de família. Os
+   algarismos do Arial já têm largura fixa (tabular por desenho), e
+   `tabular-nums` garante o mesmo onde a pilha cair no Tahoma/Verdana. A pilha
+   monoespaçada anterior era a segunda família da tela e destoava do Zabbix,
+   que mostra hora e duração na mesma fonte do resto. */
 .td-mono {
-    font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+    font-variant-numeric: tabular-nums;
     font-size: 12px;
 }
 
@@ -543,15 +655,18 @@ select.rp-nh-input {
     text-align: center;
 }
 
-/* Row severity borders */
+/* Marca de severidade na linha: SÓ a barra da esquerda.
+   Disaster e High também tingiam a linha inteira (`--sev-*-bg`), e as outras
+   quatro severidades não — o que dava duas leituras diferentes para a mesma
+   coluna e, nas tabelas em que quase tudo é grave, pintava a tabela quase
+   inteira. A barra basta como referência visual, é igual para as seis, e não
+   disputa com a linha destacada do hover nem com os chips de ação. */
 .row-disaster {
     border-left-color: var(--sev-disaster) !important;
-    background: var(--sev-disaster-bg);
 }
 
 .row-high {
     border-left-color: var(--sev-high) !important;
-    background: var(--sev-high-bg);
 }
 
 .row-avg {
@@ -570,45 +685,57 @@ select.rp-nh-input {
     border-left-color: var(--sev-notclass) !important;
 }
 
-/* ── Severity Badges ──────────────────────────────────── */
+/* ── Severity Badges ───────────────────────────────────────
+   Fundo CONFIGURÁVEL + tinta FIXA é exatamente como o Zabbix trata severidade:
+   `getTriggerSeverityCss()` (ui/include/html.inc.php) gera o background a
+   partir de Administração > Geral, e o CSS do tema traz a cor do texto escrita
+   à mão para cada classe (`.disaster-bg { color: #4b0c0c }`, `.warning-bg
+   { color: #734d00 }`, …), igual nos quatro temas. As tintas abaixo são
+   essas — não são aproximações.
+
+   O que havia antes era chute: branco sobre o amarelo de Warning (#FFC859) dá
+   1,7:1, ilegível, e branco sobre o cinza de "Não classificado" dá 2,4:1.
+
+   Caixa alta também saiu: o Zabbix escreve o nome da severidade como ele foi
+   cadastrado, e o nome pode vir traduzido ("Não classificado") — versalete
+   estica justamente o rótulo mais comprido. */
 .rp-sev {
     display: inline-block;
-    padding: 2px 8px;
-    border-radius: 3px;
-    font-size: 11px;
+    padding: 2px 6px;
+    border-radius: 2px;
+    font-size: 12px;
     font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.3px;
+    line-height: 1.35;
 }
 
 .sev-disaster {
     background: var(--sev-disaster);
-    color: #fff;
+    color: #4b0c0c;
 }
 
 .sev-high {
     background: var(--sev-high);
-    color: #333;
+    color: #52190b;
 }
 
 .sev-avg {
     background: var(--sev-avg);
-    color: #333;
+    color: #733100;
 }
 
 .sev-warn {
     background: var(--sev-warn);
-    color: #fff;
+    color: #734d00;
 }
 
 .sev-info {
     background: var(--sev-info);
-    color: #333;
+    color: #00268e;
 }
 
 .sev-notclass {
     background: var(--sev-notclass);
-    color: #fff;
+    color: #2a353a;
 }
 
 /* ── Performance Badges ───────────────────────────────── */
@@ -657,7 +784,7 @@ select.rp-nh-input {
 }
 
 .rp-action {
-    color: #999;
+    color: var(--rp-text-muted);
     transition: color 0.15s;
 }
 
@@ -678,9 +805,16 @@ select.rp-nh-input {
    mesmo espírito de .rp-perf — mas discreta, porque uma linha pode ter
    vários chips lado a lado. Detalhe (quem/quando/mensagem) vai só no
    title (tooltip), não no chip, pra não estourar a célula. */
+/* `align-items: center` e não o `stretch` padrão do flex: com stretch, um chip
+   mais alto que os outros (ou um elemento de tipo diferente no meio) estica os
+   vizinhos e o texto de cada um encosta onde der — foi o que deixou o "ACK"
+   mais alto que o "Mensagem" quando só este último virou <button>. Hoje todos
+   são botão, mas a regra fica: ela é a que garante o alinhamento, e não a
+   coincidência de todos serem do mesmo elemento. */
 .rp-act-list {
     display: flex;
     flex-wrap: wrap;
+    align-items: center;
     gap: 4px;
 }
 
@@ -694,6 +828,37 @@ select.rp-nh-input {
     background: #eef1f4;
     color: #555;
     cursor: default;
+}
+
+/* Todo chip da coluna Ações é um <button>: o hintbox nativo também responde a
+   Enter/Espaço, e só elemento focável recebe keydown. Aqui ele volta a parecer
+   chip — sem borda, sem fundo de botão, herdando a fonte. */
+.rp-act-btn {
+    border: 0;
+    font: inherit;
+    font-size: 10px;
+    font-weight: 600;
+    line-height: inherit;
+    cursor: pointer;
+}
+
+/* Contorno na própria tinta do chip, e não brilho: `brightness()` escurece no
+   tema claro e apaga no escuro — teria de virar duas regras para dizer a mesma
+   coisa. `currentColor` já é a cor certa nos dois. */
+.rp-act-btn:hover {
+    box-shadow: inset 0 0 0 1px currentColor;
+}
+
+.rp-act-btn:focus-visible {
+    outline: 2px solid var(--rp-blue);
+    outline-offset: 1px;
+}
+
+/* Caixa aberta: o Zabbix marca o alvo com data-expanded enquanto ela está
+   fixada — o chip fica em destaque para não se perder de vista qual dos vários
+   da linha está aberto. */
+.rp-act-btn[data-expanded="true"] {
+    box-shadow: 0 0 0 2px var(--rp-blue);
 }
 
 .rp-act-ack       { background: #e8f5e9; color: #2e7d32; }
@@ -887,7 +1052,7 @@ select.rp-nh-input {
     align-items: center;
     font-size: 10px;
     font-weight: 700;
-    color: var(--rp-dark);
+    color: var(--rp-strong);
     background: var(--rp-blue-light);
     padding: 2px 6px;
     border-radius: 4px;
@@ -900,26 +1065,62 @@ select.rp-nh-input {
     box-shadow: 0 0 0 2px var(--rp-blue), 0 0 8px rgba(2, 117, 184, 0.4);
 }
 
-/* ── Dark Theme Overrides (Zabbix native dark themes) ──── */
+/* ── Dark Theme Overrides (Zabbix native dark themes) ────
+   Os valores saem do PRÓPRIO tema escuro do Zabbix (assets/styles/dark-theme.css),
+   não de uma paleta paralela: fundo de página #0e1012, superfície de tabela/painel
+   #2b2b2b, borda de linha #383838, texto #f2f2f2, rótulo de cabeçalho #737373,
+   link #4796c4, verde #59db8f, vermelho #e45959. A paleta anterior era azul-ardósia
+   (card #2b3c51, borda #3d5166, faixa #121c29) e destoava do resto da tela: o
+   relatório aparecia como uma ilha azulada dentro de um Zabbix cinza-neutro.
+   É a mesma escolha que os tokens --cs-* do módulo do CrowdStrike já fazem.
+
+   Cinza NEUTRO de propósito, e não "quase neutro com um toque de azul": o azul só
+   se percebe ao lado do cinza do Zabbix, e é exatamente aí que ele aparece. */
 [data-theme="dark-theme"] .rp-native-container,
 .theme-dark-blue .rp-native-container,
 .theme-dark-black .rp-native-container,
 body[class*="dark"] .rp-native-container {
-    --rp-blue: #02a0ff;
-    --rp-blue-light: rgba(2, 160, 255, 0.1);
-    --rp-dark: #121c29;
-    --rp-dark-light: #1f2c3d;
-    --rp-white: #2b3c51;
-    --rp-border: #3d5166;
-    --rp-text: #e1e8ed;
-    --rp-text-muted: #8c9ba5;
+    --rp-blue: #4796c4;                        /* cor de link do dark-theme.css   */
+    --rp-blue-light: rgba(71, 150, 196, 0.16);
+    /* Faixa do topo/rodapé: um degrau ACIMA do fundo da página (#0e1012) e um
+       abaixo do card (#2b2b2b), para a hierarquia página → faixa → card continuar
+       legível sem introduzir matiz nova. */
+    --rp-dark: #232527;
+    --rp-dark-light: #303436;
+    --rp-white: #2b2b2b;                       /* = .list-table do tema escuro    */
+    /* Borda em rgba, não hex: a mesma linha serve sobre o card (#2b2b2b) e sobre a
+       superfície auxiliar (#333638) sem virar duas variáveis. Equivale ao #383838
+       que o Zabbix usa entre linhas de tabela. */
+    --rp-border: rgba(255, 255, 255, 0.14);
+    --rp-text: #f2f2f2;
+    /* O Zabbix usa #737373 no rótulo de cabeçalho de tabela — 2,9:1 sobre #2b2b2b.
+       Aqui a variável carrega também descrição de card e "nenhum alarme", que são
+       texto para ler, então fica um degrau mais claro (5,4:1 sobre o card, 4,7:1
+       sobre a superfície auxiliar). Mesmo motivo já documentado em
+       --plt-text-faint (views/_theme.php). */
+    --rp-text-muted: #9ca1a4;
+    --rp-strong: #f2f2f2;
+
+    --rp-ic-red:   #e45959;
+    --rp-ic-green: #59db8f;
+
+    --rp-field-bg:     #383838;
+    --rp-field-border: #4f4f4f;
+    /* Faz o navegador desenhar o que é DELE no escuro: a lista suspensa do
+       <select>, o relógio do input[type=time], as setas do [type=number] e a
+       barra de rolagem. Nada disso é alcançável por CSS — sem esta linha, a
+       lista de turnos abria branca por cima da tela escura, que era o mais
+       destoante da tela. */
+    color-scheme: dark;
+
+    /* Mapa de calor: só o nível 0 muda de tema — nele o fundo é do tema. Os
+       cinco níveis com cor ficam como estão, porque o fundo é a cor da
+       severidade, igual ao que o Zabbix faz com `.warning-bg` e companhia. */
+    --rp-hm-empty: rgba(255, 255, 255, 0.06);
+    --rp-hm-0-ink: #9ca1a4;
+
     --sev-disaster-bg: rgba(228, 89, 89, 0.2);
-    --sev-high-bg: rgba(233, 118, 89, 0.2);
-    --sev-avg-bg: rgba(255, 160, 89, 0.2);
-    --sev-warn-bg: rgba(255, 200, 89, 0.2);
-    --sev-info-bg: rgba(116, 153, 255, 0.2);
-    --sev-notclass-bg: rgba(151, 170, 179, 0.2);
-    --rp-bg-soft: #22303f;
+    --rp-bg-soft: #333638;
 }
 
 [data-theme="dark-theme"] .rp-card,
@@ -977,10 +1178,6 @@ body[class*="dark"] .rp-heatmap-legend {
     color: var(--rp-text-muted) !important;
 }
 
-[data-theme="dark-theme"] .rp-hm-day {
-    color: rgba(255, 255, 255, 0.8) !important;
-}
-
 [data-theme="dark-theme"] .rp-nh-input option,
 .theme-dark-blue .rp-nh-input option,
 body[class*="dark"] .rp-nh-input option {
@@ -1002,23 +1199,160 @@ body[class*="dark"] .rp-note-content {
     color: var(--rp-text) !important;
 }
 
+/* ── Selos e chips no tema escuro ────────────────────────
+   .rp-perf, .rp-act-* e .rp-alert-danger nasceram como pastel do Material
+   (#e8f5e9, #fff3e0, #ffebee) com tinta escura por cima — leitura correta no
+   tema claro e uma caixinha BRANCA acesa no escuro, que era a parte mais
+   destoante da tela. Aqui viram fundo lavado (a mesma cor, em alfa baixo) com
+   a tinta clara do tema escuro do Zabbix: verde #59db8f, vermelho #e45959,
+   laranja #e9a733 — os mesmos que .green/.red do dark-theme.css.
+
+   Alfa e não hex chapado porque o chip aparece sobre fundos diferentes (card
+   #2b2b2b e linha em hover): o lavado acompanha o que estiver embaixo em vez de
+   furar um retângulo nele.
+
+   ORDEM IMPORTA. O chip sem tipo próprio vem PRIMEIRO: `.rp-act` e
+   `.rp-act-ack` têm a mesma especificidade (classe + contexto), então entre os
+   dois vence quem estiver por último no arquivo. Invertido, todo chip ficaria
+   cinza. */
+[data-theme="dark-theme"] .rp-act,
+.theme-dark-blue .rp-act,
+body[class*="dark"] .rp-act,
+[data-theme="dark-theme"] .rp-act-rank_cause,
+.theme-dark-blue .rp-act-rank_cause,
+body[class*="dark"] .rp-act-rank_cause,
+[data-theme="dark-theme"] .rp-act-rank_symptom,
+.theme-dark-blue .rp-act-rank_symptom,
+body[class*="dark"] .rp-act-rank_symptom {
+    background: rgba(255, 255, 255, 0.08);
+    color: #b9bcbf;
+}
+
+[data-theme="dark-theme"] .perf-good,
+.theme-dark-blue .perf-good,
+body[class*="dark"] .perf-good,
+[data-theme="dark-theme"] .rp-act-ack,
+.theme-dark-blue .rp-act-ack,
+body[class*="dark"] .rp-act-ack,
+[data-theme="dark-theme"] .rp-act-close,
+.theme-dark-blue .rp-act-close,
+body[class*="dark"] .rp-act-close {
+    background: rgba(89, 219, 143, 0.16);
+    color: #59db8f;
+}
+
+[data-theme="dark-theme"] .perf-ok,
+.theme-dark-blue .perf-ok,
+body[class*="dark"] .perf-ok,
+[data-theme="dark-theme"] .rp-act-severity,
+.theme-dark-blue .rp-act-severity,
+body[class*="dark"] .rp-act-severity {
+    background: rgba(233, 167, 51, 0.16);
+    color: #e9a733;
+}
+
+[data-theme="dark-theme"] .perf-bad,
+.theme-dark-blue .perf-bad,
+body[class*="dark"] .perf-bad,
+[data-theme="dark-theme"] .rp-act-unack,
+.theme-dark-blue .rp-act-unack,
+body[class*="dark"] .rp-act-unack {
+    background: rgba(228, 89, 89, 0.16);
+    color: #e45959;
+}
+
+[data-theme="dark-theme"] .rp-act-notify,
+.theme-dark-blue .rp-act-notify,
+body[class*="dark"] .rp-act-notify {
+    background: rgba(211, 180, 78, 0.16);
+    color: #d3b44e;
+}
+
+/* O chip de mensagem já usava tokens que viram no escuro (--rp-blue-light /
+   --rp-blue), então ele tinha ficado FORA desta lista. Só que o seletor
+   escuro do `.rp-act` base tem especificidade maior que a de `.rp-act-message`
+   sozinha, e o chip caía no cinza dos sem-tipo — justo o único clicável. */
+[data-theme="dark-theme"] .rp-act-message,
+.theme-dark-blue .rp-act-message,
+body[class*="dark"] .rp-act-message {
+    background: var(--rp-blue-light);
+    color: var(--rp-blue);
+}
+
+[data-theme="dark-theme"] .rp-act-suppress,
+.theme-dark-blue .rp-act-suppress,
+body[class*="dark"] .rp-act-suppress,
+[data-theme="dark-theme"] .rp-act-unsuppress,
+.theme-dark-blue .rp-act-unsuppress,
+body[class*="dark"] .rp-act-unsuppress {
+    background: rgba(201, 160, 224, 0.16);
+    color: #c9a0e0;
+}
+
+[data-theme="dark-theme"] .rp-alert-danger,
+.theme-dark-blue .rp-alert-danger,
+body[class*="dark"] .rp-alert-danger {
+    background: rgba(228, 89, 89, 0.16);
+    color: #e45959;
+    border-color: rgba(228, 89, 89, 0.38);
+}
+
+/* Ícone de ACK e "resolvido por" seguem o verde do tema escuro: o #2e7d32 do
+   tema claro dá 2,1:1 sobre o card escuro — o ✓ existia mas não se via. */
+[data-theme="dark-theme"] .rp-ack-yes,
+.theme-dark-blue .rp-ack-yes,
+body[class*="dark"] .rp-ack-yes,
+[data-theme="dark-theme"] .rp-resolve-manual,
+.theme-dark-blue .rp-resolve-manual,
+body[class*="dark"] .rp-resolve-manual {
+    color: #59db8f;
+}
+
+/* Hover do link de host/problema: no tema claro escurece (#014a78); no escuro
+   tem de CLAREAR, senão o link "apaga" justamente quando o ponteiro está
+   nele. */
+[data-theme="dark-theme"] .rp-host-link:hover,
+.theme-dark-blue .rp-host-link:hover,
+body[class*="dark"] .rp-host-link:hover,
+[data-theme="dark-theme"] .rp-trigger-link:hover,
+.theme-dark-blue .rp-trigger-link:hover,
+body[class*="dark"] .rp-trigger-link:hover {
+    color: #8fbeea;
+}
+
 /* ── Tela de Gerenciar Turnos (v2.5+) ────────────────────── */
+/* `!important` nas três cores por CONTA DE ESPECIFICIDADE, não por gosto: a
+   regra do tema do Zabbix mira `input[type="text"]` (elemento + atributo,
+   0-1-1) e vence uma classe simples como `.rp-input` (0-1-0) mesmo carregando
+   antes. Sem isso o campo fica com a cor do tema nativo e ignora a daqui —
+   e é a mesma razão já documentada em `.rp-nh-btn` e em `select.rp-input`.
+   O `:focus` abaixo repete o `!important` pelo mesmo motivo: uma vez que a
+   borda da regra base é important, só outra important a substitui. */
 .rp-input {
     width: 100%;
     box-sizing: border-box;
     padding: 5px 8px;
-    border: 1px solid var(--rp-border);
+    border: 1px solid var(--rp-field-border) !important;
     border-radius: 4px;
     font-family: inherit;
     font-size: 12px;
-    color: var(--rp-text);
-    background: var(--rp-white);
+    color: var(--rp-text) !important;
+    background: var(--rp-field-bg) !important;
     outline: none;
     transition: border 0.2s;
 }
 
+/* Item da lista suspensa. O `color-scheme` do tema escuro já pinta a lista,
+   mas o Firefox continua usando a cor declarada quando ela existe — e o
+   Zabbix declara a dele (`select option { color: … }`), então declarar a
+   nossa é o que mantém as duas telas iguais. */
+.rp-input option {
+    background: var(--rp-field-bg);
+    color: var(--rp-text);
+}
+
 .rp-input:focus {
-    border-color: var(--rp-blue);
+    border-color: var(--rp-blue) !important;
     box-shadow: 0 0 0 3px rgba(2, 117, 184, 0.1);
 }
 
@@ -1060,14 +1394,6 @@ button.rp-action {
     font-size: 12px;
     font-weight: 600;
     margin-top: 8px;
-}
-
-[data-theme="dark-theme"] .rp-input,
-.theme-dark-blue .rp-input,
-body[class*="dark"] .rp-input {
-    background: rgba(0, 0, 0, 0.15) !important;
-    border-color: var(--rp-border) !important;
-    color: var(--rp-text) !important;
 }
 
 [data-theme="dark-theme"] .rp-shift-new-row,
@@ -1653,6 +1979,14 @@ body[class*="dark"] .rp-mention-opt:hover {
    turno cadastrado. */
 .rp-bulk-bar[hidden],
 .rp-bulk-col[hidden] { display: none; }
+
+/* Mensagem de "salvo"/"erro" das telas de turno. Estava em hex claro escrito
+   dentro do JS da view (#2e7d32 / #c62828) — sobre o card escuro isso dá 2,1:1
+   e 2,6:1, ou seja, a confirmação do que você acabou de salvar era o texto
+   menos legível da tela. Reaproveita o verde e o vermelho semânticos do Zabbix,
+   os mesmos dos ícones de KPI, que já viram de tom entre os temas. */
+.rp-status-ok  { color: var(--rp-ic-green); }
+.rp-status-err { color: var(--rp-ic-red); }
 
 .rp-bulk-check { display: flex; align-items: center; gap: 6px; cursor: pointer; }
 .rp-bulk-count { flex: 1 1 auto; font-size: 12px; }

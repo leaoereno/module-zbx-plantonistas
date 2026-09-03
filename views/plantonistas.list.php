@@ -154,9 +154,51 @@ include __DIR__ . '/_theme.php';
 }
 .plt-sel-count { font-size:13px;font-weight:600;color:var(--plt-text-soft); }
 .plt-sel-count.active { color:var(--plt-accent); }
+.plt-sel-presets { display:flex;align-items:center;gap:6px;flex-wrap:wrap; }
+.plt-sel-presets-label { font-size:11px;color:var(--plt-text-muted); }
+/* inline-flex + height/line-height explícitos: a folha do Zabbix estiliza
+   `button` (0-0-1) com `height:24px; line-height:22px; padding:0 11px`, e uma
+   classe simples só vence no que ELA declara — o padding daqui entrava, a
+   altura e a entrelinha de lá ficavam, e o texto assentava fora do meio.
+   Centrar por flex não depende de acertar entrelinha nenhuma. */
+.plt-sel-preset { display:inline-flex;align-items:center;justify-content:center;
+    height:24px;line-height:1;padding:0 10px;font-size:11px;font-family:inherit;
+    color:var(--plt-accent);cursor:pointer;background:none;
+    border:1px solid var(--plt-border);border-radius:2px; }
+/* O foco NÃO pode parecer "ligado". A folha do Zabbix pinta
+   `button:active, button:focus` (0-1-1) de azul sólido com texto branco, e isso
+   vence uma classe simples (0-1-0): depois do clique o atalho ficava com cara
+   de apertado até o foco sair, mesmo já tendo desmarcado os dias. Aqui a
+   aparência normal volta com `.plt-sel-preset:focus` (0-2-0), sem !important.
+
+   O foco continua no botão (quem usa teclado precisa dele) — só deixa de ser
+   PINTADO por clique de mouse: o anel volta em :focus-visible, que o navegador
+   só liga quando o foco veio do teclado. `:active` entra pela mesma razão: sem
+   ele o botão pisca azul sólido enquanto o clique está pressionado.
+
+   Ordem importa: `:hover` vem DEPOIS de `:focus` porque os dois têm a mesma
+   especificidade e, com o ponteiro parado em cima do botão recém-clicado, os
+   dois casam — quem vier por último vence, e aí o certo é o realce de hover. */
+.plt-sel-preset:focus, .plt-sel-preset:active,
+.plt-sel-clear:focus,  .plt-sel-clear:active { background:none;outline:none; }
+.plt-sel-preset:focus, .plt-sel-preset:active { color:var(--plt-accent);border-color:var(--plt-border); }
+.plt-sel-clear:focus,  .plt-sel-clear:active  { color:var(--plt-danger);border-color:transparent; }
+.plt-sel-preset:focus-visible, .plt-sel-clear:focus-visible {
+    outline:2px solid var(--plt-accent);outline-offset:1px; }
+.plt-sel-preset:hover { background:var(--plt-accent-bg);border-color:var(--plt-accent); }
+/* Estado ligado: o atalho é um botão de LIGA/DESLIGA, e `aria-pressed` é o que
+   diz isso ao leitor de tela — o CSS só acompanha o mesmo atributo, em vez de
+   inventar uma classe paralela que poderia divergir dele. Vem depois do
+   :focus, e a variante com foco é mais específica (0-3-0), para o botão ligado
+   continuar com cara de ligado enquanto está focado. */
+.plt-sel-preset[aria-pressed="true"],
+.plt-sel-preset[aria-pressed="true"]:focus { background:var(--plt-accent-bg);
+    border-color:var(--plt-accent);color:var(--plt-accent);font-weight:600; }
+.plt-sel-clear { display:inline-flex;align-items:center;justify-content:center;
+    height:24px;line-height:1;padding:0 8px; }
 .plt-sel-dates { font-size:12px;color:var(--plt-text-muted);flex:1; }
 .plt-sel-clear { font-size:11px;color:var(--plt-danger);cursor:pointer;border:none;
-    background:none;padding:2px 6px;border-radius:2px; }
+    background:none;border-radius:2px;font-family:inherit; }
 .plt-sel-clear:hover { background:var(--plt-danger-bg); }
 .plt-form-row { display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px; }
 .plt-form-row label { font-weight:600;font-size:13px;color:var(--plt-text-muted);white-space:nowrap; }
@@ -512,6 +554,24 @@ echo '</tr>';
     </h3>
     <div class="plt-sel-bar">
         <span class="plt-sel-count" id="plt-sel-count">Nenhum dia selecionado</span>
+        <!-- Atalhos de seleção: cada um LIGA e DESLIGA o próprio conjunto.
+             Clicar em "Dias pares" marca os pares; clicar de novo desmarca só
+             eles. Como cada botão mexe apenas no que é dele, dá para somar
+             padrões (semana + sábado, por exemplo) e tirar um sem perder o
+             outro — o "Limpar seleção" continua para zerar tudo de uma vez. -->
+        <span class="plt-sel-presets">
+            <span class="plt-sel-presets-label">Selecionar:</span>
+            <button type="button" class="plt-sel-preset" data-preset="todos" aria-pressed="false"
+                    onclick="pltSelectPreset(this)">Todos os dias</button>
+            <button type="button" class="plt-sel-preset" data-preset="pares" aria-pressed="false"
+                    onclick="pltSelectPreset(this)">Dias pares</button>
+            <button type="button" class="plt-sel-preset" data-preset="impares" aria-pressed="false"
+                    onclick="pltSelectPreset(this)">Dias ímpares</button>
+            <button type="button" class="plt-sel-preset" data-preset="semana" aria-pressed="false"
+                    onclick="pltSelectPreset(this)">Dias de semana</button>
+            <button type="button" class="plt-sel-preset" data-preset="fds" aria-pressed="false"
+                    onclick="pltSelectPreset(this)">Fim de semana</button>
+        </span>
         <span class="plt-sel-dates" id="plt-sel-dates"></span>
         <button type="button" class="plt-sel-clear" id="plt-sel-clear"
                 onclick="pltClearSelection()" style="display:none">Limpar seleção</button>
@@ -725,6 +785,81 @@ function pltPrefillFromEntries(entries) {
     });
 }
 function pltClearSelection() { selDays.clear(); pltRefresh(); pltUpdateBar(); }
+
+// ── Atalhos de seleção (Todos / Pares / Ímpares / Semana / Fim de semana) ──
+//
+// Cada botão LIGA e DESLIGA o próprio conjunto: se todos os dias dele já estão
+// marcados, o clique desmarca só esses; senão, marca. É o que permite somar
+// padrões (semana + um sábado) e tirar um sem levar o outro junto — e é por
+// isso que ele não substitui a seleção inteira.
+//
+// "Par" e "ímpar" são pelo NÚMERO DO DIA (dia 2, 4, 6…), que é como a escala é
+// combinada em voz alta — não pela posição no calendário.
+//
+// Dia de semana e fim de semana saem do dia da semana da DATA, não da coluna
+// em que a célula caiu: o Zabbix tem "primeiro dia da semana" configurável
+// (Administração > Geral), e ler a coluna quebraria em quem começa a semana no
+// domingo.
+var PLT_PRESETS = {
+    todos:   function ()      { return true; },
+    pares:   function (dia)   { return dia % 2 === 0; },
+    impares: function (dia)   { return dia % 2 === 1; },
+    semana:  function (_, ds) { return ds >= 1 && ds <= 5; },
+    fds:     function (_, ds) { return ds === 0 || ds === 6; }
+};
+
+/** Dias do mês exibido que casam com o atalho. */
+function pltPresetDays(nome) {
+    var regra = PLT_PRESETS[nome];
+    var dias  = [];
+    if (!regra) return dias;
+
+    document.querySelectorAll('.plt-cal td[data-date]').forEach(function (td) {
+        var iso = td.dataset.date;
+        var p   = iso.split('-');
+        // Data montada com os componentes, e NUNCA new Date(iso): a string
+        // 'aaaa-mm-dd' é lida como UTC pela spec, e a oeste de Greenwich isso
+        // devolve o dia anterior — o dia 1 vira o último do mês passado e todo
+        // par/ímpar sai trocado. Mesmo tropeço já documentado no mapa de calor
+        // do Repasse.
+        var dt = new Date(+p[0], +p[1] - 1, +p[2]);
+        if (regra(+p[2], dt.getDay())) {
+            dias.push(iso);
+        }
+    });
+
+    return dias;
+}
+
+/** Um atalho está "ligado" quando TODOS os dias dele estão marcados. */
+function pltPresetOn(dias) {
+    return dias.length > 0 && dias.every(function (d) { return selDays.has(d); });
+}
+
+function pltSelectPreset(btn) {
+    var dias = pltPresetDays(btn.dataset.preset);
+    if (!dias.length) return;
+
+    var desligar = pltPresetOn(dias);
+    dias.forEach(function (d) {
+        if (desligar) { selDays.delete(d); } else { selDays.add(d); }
+    });
+
+    // Sem pré-preenchimento do técnico a partir do dia clicado (o que
+    // pltToggleDay() faz): num lote de 15 dias, herdar o escalado de um deles
+    // seria escolher um por sorteio e escrevê-lo nos outros catorze.
+    pltRefresh();
+    pltUpdateBar();
+}
+
+/** Reflete no botão o que está marcado — inclusive quando a mudança veio de
+ *  clique em dia solto, que é o caso em que um atalho "ligado" deixa de valer. */
+function pltMarkPresets() {
+    document.querySelectorAll('.plt-sel-preset').forEach(function (b) {
+        b.setAttribute('aria-pressed', pltPresetOn(pltPresetDays(b.dataset.preset)) ? 'true' : 'false');
+    });
+}
+
 function pltRefresh() {
     document.querySelectorAll('.plt-cal td[data-date]').forEach(function(td){
         td.classList.toggle('selected', selDays.has(td.dataset.date));
@@ -745,6 +880,7 @@ function pltUpdateBar() {
         dEl.textContent=arr.map(function(d){ return d.substr(8,2)+'/'+d.substr(5,2); }).join('  ·  ');
         xEl.style.display='';
     }
+    pltMarkPresets();
 }
 function pltValidate() {
     if (!selDays.size) { alert('Selecione ao menos um dia no calendário.'); return false; }

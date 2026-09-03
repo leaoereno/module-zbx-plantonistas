@@ -54,6 +54,20 @@
  *   v1.0.0 - Primeira versão: fila do que era envio síncrono (issues #6 e #1).
  */
 
+// ── Só por linha de comando ────────────────────────────────────────────────
+//
+// A pasta scripts/ mora DENTRO do módulo, e o módulo mora dentro da raiz web
+// (o Zabbix serve `modules/` a partir do document root) — ou seja, este arquivo
+// tem URL. Sem esta guarda, qualquer um que a acertasse fazia o servidor web
+// executar um script que escreve no banco, sem autenticação nenhuma, e ainda
+// via na tela o erro de conexão com as pistas de caminho e usuário.
+//
+// 404 e não 403: quem chuta URL não precisa saber que acertou o nome.
+if (PHP_SAPI !== 'cli') {
+    http_response_code(404);
+    exit;
+}
+
 // ── Configuração ──────────────────────────────────────────────────────────────
 
 define('DB_TYPE', strtolower((string)($GLOBALS['DB']['TYPE'] ?? getenv('DB_TYPE') ?: 'mysql')));

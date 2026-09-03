@@ -147,6 +147,8 @@ class TurnosReportView extends CController {
                     array_column($resolved, 'eventid')
                 ));
 
+                $presence = $this->queryPresence($db, $ts_start, $ts_end, $current_userid, $isSuperadmin);
+
                 $data_pack = [
                     'mtta'           => $mtta,
                     'inherited'      => $inherited,
@@ -161,7 +163,10 @@ class TurnosReportView extends CController {
                     'top_hosts'      => $this->queryTopHosts($db, $ts_start, $ts_end, $limit, $hostFilter),
                     'top_triggers'   => $this->queryTopTriggers($db, $ts_start, $ts_end, $limit, $hostFilter),
                     'totals'         => $this->queryEventTotals($db, $ts_start, $ts_end, $hostFilter),
-                    'presence'       => $this->queryPresence($db, $ts_start, $ts_end, $current_userid, $isSuperadmin),
+                    'presence'       => $presence,
+                    // Só quando a lista veio vazia: é o único caso em que a
+                    // tela precisa saber se existe coleta neste ambiente.
+                    'presence_last'  => $presence ? null : $this->queryLastPresence($db),
                     'notes'          => $this->queryNotes($db, $date, $shift, $current_userid, $isSuperadmin),
                     // O papel vai junto: com User (1) o gráfico por hora tem de
                     // ficar restrito aos ACKs do próprio, igual ao KPI e à
@@ -235,6 +240,12 @@ class TurnosReportView extends CController {
             // Nomes/cores reais de severidade (Administração > Geral) — ver
             // TurnosReportBase::querySeverities().
             'severities'        => $severities,
+            // Cor de texto e de grade dos gráficos, lida do tema ativo do
+            // Zabbix (tabela `graph_theme`) — ver TurnosReportBase::graphTheme().
+            // Vem do controller e não do JS porque o tema do usuário é dado do
+            // PERFIL: adivinhar pela luminância do fundo acerta o "claro ou
+            // escuro" mas não a cor exata que os gráficos nativos usam.
+            'graph_theme'       => $this->graphTheme(),
             // Token CSRF por action (em módulo o Zabbix confere contra a
             // action completa, não contra o prefixo — ver CLAUDE.md).
             'csrf_notes_save'    => \CCsrfTokenHelper::get('plantonistas.report.notes.save'),
