@@ -179,6 +179,176 @@
     cursor: pointer;
 }
 
+/* ── Texto dentro dos diálogos do módulo ───────────────────────────────────
+   A folha do Zabbix declara `.overlay-dialogue-body { white-space: nowrap }` e,
+   no modal, `overflow-x: hidden`. Ou seja: parágrafo dentro de diálogo não
+   quebra linha e o que passar da largura é CORTADO no meio da palavra — foi o
+   que aconteceu com a explicação das metas por equipe ("então vale linha a li").
+
+   O próprio Zabbix contorna isso com a classe `wordbreak` (é o que o hintbox
+   aplica na caixa dele). Aqui a regra vale para o corpo inteiro dos DOIS
+   diálogos do módulo, e não item a item: assim vale também para o próximo texto
+   que alguém acrescentar, sem depender de lembrar da classe. */
+#rpLimModal .overlay-dialogue-body,
+#rpFiltroModal .overlay-dialogue-body {
+    white-space: normal;
+}
+
+/* Engrenagem no cabeçalho do card de MTTA. Reaproveita .rp-chart-btn (o botão
+   de "mudar formato" do gráfico), que já é o botão discreto de cabeçalho de
+   card — não vale inventar um segundo. */
+.rp-mtta-cfg {
+    margin-left: 6px;
+}
+
+/* Uma linha do diálogo de limites: rótulo, campo estreito e a unidade. */
+.rp-lim-linha {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+    font-size: 12px;
+}
+
+.rp-lim-linha label {
+    flex: 1 1 auto;
+    color: var(--rp-text);
+}
+
+.rp-lim-linha .rp-input {
+    flex: 0 0 90px;
+    text-align: right;
+}
+
+/* ── Metas por equipe: cabeçalho + linhas, numa GRADE só ──────────────────
+   O cabeçalho e as linhas compartilham a MESMA grade (`#rpLimEquipes`), e cada
+   linha entra nela com `display: contents` — os filhos dela viram células da
+   grade de cima. Assim rótulo e campo caem na mesma coluna por construção.
+
+   A primeira tentativa foi repetir a geometria: cabeçalho em flex com as mesmas
+   larguras da linha. Desalinhou por dois motivos que a grade elimina de vez —
+   o rótulo "Excelente (min)" é mais largo que a caixa de 76px e quebrava em
+   duas linhas, e a largura do botão de remover era um palpite (26px) que não
+   batia com a largura real dele. */
+#rpLimEquipes {
+    display: grid;
+    grid-template-columns: 1fr 76px 76px auto auto;
+    gap: 4px 6px;
+    align-items: center;
+}
+
+.rp-lim-cabecalho,
+.rp-lim-equipe {
+    display: contents;
+}
+
+.rp-lim-cabecalho span {
+    font-size: 11px;
+    color: var(--rp-text-muted);
+    /* Nunca quebrar: rótulo em duas linhas empurra a linha inteira para baixo
+       e desfaz o alinhamento que a grade acabou de garantir. Por isso também os
+       rótulos são abreviados — "Aceit." em vez de "Aceitável". */
+    white-space: nowrap;
+}
+
+/* Coluna do 24/7: rótulo centrado sobre a caixa de marcar. */
+.rp-lim-cabecalho .rp-eq-h-247,
+.rp-lim-equipe .rp-eq-247 {
+    justify-self: center;
+}
+
+.rp-lim-cabecalho .rp-eq-h-num {
+    text-align: right;
+    /* Mesmo respiro do padding do input, para o texto do rótulo ficar sobre o
+       texto do campo, e não sobre a borda dele. */
+    padding-right: 8px;
+}
+
+/* `hidden` precisa ser explícito: o atributo vale `display:none` na folha do
+   navegador e PERDE para o `display: contents` acima. Terceira vez que esta
+   armadilha aparece no módulo (ver .rp-bulk-bar e a caixa de valor da tag). */
+.rp-lim-cabecalho[hidden] {
+    display: none;
+}
+
+/* Os campos não precisam mais declarar largura: quem manda é a coluna da
+   grade. Só o alinhamento do número, que é do conteúdo. */
+.rp-lim-equipe .rp-eq-good,
+.rp-lim-equipe .rp-eq-ok {
+    text-align: right;
+    min-width: 0;
+}
+
+.rp-lim-equipe .multiselect {
+    min-width: 0;
+}
+
+.rp-lim-status {
+    min-height: 16px;
+    margin-top: 10px;
+    font-size: 12px;
+}
+
+/* ── Diálogo de filtros (grupo de host e tag) ──────────────────────────────
+   O diálogo em si usa as classes NATIVAS do Zabbix (overlay-dialogue, modal,
+   list-table); daqui sai só o que é do módulo: o botão do cabeçalho e o miolo
+   das duas seções. */
+.rp-filtro-btn.is-on {
+    border-color: rgba(255, 255, 255, 0.6);
+    font-weight: 700;
+}
+
+.rp-filtro-sec {
+    margin: 14px 0 8px;
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--rp-text);
+}
+
+.rp-filtro-sec:first-child {
+    margin-top: 0;
+}
+
+/* A caixa de grupos é o multiselect NATIVO do Zabbix (classe .multiselect), que
+   traz o próprio estilo dos quatro temas — daqui não sai cor nem borda para
+   ele. Só a lista de sugestões precisa de um empurrão: ela é posicionada em
+   absoluto e, dentro de um diálogo, tem de vir por cima do rodapé dele. */
+.rp-filtro-sec + .multiselect .multiselect-suggest {
+    z-index: 1100;
+}
+
+/* Uma condição de tag por linha: nome, operador, valor e o botão de remover.
+   O operador tem largura própria porque "Não contém" e "Existe" não podem
+   fazer a coluna dançar de linha para linha. */
+.rp-tag-linha {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 6px;
+}
+
+.rp-tag-linha .rp-tag-op {
+    flex: 0 0 130px;
+}
+
+.rp-tag-linha .rp-tag-nome,
+.rp-tag-linha .rp-tag-valor {
+    flex: 1 1 0;
+    min-width: 0;
+}
+
+/* Caixa de valor escondida em "Existe"/"Não existe": `visibility`, NÃO
+   `display:none` nem o atributo `hidden`.
+   Tirar o elemento do fluxo faria a linha se rearranjar — o campo de nome
+   (`flex: 1 1 0`) esticaria para ocupar a sobra e o seletor de operador
+   escorregaria para o lado a cada troca de operador. Com `visibility` o
+   espaço continua reservado: some o campo, não muda o lugar de nada.
+   De quebra, `visibility: hidden` já tira o campo da ordem de tabulação e da
+   árvore de acessibilidade, que é o que "escondido" deve significar. */
+.rp-tag-linha .rp-tag-valor.is-oculto {
+    visibility: hidden;
+}
+
 .rp-nh-input:hover {
     border-color: rgba(255, 255, 255, 0.5);
 }
@@ -1550,14 +1720,51 @@ body[class*="dark"] .rp-legacy-chip {
 }
 
 .rp-editor-btn {
+    /* Centragem EXPLÍCITA, não por herança.
+       A folha do Zabbix estiliza `button` (0-0-1) com
+       `height: 24px; line-height: 22px; padding: 0 11px`. A classe daqui (0-1-0)
+       só vence no que ELA declara: sem `padding` e sem centragem próprios, os
+       11px laterais do tema entravam num botão de 26px de largura e empurravam
+       o ícone para fora do meio. Com inline-flex a centragem não depende de
+       acertar entrelinha nem padding. */
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     width: 26px;
     height: 26px;
+    padding: 0;
+    line-height: 1;
     border: 1px solid var(--rp-border);
     background: var(--rp-white);
     color: var(--rp-text);
     border-radius: 4px;
     cursor: pointer;
     font-size: 11px;
+}
+
+/* O glifo não carrega margem/altura própria para dentro da centragem. */
+.rp-editor-btn i {
+    line-height: 1;
+    /* Font Awesome varia a largura por glifo (negrito, itálico, lista, link);
+       fixá-la faz os quatro botões terem o ícone no mesmo eixo, em vez de cada
+       um centrado na própria caixa. */
+    width: 1em;
+    text-align: center;
+}
+
+/* `button:focus` do tema é 0-1-1 e vence a classe: sem isto o botão fica azul
+   sólido depois do clique, com cara de "ligado", até o foco sair. Mesma
+   armadilha já corrigida em .plt-sel-preset — o anel de foco volta em
+   :focus-visible, que só acende quando o foco veio do teclado. */
+.rp-editor-btn:focus {
+    background: var(--rp-white);
+    color: var(--rp-text);
+    border-color: var(--rp-border);
+}
+
+.rp-editor-btn:focus-visible {
+    outline: 2px solid var(--rp-blue);
+    outline-offset: 1px;
 }
 
 .rp-editor-btn:hover {
@@ -1629,75 +1836,108 @@ a.rp-mention-link:hover {
    de que só existiam os primeiros registros. Em fixed o clipping do
    ancestral não se aplica; o JS calcula left/top em coordenadas de
    viewport e inverte pra cima quando não cabe embaixo. */
+/* ══════════════════════════════════════════════════════════════════════
+   Lista de menções (@, _h, _hg) — SUPERFÍCIE PRÓPRIA, não do tema
+   ══════════════════════════════════════════════════════════════════════
+
+   Esta é a única peça do módulo que NÃO usa os tokens --rp-*, e é de
+   propósito. Ela é um painel flutuante que aparece por cima do texto que a
+   pessoa está escrevendo, e três coisas decorrem disso:
+
+   1. **Tem de ser opaca.** Qualquer transparência mistura os nomes da lista
+      com o texto da nota atrás — foi a queixa original. Toda cor aqui é
+      chapada; não há rgba no fundo de nada que fique por cima de texto.
+   2. **Não pode depender da detecção de tema.** O Zabbix 7.4 renderiza
+      `<body>` sem classe e sem data-theme: quem decide claro/escuro é o JS de
+      luminância do _theme.php. Se ele demorar, falhar ou o CSS vier de cache,
+      a caixa cairia no token claro — branco sobre branco, ilegível. Com paleta
+      literal ela nasce certa antes de qualquer JS rodar.
+   3. **Escura nos dois temas, por decisão.** É o padrão de paleta de comandos
+      (Spotlight, Slack, VS Code): o painel escuro se destaca do documento
+      claro sem competir com ele, e no tema escuro continua coerente. Foi o que
+      o Rafael pediu — "mais elegante, não tão clara".
+
+   A paleta é a do tema escuro do próprio Zabbix, um degrau acima do fundo de
+   página (#0e1012) para o painel parecer elevado, e não um buraco. */
+
 .rp-mention-dropdown {
     position: fixed;
     z-index: 1000;
-    min-width: 260px;
-    max-width: 380px;
-    max-height: 300px;
+    min-width: 300px;
+    max-width: 420px;
+    max-height: 320px;
     overflow-y: auto;
     overscroll-behavior: contain;
-    background: var(--rp-white);
-    border: 1px solid var(--rp-border);
-    border-radius: 8px;
-    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.18), 0 2px 6px rgba(0, 0, 0, 0.08);
-    padding: 4px;
-    animation: rp-mention-in 0.14s ease-out;
+
+    /* Chapado, sem rgba: ver a nota 1 acima. */
+    background: #22282e;
+    border: 1px solid #39424b;
+    border-radius: 10px;
+
+    /* Sombra em duas camadas: a difusa cria a elevação, a rente desenha o
+       contorno que separa o painel do que estiver atrás — num fundo escuro a
+       borda sozinha some. */
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.45), 0 2px 8px rgba(0, 0, 0, 0.30);
+    padding: 5px;
+    color: #dfe6ec;
+
+    /* `both` para a opacidade nunca ficar presa no primeiro quadro: o ciclo de
+       digitação é fechar → buscar → reabrir, e cada reabertura reinicia a
+       animação. Sem isso, teclar rápido mantinha a caixa nos ~0.14s iniciais. */
+    animation: rp-mention-in 0.14s ease-out both;
     transform-origin: top left;
+
+    /* A lista suspensa e a barra de rolagem são desenhadas pelo navegador, não
+       por esta folha; sem declarar o esquema, ele as pinta claras dentro de um
+       painel escuro. Mesma razão do .rp-native-container em Gerenciar Turnos. */
+    color-scheme: dark;
+    scrollbar-width: thin;
+    scrollbar-color: #4b5560 transparent;
 }
 
-/* Dropdown aberto pra cima (flip): cresce da base */
 .rp-mention-dropdown.rp-flip-up {
     transform-origin: bottom left;
 }
 
+/* Só deslize, sem fade: a opacidade era o que deixava a caixa translúcida
+   enquanto a pessoa digitava, e o movimento já diz o que precisa ser dito. */
 @keyframes rp-mention-in {
-    from { opacity: 0; transform: translateY(-4px) scale(0.98); }
-    to   { opacity: 1; transform: translateY(0)    scale(1); }
+    from { transform: translateY(-4px) scale(0.985); }
+    to   { transform: translateY(0)    scale(1); }
 }
 
 @media (prefers-reduced-motion: reduce) {
     .rp-mention-dropdown { animation: none; }
 }
 
-/* Barra de rolagem fina — a nativa do Zabbix é larga e some no fundo claro */
-.rp-mention-dropdown::-webkit-scrollbar {
-    width: 8px;
+.rp-mention-dropdown::-webkit-scrollbar        { width: 10px; }
+.rp-mention-dropdown::-webkit-scrollbar-track  { background: transparent; }
+.rp-mention-dropdown::-webkit-scrollbar-thumb  {
+    background: #4b5560;
+    border-radius: 6px;
+    /* Borda da cor do painel: encolhe o polegar sem mudar a área de clique. */
+    border: 3px solid #22282e;
 }
-.rp-mention-dropdown::-webkit-scrollbar-track {
-    background: transparent;
-}
-.rp-mention-dropdown::-webkit-scrollbar-thumb {
-    background: var(--rp-border);
-    border-radius: 4px;
-    border: 2px solid transparent;
-    background-clip: content-box;
-}
-.rp-mention-dropdown::-webkit-scrollbar-thumb:hover {
-    background: var(--rp-text-muted);
-    background-clip: content-box;
-}
-.rp-mention-dropdown {
-    scrollbar-width: thin;
-    scrollbar-color: var(--rp-border) transparent;
-}
+.rp-mention-dropdown::-webkit-scrollbar-thumb:hover { background: #5d6975; }
 
-/* Cabeçalho fixo: tipo da busca + contagem, some junto com a lista */
+/* ── Cabeçalho: que tipo de coisa está sendo procurada ───────────────── */
 .rp-mention-head {
     display: flex;
     align-items: center;
-    gap: 6px;
-    padding: 6px 10px 8px;
-    margin-bottom: 2px;
-    border-bottom: 1px solid var(--rp-border);
+    gap: 7px;
+    padding: 7px 10px 8px;
+    margin-bottom: 3px;
+    border-bottom: 1px solid #39424b;
     font-size: 10px;
     font-weight: 700;
-    letter-spacing: 0.04em;
+    letter-spacing: 0.05em;
     text-transform: uppercase;
-    color: var(--rp-text-muted);
+    color: #8fa1ae;
+
+    /* Sticky com fundo chapado: a lista rola por baixo dele. */
     position: sticky;
-    top: -4px;
-    background: var(--rp-white);
+    top: -5px;
+    background: #22282e;
     z-index: 1;
 }
 
@@ -1706,96 +1946,122 @@ a.rp-mention-link:hover {
     text-transform: none;
     letter-spacing: 0;
     font-weight: 600;
+    /* Pílula: separa a contagem do rótulo sem precisar de outra cor. */
+    padding: 1px 7px;
+    border-radius: 9px;
+    background: #2f3740;
+    color: #b9c6d0;
 }
 
+/* ── Linha ───────────────────────────────────────────────────────────── */
 .rp-mention-opt {
     display: flex;
     align-items: center;
     gap: 10px;
-    padding: 7px 10px;
-    border-radius: 6px;
+    /* ~40px de altura: alvo de clique confortável, e a lista tem no máximo 20
+       itens — sobra espaço para respirar. */
+    padding: 9px 10px;
+    border-radius: 7px;
     font-size: 12px;
     cursor: pointer;
-    color: var(--rp-text);
-    transition: background 0.12s, color 0.12s;
+    color: #dfe6ec;
+
+    /* Barra que só ganha cor no estado ativo. Realce apenas por fundo é sutil
+       demais para dizer onde o Enter vai agir. */
+    border-left: 3px solid transparent;
+    transition: background 0.12s, color 0.12s, border-color 0.12s;
 }
 
-/* Ícone do tipo, num quadradinho pra dar ritmo visual à lista */
 .rp-mention-opt .rp-mention-ico {
-    flex: 0 0 22px;
-    height: 22px;
+    flex: 0 0 24px;
+    height: 24px;
     display: flex;
     align-items: center;
     justify-content: center;
-    border-radius: 5px;
-    background: var(--rp-blue-light);
-    color: var(--rp-blue);
+    border-radius: 6px;
+    background: #2f3740;
+    color: #9fb3c2;
     font-size: 11px;
+    transition: background 0.12s, color 0.12s;
 }
 
 .rp-mention-opt .rp-mention-txt {
-    min-width: 0; /* deixa o ellipsis funcionar dentro do flex */
+    min-width: 0;   /* deixa o filho encolher: sem isso o ellipsis não ocorre */
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
 }
 
 .rp-mention-opt .rp-mention-label {
-    display: block;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
     font-weight: 600;
-}
-
-/* Username embaixo do nome: desambigua homônimo */
-.rp-mention-opt .rp-mention-sub {
-    display: block;
-    font-size: 10px;
-    color: var(--rp-text-muted);
+    line-height: 1.3;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
 }
 
-/* .rp-mention-active = item sob navegação por teclado (setas).
-   Mesmo destaque do hover, pra teclado e mouse falarem a mesma língua. */
+/* Segunda linha (username): desambigua homônimo sem competir com o nome. */
+.rp-mention-opt .rp-mention-sub {
+    font-size: 10.5px;
+    line-height: 1.3;
+    color: #8fa1ae;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* Ativo = item sob a seta do teclado OU sob o ponteiro. Os dois recebem o
+   MESMO destaque de propósito: navegar com um e clicar com o outro tem de
+   parecer a mesma lista, não duas. */
 .rp-mention-opt:hover,
 .rp-mention-opt.rp-mention-active {
-    background: var(--rp-blue-light);
-    color: var(--rp-blue);
+    background: #2c3d4d;
+    border-left-color: #5aa9dd;
+    color: #ffffff;
 }
 
 .rp-mention-opt:hover .rp-mention-ico,
 .rp-mention-opt.rp-mention-active .rp-mention-ico {
-    background: var(--rp-blue);
-    color: #fff;
+    background: #5aa9dd;
+    color: #16202a;
+}
+
+.rp-mention-opt:hover .rp-mention-sub,
+.rp-mention-opt.rp-mention-active .rp-mention-sub {
+    color: #c3d6e4;
 }
 
 .rp-mention-empty {
-    padding: 10px 12px;
+    padding: 12px;
     font-size: 12px;
-    color: var(--rp-text-muted);
+    color: #8fa1ae;
     font-style: italic;
+    text-align: center;
 }
 
-/* Rodapé com as teclas de atalho */
+/* ── Rodapé: como se opera a lista ───────────────────────────────────── */
 .rp-mention-foot {
-    padding: 6px 10px 2px;
-    margin-top: 2px;
-    border-top: 1px solid var(--rp-border);
+    padding: 7px 10px 5px;
+    margin-top: 3px;
+    border-top: 1px solid #39424b;
     font-size: 10px;
-    color: var(--rp-text-muted);
+    color: #8fa1ae;
+    position: sticky;
+    bottom: -5px;
+    background: #22282e;
 }
 
 .rp-mention-foot kbd {
     display: inline-block;
-    padding: 0 4px;
-    border: 1px solid var(--rp-border);
+    padding: 0 5px;
+    border: 1px solid #4b5560;
     border-bottom-width: 2px;
-    border-radius: 3px;
+    border-radius: 4px;
     font-family: inherit;
     font-size: 9px;
-    line-height: 14px;
-    color: var(--rp-text);
-    background: var(--rp-white);
+    line-height: 15px;
+    color: #dfe6ec;
+    background: #2f3740;
 }
 
 /* ── Banner de menção [user] pendente ─────────────────────── */
@@ -1925,20 +2191,20 @@ a.rp-mention-link:hover {
 body[class*="dark"] .rp-editor,
 [data-theme="dark-theme"] .rp-editor-btn,
 .theme-dark-blue .rp-editor-btn,
-body[class*="dark"] .rp-editor-btn,
-[data-theme="dark-theme"] .rp-mention-dropdown,
-.theme-dark-blue .rp-mention-dropdown,
-body[class*="dark"] .rp-mention-dropdown {
+body[class*="dark"] .rp-editor-btn {
     background: rgba(0, 0, 0, 0.15) !important;
     border-color: var(--rp-border) !important;
     color: var(--rp-text) !important;
 }
 
-[data-theme="dark-theme"] .rp-mention-opt:hover,
-.theme-dark-blue .rp-mention-opt:hover,
-body[class*="dark"] .rp-mention-opt:hover {
-    background: rgba(2, 160, 255, 0.12) !important;
-}
+/* A LISTA DE MENÇÕES NÃO ENTRA AQUI — e é o ponto todo desta nota.
+   Ela já esteve neste seletor, herdando `background: rgba(0,0,0,.15)
+   !important`. Sobre o editor esse véu é correto (ele repousa no card e o
+   translúcido dá profundidade); sobre a lista era o defeito relatado como
+   "pop-up translúcido": a caixa FLUTUA por cima do texto da nota, então 15% de
+   preto deixa as letras da nota aparecendo através dos nomes. E o `!important`
+   vencia o fundo sólido declarado na própria classe, que foi por isso que o
+   primeiro conserto não pegou. A lista tem paleta própria, mais acima. */
 /* ── Faixa de turno fechado (issue #2) ──────────────────────────────────
    O fechamento é um documento à parte, não um cache da tela — a faixa avisa
    que existe e dá o link. Verde à esquerda para diferenciar dos alertas

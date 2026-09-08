@@ -308,6 +308,22 @@ $sem_mudanca    = 0;
 $sem_cobertura  = 0;
 $erros          = 0;
 
+// PENDÊNCIA não é ERRO, e a diferença decide o código de saída.
+//
+// - ERRO é falha de EXECUÇÃO (banco fora, consulta quebrada): pode ser
+//   passageira, e é o que justifica acordar alguém. Sai com 1.
+// - PENDÊNCIA é ESTADO que só uma pessoa resolve na UI do Zabbix (grupo de
+//   destino que ainda não foi criado, prefixo apontando para o lugar errado,
+//   plantonista desabilitado). Repete-se a cada ciclo até alguém agir, e o
+//   script fez tudo que podia fazer. Sai com 0.
+//
+// Enquanto os dois somavam no mesmo contador, uma configuração pendente
+// deixava a unidade systemd em "failed" PERMANENTE — e uma luz vermelha que
+// ninguém consegue apagar pela unidade é a que faz a próxima falha de verdade
+// passar despercebida. Sob cron isso não aparecia: lá o código de saída ia
+// para um e-mail que ninguém lia.
+$pendencias     = 0;
+
 foreach ($teams as $team) {
     $usrgrpid  = (int) $team['usrgrpid'];
     $teamName  = $team['name'];
@@ -435,16 +451,16 @@ foreach ($teams as $team) {
     }
 
     if ($u === null) {
-        logMsg("WARN: [$teamName] userid $userid está na escala mas não existe mais"
-             . ' no Zabbix — equipe pulada. Reescale o dia.');
-        $erros++;
+        logMsg("PENDENTE: [$teamName] userid $userid está na escala mas não existe"
+             . ' mais no Zabbix — equipe pulada. Reescale o dia.');
+        $pendencias++;
         continue;
     }
 
     if (!(int) $u['habilitado']) {
-        logMsg("WARN: [$teamName] userid $userid está desabilitado no Zabbix"
+        logMsg("PENDENTE: [$teamName] userid $userid está desabilitado no Zabbix"
              . ' (algum grupo com Status = Desabilitado, ou sem papel) — equipe pulada.');
-        $erros++;
+        $pendencias++;
         continue;
     }
 
@@ -470,9 +486,9 @@ foreach ($teams as $team) {
     }
 
     if ($g === null) {
-        logMsg("WARN: [$teamName] grupo \"$groupName\" não existe — crie em"
+        logMsg("PENDENTE: [$teamName] grupo \"$groupName\" não existe — crie em"
              . ' Usuários → Grupos de utilizadores (vazio, Habilitado). Equipe pulada.');
-        $erros++;
+        $pendencias++;
         continue;
     }
 
@@ -482,21 +498,21 @@ foreach ($teams as $team) {
         // Prefixo mal configurado apontando para o próprio grupo da equipe:
         // sincronizar aqui esvaziaria a equipe inteira, deixando só o
         // plantonista. Remoção em massa num grupo do core, sem volta.
-        logMsg("WARN: [$teamName] o grupo de destino é o PRÓPRIO grupo da equipe"
+        logMsg("PENDENTE: [$teamName] o grupo de destino é o PRÓPRIO grupo da equipe"
              . ' — equipe pulada. Confira ONCALL_GROUP_PREFIX.');
-        $erros++;
+        $pendencias++;
         continue;
     }
 
     if ((int) $g['users_status'] === 1) {
         // O status de um usuário no Zabbix é MAX(users_status) sobre todos os
         // grupos dele: pôr o plantonista aqui desabilitaria a conta.
-        logMsg("WARN: [$teamName] grupo \"$groupName\" está com Status = Desabilitado."
+        logMsg("PENDENTE: [$teamName] grupo \"$groupName\" está com Status = Desabilitado."
              . ' Incluir o plantonista ali DESABILITARIA a conta dele no Zabbix'
              . ' (status = MAX(users_status) de todos os grupos): ele pararia de'
              . ' logar, sumiria das telas do módulo e deixaria de ser notificado.'
              . ' Marque o grupo como Habilitado. Equipe pulada.');
-        $erros++;
+        $pendencias++;
         continue;
     }
 
@@ -574,10 +590,19 @@ foreach ($teams as $team) {
 }
 
 logMsg("Resumo: {$sincronizados} sincronizada(s), {$sem_mudanca} já correta(s), "
-     . "{$sem_cobertura} sem cobertura, {$erros} com erro.");
+     . "{$sem_cobertura} sem cobertura, {$pendencias} pendente(s), {$erros} com erro.");
+
+if ($pendencias > 0 && $erros === 0) {
+    // Dito uma vez, no fim, para quem lê `systemctl status` (que mostra as
+    // últimas linhas) entender por que a unidade está verde havendo aviso.
+    logMsg("Concluído com {$pendencias} pendência(s) de configuração — nada a"
+         . ' fazer pelo script. Veja as linhas PENDENTE acima.');
+}
 
 $db->close();
 logMsg('=== Sync On-Call End ===');
 
-// Código de saída != 0 quando houve erro, para dar o que monitorar.
+// Só falha de EXECUÇÃO derruba a unidade. Pendência de configuração fica no
+// log (e no resumo), sem pintar o serviço de vermelho para sempre — ver a nota
+// ao lado da declaração de $pendencias.
 exit($erros > 0 ? 1 : 0);

@@ -108,4 +108,46 @@ test_case('tryLock: MySQL usa GET_LOCK com timeout 0 (sem espera)', function () 
     assert_true(strpos($sql, ', 0)') !== false, 'timeout devia ser 0 (sem espera): ' . $sql);
 });
 
+test_case('foldTerm() dobra caixa e acento e escapa curinga do LIKE', function () {
+    // As quatro grafias de "leão" têm de convergir para a mesma chave — é isso
+    // que faz quem digita "leao" achar quem está cadastrado como "Leão".
+    foreach (['leao', 'LEAO', 'leão', 'LEÃO'] as $grafia) {
+        assert_same('leao', SqlFn::foldTerm($grafia), 'grafia: ' . $grafia);
+    }
+
+    assert_same('jose', SqlFn::foldTerm('José'));
+    assert_same('conceicao', SqlFn::foldTerm('Conceição'));
+
+    // Curingas neutralizados: sem isso, digitar "%" casaria com o cadastro
+    // inteiro e "_" com qualquer caractere.
+    assert_same('100!%', SqlFn::foldTerm('100%'));
+    assert_same('a!_b', SqlFn::foldTerm('a_b'));
+    // O próprio caractere de escape é escapado PRIMEIRO; invertida a ordem,
+    // ele escaparia a barra que acabou de ser inserida.
+    assert_same('x!!y', SqlFn::foldTerm('x!y'));
+});
+
+test_case('foldText() só emite o REPLACE que o termo precisa', function () {
+    $GLOBALS['DB']['TYPE'] = 'POSTGRESQL';
+
+    // Termo sem letra acentuável: nenhum REPLACE, comparação volta ao LOWER().
+    $sql = SqlFn::foldText('h.name', 'srv01');
+    assert_same(0, substr_count($sql, 'REPLACE('), $sql);
+    assert_true(strpos($sql, 'LOWER(h.name)') !== false, $sql);
+
+    // "leao" precisa dobrar acento de a, e, o — e não o de ç/ü/ñ.
+    $sql = SqlFn::foldText('u.name', 'leao');
+    assert_true(substr_count($sql, 'REPLACE(') > 0, 'devia dobrar algo');
+    assert_true(strpos($sql, "'ã'") !== false, 'faltou o par de "a": ' . $sql);
+    assert_true(strpos($sql, "'ç'") === false, 'dobrou "ç" sem o termo pedir: ' . $sql);
+
+    // Sem termo, dobra tudo — é o contrato de quem chama sem otimizar.
+    $sql = SqlFn::foldText('u.name');
+    assert_true(strpos($sql, "'ç'") !== false, $sql);
+});
+
+test_case('likeEscape() acompanha todo LIKE alimentado por foldTerm()', function () {
+    assert_true(strpos(SqlFn::likeEscape(), "ESCAPE '!'") !== false);
+});
+
 unset($GLOBALS['DB']);

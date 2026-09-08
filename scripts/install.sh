@@ -94,8 +94,14 @@ find_zbx_conf() {
     # Última tentativa: procurar de verdade, com profundidade curta. Instalação
     # fora do padrão existe, e é melhor achar do que mandar o operador digitar
     # host, base, usuário e senha de novo.
+    #
+    # Sem `| head -1`: com mais de um candidato (produção tem), o head sai
+    # cedo, o find leva SIGPIPE e o pipefail reprova a atribuição — sob
+    # `set -e` o script MORRE aqui, calado, no meio da descoberta. A primeira
+    # linha é recortada da variável, que não depende de quem termina primeiro.
     local found
-    found=$(find /etc/zabbix "${frontend_dir:-/usr/share/zabbix}" -maxdepth 3 -name zabbix.conf.php -type f 2>/dev/null | head -1)
+    found=$(find /etc/zabbix "${frontend_dir:-/usr/share/zabbix}" -maxdepth 3 -name zabbix.conf.php -type f 2>/dev/null || true)
+    found=${found%%$'\n'*}
     [[ -n "$found" ]] && { echo "$found"; return 0; }
 
     echo ""
@@ -108,7 +114,9 @@ find_zbx_conf() {
 read_zbx_conf_value() {
     local conf="$1" key="$2"
     [[ -f "$conf" ]] || { echo ""; return; }
-    sed -nE "s/^[[:space:]]*\\\$DB\\['?\"?${key}'?\"?\\][[:space:]]*=[[:space:]]*['\"]([^'\"]*)['\"].*/\\1/p" "$conf" | head -1
+    local out
+    out=$(sed -nE "s/^[[:space:]]*\\\$DB\\['?\"?${key}'?\"?\\][[:space:]]*=[[:space:]]*['\"]([^'\"]*)['\"].*/\\1/p" "$conf" || true)
+    echo "${out%%$'\n'*}"
 }
 
 # Lê as SEIS chaves do zabbix.conf.php de uma vez, uma por linha, na ordem
@@ -157,7 +165,8 @@ read_job_env_value() {
     for f in /etc/cron.d/plantonistas-* /etc/systemd/system/plantonistas-*.service; do
         [[ -f "$f" ]] || continue
         local v
-        v=$(sed -nE "s/^(Environment=\")?${key}=([^\"]*)\"?.*/\\2/p" "$f" | head -1)
+        v=$(sed -nE "s/^(Environment=\")?${key}=([^\"]*)\"?.*/\\2/p" "$f" || true)
+        v=${v%%$'\n'*}
         [[ -n "$v" ]] && { echo "$v"; return; }
     done
     echo ""
@@ -268,6 +277,135 @@ build_env_block() {
     done
 }
 
+# Caminho do interpretador PHP que vai rodar os coletores.
+#
+# ── Por que isto não é `command -v php` e pronto ──────────────────────────
+#
+# O instalador roda por `sudo`, e o sudo TROCA o PATH (`secure_path` em
+# /etc/sudoers). Um PHP instalado em /usr/local/bin, em Software Collections
+# (/opt/rh/php*/root/usr/bin) ou em Remi (/opt/remi/php*/root/usr/bin) some do
+# PATH justamente na hora da instalação — e o fallback antigo era o literal
+# `/usr/bin/php`, que em produção não existia. O resultado eram três unidades
+# systemd gravadas apontando para um executável inexistente, e o erro só
+# aparecia depois, no journal:
+#
+#   Failed to locate executable /usr/bin/php: No such file or directory
+#
+# Por isso a busca cobre PATH, nomes versionados e os caminhos fora do PATH —
+# e, achando ou não, o resultado é VALIDADO antes de virar unidade.
+# "Este binário RODA código?" — a única pergunta que separa CLI de FPM.
+#
+# Não dá para responder pelo NOME nem pelo código de saída: `php-fpm -r` imprime
+# o próprio modo de usar e sai com 64 num host, e há build que sai com 0 fazendo
+# a mesma coisa — ou seja, cair no `$?` daria o binário errado como bom. O que
+# não tem como dar falso positivo é mandar o interpretador ECOAR uma sentinela:
+# só quem realmente executa `-r` devolve o texto.
+php_runs_code() {
+    local bin="$1" out
+    [[ -x "$bin" ]] || return 1
+    out=$("$bin" -r 'echo "PLT_CLI_OK";' 2>/dev/null || true)
+    [[ "$out" == *PLT_CLI_OK* ]]
+}
+
+detect_php_bin() {
+    # Quem digitou manda: devolve como veio, mesmo inválido. Recusar aqui daria
+    # "não encontrei o PHP" para quem acabou de apontar um caminho — o
+    # check_php_bin é que diz, com precisão, o que há de errado com ELE.
+    if [[ -n "${PHP_BIN:-}" ]]; then
+        echo "$PHP_BIN"
+        return
+    fi
+
+    local c r
+    for c in php php8.4 php8.3 php8.2 php8.1 php8.0; do
+        r=$(command -v "$c" 2>/dev/null || true)
+        [[ -n "$r" ]] && php_runs_code "$r" && { echo "$r"; return; }
+    done
+
+    # Fora do PATH do sudo. O glob é resolvido aqui: cada candidato é testado
+    # como arquivo executável, não como texto.
+    #
+    # `php-fpm` e `php-cgi` ficam FORA da lista de propósito, e o
+    # `php_runs_code` é a segunda rede: um `/usr/bin/php` que seja link para o
+    # FPM passaria no `-x` e viraria unidade quebrada.
+    for c in /usr/local/bin/php /usr/bin/php /usr/bin/php8.* /usr/bin/php[0-9]* \
+             /opt/remi/php8*/root/usr/bin/php /opt/rh/php*/root/usr/bin/php \
+             /usr/local/php*/bin/php /opt/cpanel/ea-php8*/root/usr/bin/php \
+             /opt/plesk/php/8*/bin/php; do
+        php_runs_code "$c" && { echo "$c"; return; }
+    done
+
+    echo ""
+}
+
+# Confere que o caminho encontrado RODA — e que tem o driver do banco que os
+# coletores vão usar. Falhar aqui é barato; falhar depois é uma unidade systemd
+# quebrada que ninguém olha até alguém perguntar por que a presença não coleta.
+check_php_bin() {
+    local php_bin="$1" dbtype="$2"
+
+    # Caminho digitado que não serve merece resposta sobre ELE, e não a lista de
+    # onde o script procurou — quem passou PHP_BIN sabe que não procuramos.
+    if [[ -n "${PHP_BIN:-}" && "$php_bin" == "$PHP_BIN" && ! -x "$php_bin" ]]; then
+        if [[ -e "$php_bin" ]]; then
+            die "PHP_BIN='${php_bin}' existe mas não tem permissão de execução."
+        fi
+        err "PHP_BIN='${php_bin}' não existe."
+        info "Para ver o que há neste host:  ls -l /usr/bin/php* /usr/local/bin/php*"
+        die "Se só houver php-fpm, falta a CLI:  dnf install php-cli"
+    fi
+
+    if [[ -z "$php_bin" || ! -x "$php_bin" ]]; then
+        err "Não encontrei o interpretador PHP de linha de comando."
+        info "Procurei no PATH (php, php8.x) e em /usr/local/bin, /usr/bin, /opt/remi/php8*, /opt/rh/php*."
+        info "Lembre que o sudo usa o secure_path — um PHP fora dele não aparece aqui."
+        info "Para achar o que existe neste host:  ls -l /usr/bin/php* /usr/local/bin/php*"
+        info "Se só houver php-fpm, falta o pacote da CLI:  dnf install php-cli"
+        die "Depois aponte na mão: PHP_BIN=/caminho/para/php $0 --services"
+    fi
+
+    # Não roda código: ou é o binário ERRADO (FPM/CGI), ou está quebrado. São
+    # dois problemas com conserto diferente, então a mensagem separa os dois —
+    # a versão anterior mandava "confira permissão e dependências" para quem
+    # tinha apontado o php-fpm, que é permissão nenhuma: é outro programa.
+    if ! php_runs_code "$php_bin"; then
+        local sapi
+        sapi=$("$php_bin" -v 2>/dev/null || true)
+        sapi=${sapi%%$'\n'*}
+
+        if [[ "$sapi" == *fpm* || "$sapi" == *cgi* || "$php_bin" == *php-fpm* || "$php_bin" == *php-cgi* ]]; then
+            err "'${php_bin}' é o binário do FPM/CGI, não o interpretador de linha de comando."
+            info "Ele atende o frontend via socket e não sabe executar um script pelo argumento -r/arquivo."
+            info "O cron precisa da CLI. Neste host o FPM diz:  ${sapi:-<sem versão>}"
+            info "Ache a CLI da MESMA versão:  ls -l /usr/bin/php* /usr/local/bin/php*"
+            die "Se ela não existir, instale o pacote:  dnf install php-cli"
+        fi
+
+        err "'${php_bin}' existe mas não executa código."
+        info "Saída de -v:  ${sapi:-<nenhuma>}"
+        die "Confira permissão, SELinux e as dependências de biblioteca dele (ldd ${php_bin})."
+    fi
+
+    local driver mods
+    driver=$([[ "$dbtype" == "pgsql" ]] && echo pdo_pgsql || echo pdo_mysql)
+
+    # A lista vai para uma VARIÁVEL antes do grep, e não por cano.
+    #
+    # `... | grep -q` sob `set -o pipefail` é uma corrida: o grep sai no
+    # primeiro casamento, o php que ainda estiver escrevendo leva SIGPIPE e
+    # termina com 141 — e o pipefail entrega esse 141 como status do cano
+    # INTEIRO, mesmo tendo o grep achado o que procurava. Aqui isso fazia o
+    # script avisar "não tem a extensão pdo_pgsql" para um PHP que tem: 85
+    # falsos avisos em 200 execuções, medido neste host. Testar uma vez só não
+    # revela — o resultado depende de quem termina primeiro.
+    mods=$("$php_bin" -m 2>/dev/null || true)
+    if ! grep -qi "^${driver}$" <<< "$mods"; then
+        warn "O PHP de linha de comando (${php_bin}) não tem a extensão ${driver}."
+        warn "Os coletores vão subir e falhar com 'could not find driver' no log."
+        warn "Instale a extensão para ESTE PHP — o do frontend pode ser outro binário."
+    fi
+}
+
 # install_scheduled_job <job_name> <intervalo:1m|5m> <run_user> <php_bin> <script_path> <env_block(multilinha)> <log_file>
 #
 # Tenta, nesta ordem: /etc/cron.d (padrão em RHEL/CentOS/Ubuntu) → crontab do
@@ -367,7 +505,7 @@ install_scheduled_job() {
 setup_crons_interactive() {
     local target="$1" run_user="$2" dbtype="$3" host="$4" port="$5" name="$6" dbuser="$7" pass="$8"
     local php_bin
-    php_bin=$(command -v php || echo "/usr/bin/php")
+    php_bin=$(detect_php_bin)
     local base_env
     base_env=$(build_env_block "$dbtype" "$host" "$port" "$name" "$dbuser" "$pass")
 
@@ -749,8 +887,13 @@ install_services_only() {
     id "$web_user" &>/dev/null || die "Usuário '${web_user}' não existe neste host — passe SERVICES_USER=<usuário>."
     ok "Usuário de execução: ${web_user}"
 
+    # O interpretador é DESCOBERTO e VALIDADO antes de virar unidade systemd:
+    # gravar ExecStart apontando para um php inexistente só falha depois, no
+    # journal, e a essa altura ninguém está mais olhando (ver detect_php_bin()).
     local php_bin
-    php_bin=$(command -v php || echo "/usr/bin/php")
+    php_bin=$(detect_php_bin)
+    check_php_bin "$php_bin" "$CFG_TYPE"
+    ok "PHP:        ${php_bin}"
 
     local base_env
     base_env=$(build_env_block "$CFG_TYPE" "$CFG_HOST" "$CFG_PORT" "$CFG_NAME" "$CFG_USER" "$CFG_PASS")
@@ -802,6 +945,7 @@ Uso:
 
 Variáveis aceitas pelo --services (todas opcionais; o padrão sai do zabbix.conf.php):
   DB_TYPE DB_HOST DB_PORT DB_NAME DB_USER DB_PASS
+  PHP_BIN                  caminho do interpretador PHP, se ele não estiver no PATH do sudo
   ZBX_CONF                 caminho do zabbix.conf.php, se estiver fora dos lugares conhecidos
   ZBX_SERVER_CONF          caminho do zabbix_server.conf (padrão: /etc/zabbix/zabbix_server.conf)
   SERVICES_TARGET          diretório do módulo, se não for o pai deste script
@@ -835,6 +979,23 @@ case "${1:-}" in
         echo ""
         info "DB_TYPE=${CFG_TYPE}  DB_HOST=${CFG_HOST}  DB_PORT=${CFG_PORT}"
         info "DB_NAME=${CFG_NAME}  DB_USER=${CFG_USER}  DB_PASS=$([[ -n "$CFG_PASS" ]] && echo '<definida>' || echo '<vazia>')"
+        echo ""
+        # Sem `local`: este bloco roda no case do nível do arquivo, fora de
+        # função — e `local` ali é erro de sintaxe em tempo de execução.
+        php_check=$(detect_php_bin)
+        # A versão só é impressa depois de o binário provar que executa código:
+        # `php-fpm -r` responde com o próprio modo de usar, e isso ia parar
+        # DENTRO da linha "PHP: …" como se fosse o número da versão. Quando ele
+        # não roda, quem fala é o check_php_bin, que sabe distinguir FPM de
+        # binário quebrado.
+        if php_runs_code "$php_check"; then
+            ok "PHP: ${php_check}  ($("$php_check" -r 'echo PHP_VERSION;' 2>/dev/null))"
+            check_php_bin "$php_check" "$CFG_TYPE"
+        elif [[ -n "$php_check" ]]; then
+            check_php_bin "$php_check" "$CFG_TYPE"
+        else
+            check_php_bin "" "$CFG_TYPE"
+        fi
         exit 0
         ;;
     -h|--help)

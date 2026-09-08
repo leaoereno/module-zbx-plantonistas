@@ -261,6 +261,8 @@ trait TurnosReportBase {
 
     // ── Resolução de contexto ─────────────────────────────────
 
+    // ── Resolução de contexto ─────────────────────────────────
+
     /**
      * Tipo do papel do usuário: 1 User, 2 Admin, 3 Super Admin.
      *
@@ -353,12 +355,27 @@ trait TurnosReportBase {
                 // saber que passou do teto sem trazer a lista inteira.
                 $teto = 500;
 
+                // O JOIN com `hosts` existe pelo TETO, não pelo resultado.
+                //
+                // `hosts_groups` guarda TEMPLATE junto com host (template é
+                // linha de `hosts` com status = 3), e template nunca casa com
+                // evento — mas ocupava vaga na cota de 500. Medido neste
+                // ambiente: 411 ids sem o filtro, 4 com ele. Estourar a cota
+                // troca a lista literal (o caminho rodado em produção) pela
+                // subconsulta sem que houvesse host de verdade para justificar.
+                //
+                // Protótipo de host NÃO precisa ser tratado aqui: ele não
+                // aparece em `hosts_groups` (conferido — zero linhas). Onde ele
+                // aparece é na busca do `_h`, e lá o filtro é por flags; ver
+                // searchHosts().
                 $stmt = $db->prepare(
                     "SELECT DISTINCT hg.hostid
                      FROM hosts_groups hg
+                     INNER JOIN hosts h_hf      ON h_hf.hostid = hg.hostid
                      INNER JOIN rights r        ON r.id        = hg.groupid
                      INNER JOIN users_groups ug ON ug.usrgrpid = r.groupid
                      WHERE ug.userid = ? AND r.permission >= 2
+                       AND h_hf.status IN (0,1)
                      LIMIT " . ($teto + 1)
                 );
                 $stmt->bind_param('i', $userid);
@@ -450,69 +467,339 @@ trait TurnosReportBase {
 
     // ── Queries ──────────────────────────────────────────────
 
-    private function queryMTTA(ZbxDb $db, int $s, int $e, string $hostFilter = ''): array {
-        // SELECT DISTINCT na subconsulta: a cadeia de JOIN
-        // events → triggers → functions → items → hosts devolve UMA LINHA POR
-        // ITEM referenciado na expressão da trigger, então um ACK de uma
-        // trigger com 2 itens virava 2 linhas idênticas aqui. Sem o DISTINCT,
-        // COUNT(*) contava o ACK duas vezes e o AVG ficava ponderado pelo
-        // número de itens de cada trigger (evento com 3 itens pesava 3× no
-        // MTTA do analista). As colunas selecionadas são todas idênticas nas
-        // linhas duplicadas, então o DISTINCT colapsa exatamente o excesso.
-        //
-        // Os demais pontos que sofriam a mesma multiplicação: queryEventTotals,
-        // querySeverityDistribution, queryCalendarHeatmap e queryMttaTimeline.
-        $sql = "SELECT sub.userid, sub.username, sub.name, sub.surname,
-                    COUNT(*) AS total_acks,
-                    ROUND(AVG(sub.mtta), 0) AS avg_mtta,
-                    MIN(sub.mtta) AS min_mtta,
-                    MAX(sub.mtta) AS max_mtta
-                FROM (
-                    SELECT DISTINCT a.userid, u.username,
-                        u.name, u.surname,
-                        a.eventid,
-                        (a.clock - ev.clock) AS mtta
-                    FROM acknowledges a
-                    INNER JOIN events ev   ON ev.eventid  = a.eventid
-                    INNER JOIN users u     ON u.userid    = a.userid
-                    INNER JOIN triggers t  ON t.triggerid = ev.objectid
-                    INNER JOIN functions f ON f.triggerid = t.triggerid
-                    INNER JOIN items i     ON i.itemid    = f.itemid
-                    INNER JOIN hosts h     ON h.hostid    = i.hostid
-                    WHERE ev.source = 0 AND ev.object = 0
-                      AND ev.clock BETWEEN ? AND ?
-                      AND LOWER(LEFT(u.username, 4)) <> 'api_'
-                      AND a.acknowledgeid = (
-                          SELECT MIN(a2.acknowledgeid)
-                          FROM acknowledges a2
-                          WHERE a2.eventid = a.eventid
-                      )
-                      $hostFilter
-                ) sub
-                GROUP BY sub.userid, sub.username, sub.name, sub.surname
-                ORDER BY avg_mtta ASC";
+    /**
+     * Linhas CRUAS de "primeiro ACK" da janela: um registro por evento
+     * reconhecido, com quem reconheceu, quando o evento abriu e quando o ACK
+     * saiu.
+     *
+     * ── Por que cru, e não agregado no banco ─────────────────────────────
+     *
+     * Antes havia duas consultas quase idênticas (`queryMTTA` e
+     * `queryMttaTimeline`), cada uma agregando no SQL — e uma terceira teria de
+     * nascer para o MTTA por severidade. Pior: o corte por turno (ver
+     * mttaAdjust()) depende do turno DE CADA ANALISTA, informação que mora em
+     * tabela do módulo. Fazê-lo no SQL exigiria juntar tabela do módulo à
+     * consulta do dado principal — o que a regra do módulo proíbe justamente
+     * porque, se a tabela não existir naquele ambiente, o dado principal
+     * desaparece inteiro.
+     *
+     * Com as linhas cruas, uma consulta alimenta as três visões e o ajuste é
+     * aritmética em PHP. O volume é o dos ACKs da janela do turno (dezenas a
+     * poucos milhares), não o histórico.
+     *
+     * `SELECT DISTINCT`: a cadeia events → triggers → functions → items → hosts
+     * devolve UMA LINHA POR ITEM da expressão da trigger, então um ACK de
+     * trigger com 2 itens virava 2 linhas. Sem o DISTINCT, o ACK contava duas
+     * vezes e a média ficava ponderada pelo número de itens de cada trigger.
+     */
+    private function queryAckRows(ZbxDb $db, int $s, int $e, string $hostFilter = '',
+                                  array $tags = [], int $roleType = 3, int $userid = 0): array {
+        // A restrição por papel entra no SQL: papel User não deve nem TRAZER a
+        // linha do colega, muito menos filtrá-la depois.
+        $filtroAnalista = ($roleType < 2 && $userid > 0) ? 'AND a.userid = ?' : '';
+        $tagFilter = $this->tagFilter($tags, 'ev');
 
-        $stmt = $db->prepare($sql);
-        $stmt->bind_param('ii', $s, $e);
-        $stmt->execute();
+        $sql = "SELECT DISTINCT a.eventid, a.userid, u.username, u.name, u.surname,
+                    ev.severity, ev.clock AS ev_clock, a.clock AS ack_clock
+                FROM acknowledges a
+                INNER JOIN events ev   ON ev.eventid  = a.eventid
+                INNER JOIN users u     ON u.userid    = a.userid
+                INNER JOIN triggers t  ON t.triggerid = ev.objectid
+                INNER JOIN functions f ON f.triggerid = t.triggerid
+                INNER JOIN items i     ON i.itemid    = f.itemid
+                INNER JOIN hosts h     ON h.hostid    = i.hostid
+                WHERE ev.source = 0 AND ev.object = 0
+                  AND ev.clock BETWEEN ? AND ?
+                  AND LOWER(LEFT(u.username, 4)) <> 'api_'
+                  AND a.acknowledgeid = (
+                      SELECT MIN(a2.acknowledgeid)
+                      FROM acknowledges a2
+                      WHERE a2.eventid = a.eventid
+                  )
+                  $filtroAnalista
+                  $hostFilter
+                  $tagFilter";
 
-        return $this->withFullName($stmt->get_result()->fetch_all());
+        try {
+            $stmt = $db->prepare($sql);
+            // A ordem acompanha a dos `?`: janela primeiro, analista depois —
+            // hostFilter e tagFilter são interpolados, não têm placeholder.
+            if ($filtroAnalista === '') {
+                $stmt->bind_param('ii', $s, $e);
+            }
+            else {
+                $stmt->bind_param('iii', $s, $e, $userid);
+            }
+            $stmt->execute();
+
+            return $stmt->get_result()->fetch_all();
+        }
+        catch (\Throwable $ex) {
+            error_log('[plantonistas] queryAckRows() falhou: ' . $ex->getMessage());
+
+            return [];
+        }
     }
 
-    // ── Teto das tabelas de alarme ───────────────────────────────────────
-    //
-    // As 4 tabelas (Herdados, Sem ACK, Em Tratativas, Resolvidos) mostram no
-    // máximo 50 linhas — o relatório é para leitura no repasse, não é dump.
-    // O problema era outro: a tela usava `count()` desse array como VALOR DO
-    // KPI, então 213 alertas sem ACK apareciam no card como "50" e não havia
-    // como perceber. As consultas passaram a pedir uma linha a mais (51) só
-    // como sonda: se ela veio, houve corte, e a tela mostra "50+" com um aviso
-    // no rodapé da tabela. Sem consulta extra de COUNT.
-    //
-    // É método e não `const`: constante em trait só existe do PHP 8.2 em
-    // diante e o piso do módulo é 8.0 (ver snapshotVersion()).
+    /**
+     * Horas de início de turno que valem para cada analista, para o corte de
+     * MTTA de equipe que não é 24/7.
+     *
+     * Devolve uma LISTA por analista, e não uma hora só, por dois motivos:
+     *
+     * - a equipe pode ter mais de um turno (07:00 e 19:00), e qual deles vale
+     *   depende de QUANDO o ACK saiu — quem decide é o mttaAdjust();
+     * - o analista pode não estar vinculado a turno nenhum em Gerenciar Turnos.
+     *   Nesse caso valem os turnos da EQUIPE dele: é a equipe que define a
+     *   cobertura, o vínculo individual só diz em qual deles a pessoa está.
+     *
+     * Sem o segundo caso, um analista sem vínculo caía no início da janela do
+     * relatório — e quem estivesse olhando o Repasse em "24 Horas" tinha janela
+     * começando 00:00, ou seja, corte nenhum. O ajuste existia e não se
+     * aplicava, em silêncio.
+     *
+     * Consulta SEPARADA da principal, de propósito: são tabelas do módulo, e a
+     * regra da casa é que informação acessória não entra por JOIN na consulta
+     * do dado principal — se a tabela não existir no ambiente, o que se perde é
+     * o ajuste, não o relatório.
+     *
+     * @param int[] $userids
+     * @return array<int,string[]> userid => ['HH:MM:SS', …]
+     */
+    private function queryAnalystShiftStart(ZbxDb $db, array $userids): array {
+        $ids = array_values(array_unique(array_filter(
+            array_map('intval', $userids),
+            fn($id) => $id > 0
+        )));
 
-    /** Quantas linhas cada tabela de alarme exibe. */
+        if (!$ids) {
+            return [];
+        }
+
+        $lista = implode(',', $ids);
+        $out   = [];
+
+        try {
+            // 1) Turno vinculado ao analista: é o mais específico que existe.
+            $stmt = $db->prepare(
+                'SELECT cush.userid, cs.start_time
+                   FROM module_plantonistas_user_shift cush
+                   INNER JOIN module_plantonistas_shifts cs ON cs.id = cush.shift_id
+                  WHERE cush.userid IN (' . $lista . ') AND cs.active = 1'
+            );
+            $stmt->execute();
+            foreach ($stmt->get_result()->fetch_all() as $r) {
+                $out[(int)$r['userid']][] = (string)$r['start_time'];
+            }
+
+            // 2) Quem ficou de fora herda os turnos da própria equipe.
+            $semVinculo = array_values(array_diff($ids, array_keys($out)));
+            if ($semVinculo) {
+                $stmt = $db->prepare(
+                    'SELECT ug.userid, cs.start_time
+                       FROM users_groups ug
+                       INNER JOIN module_plantonistas_shifts cs ON cs.usrgrpid = ug.usrgrpid
+                      WHERE ug.userid IN (' . implode(',', $semVinculo) . ') AND cs.active = 1'
+                );
+                $stmt->execute();
+                foreach ($stmt->get_result()->fetch_all() as $r) {
+                    $out[(int)$r['userid']][] = (string)$r['start_time'];
+                }
+            }
+
+            return array_map('array_unique', $out);
+        }
+        catch (\Throwable $e) {
+            error_log('[plantonistas] queryAnalystShiftStart() falhou: ' . $e->getMessage());
+
+            return $out;
+        }
+    }
+
+    /**
+     * MTTA de um ACK, já com o corte por turno quando ele se aplica.
+     *
+     * ── O problema que isto resolve ──────────────────────────────────────
+     *
+     * Empresa sem cobertura noturna: alarme abre 00:01, o analista entra 07:00
+     * e reconhece 07:01. O tempo de RESPOSTA dele foi 1 minuto — mas a conta
+     * crua (`ack - abertura`) dizia 7 h, e o selo de Performance o punia por
+     * uma janela em que, por contrato, não havia ninguém.
+     *
+     * Com o corte, o relógio começa no que vier DEPOIS: a abertura do alarme ou
+     * o início do turno em que o ACK caiu.
+     *
+     * ── Quem manda é a flag, e só ────────────────────────────────────────
+     *
+     * Equipe marcada como 24/7 NÃO sofre corte, mesmo que o ACK tenha saído no
+     * turno seguinte. O caso que define a regra: alarme às 00:05, o plantonista
+     * da madrugada dorme e passa o turno sem reconhecer, quem entra às 07:00 dá
+     * o ACK às 07:06. O atraso foi de 7h01 e tem de aparecer como 7h01 — havia
+     * gente escalada, e encurtar o número esconderia a falha de cobertura
+     * justamente de quem precisa vê-la.
+     *
+     * O expurgo da madrugada existe para o caso oposto: equipe que, por
+     * contrato, não cobre aquele horário. Ali ninguém falhou, e cobrar as 7h
+     * seria punir o analista por uma janela em que ele nem devia estar.
+     *
+     * ── O detalhe que erra de dia se for feito na pressa ─────────────────
+     *
+     * O início do turno é uma HORA (`07:00:00`), não um instante, e a equipe
+     * pode ter VÁRIOS turnos. O que vale é a ocorrência MAIS RECENTE, entre
+     * todos os turnos, que aconteceu ATÉ o ACK:
+     *
+     *   ACK 07:01, turnos 07:00 e 19:00  → 07:00 de hoje
+     *   ACK 02:00, turnos 07:00 e 19:00  → 19:00 de ONTEM
+     *
+     * Comparar com o 19:00 de hoje daria início no futuro e MTTA negativo.
+     *
+     * @param string[] $iniciosTurno horas 'HH:MM:SS' que valem para o analista;
+     *                               vazio usa o início da janela do relatório
+     */
+    private function mttaAdjust(int $evClock, int $ackClock, bool $vinteQuatroSete,
+                                array $iniciosTurno, int $janelaInicio): int {
+        $bruto = $ackClock - $evClock;
+
+        if ($vinteQuatroSete || $bruto <= 0) {
+            return max(0, $bruto);
+        }
+
+        $inicio = null;
+        foreach ($iniciosTurno as $hora) {
+            $hora = trim((string)$hora);
+            if ($hora === '') {
+                continue;
+            }
+
+            $noDia = strtotime(date('Y-m-d', $ackClock) . ' ' . $hora);
+            if ($noDia === false) {
+                continue;
+            }
+            // Se a ocorrência de hoje ainda não tinha acontecido quando o ACK
+            // saiu, a que vale é a de ontem (turno que vira a madrugada).
+            $candidato = $noDia <= $ackClock ? $noDia : $noDia - 86400;
+
+            if ($inicio === null || $candidato > $inicio) {
+                $inicio = $candidato;
+            }
+        }
+
+        // Nenhum turno conhecido: vale o início da janela do relatório, que é o
+        // turno de que se está prestando contas.
+        if ($inicio === null) {
+            $inicio = $janelaInicio;
+        }
+
+        return max(0, $ackClock - max($evClock, $inicio));
+    }
+
+    /**
+     * As três visões de MTTA a partir das MESMAS linhas: por analista, por
+     * severidade e por hora.
+     *
+     * Uma consulta e uma conta só — antes eram duas consultas quase idênticas,
+     * cada uma agregando no banco, e a terceira visão exigiria uma terceira.
+     * Mais importante: com o ajuste por turno, três agregações independentes
+     * poderiam divergir entre si na mesma tela.
+     *
+     * @return array{analysts: array, severity: array, hours: array}
+     */
+    private function queryMttaData(ZbxDb $db, int $s, int $e, string $hostFilter = '',
+                                   array $tags = [], int $roleType = 3, int $userid = 0,
+                                   array $limites = []): array {
+        $linhas = $this->queryAckRows($db, $s, $e, $hostFilter, $tags, $roleType, $userid);
+
+        if (!$linhas) {
+            return ['analysts' => [], 'severity' => [], 'hours' => []];
+        }
+
+        // Quem é 24/7 e a que horas cada um entra. As duas informações são do
+        // módulo e vêm em consultas próprias (ver queryAnalystShiftStart()).
+        $userids   = array_column($linhas, 'userid');
+        $inicios   = $this->queryAnalystShiftStart($db, $userids);
+        $equipes   = ($limites['groups'] ?? []) ? $this->queryUserGroups($db, $userids) : [];
+        $vinteQuatro = [];
+
+        foreach ($userids as $uid) {
+            $uid = (int)$uid;
+            if (isset($vinteQuatro[$uid])) {
+                continue;
+            }
+            // Sem meta de equipe configurada, vale 24/7 — que é o comportamento
+            // de sempre. O corte é opt-in: ninguém tem MTTA reduzido sem que
+            // alguém tenha dito que aquela equipe não cobre a madrugada.
+            $vinteQuatro[$uid] = true;
+            foreach ($equipes[$uid] ?? [] as $usrgrpid) {
+                if (isset($limites['groups'][$usrgrpid])) {
+                    $vinteQuatro[$uid] = (bool)($limites['groups'][$usrgrpid]['always'] ?? true);
+                    break;
+                }
+            }
+        }
+
+        $porAnalista = [];
+        $porSeveridade = [];
+        $porHora = [];
+
+        foreach ($linhas as $l) {
+            $uid  = (int)$l['userid'];
+            $sev  = (int)$l['severity'];
+            $mtta = $this->mttaAdjust(
+                (int)$l['ev_clock'], (int)$l['ack_clock'],
+                $vinteQuatro[$uid] ?? true, $inicios[$uid] ?? [], $s
+            );
+
+            if (!isset($porAnalista[$uid])) {
+                $porAnalista[$uid] = [
+                    'userid' => $uid, 'username' => $l['username'],
+                    'name' => $l['name'], 'surname' => $l['surname'],
+                    'total_acks' => 0, 'soma' => 0,
+                    'min_mtta' => $mtta, 'max_mtta' => $mtta,
+                ];
+            }
+            $porAnalista[$uid]['total_acks']++;
+            $porAnalista[$uid]['soma']    += $mtta;
+            $porAnalista[$uid]['min_mtta'] = min($porAnalista[$uid]['min_mtta'], $mtta);
+            $porAnalista[$uid]['max_mtta'] = max($porAnalista[$uid]['max_mtta'], $mtta);
+
+            $porSeveridade[$sev]['total'] = ($porSeveridade[$sev]['total'] ?? 0) + 1;
+            $porSeveridade[$sev]['soma']  = ($porSeveridade[$sev]['soma'] ?? 0) + $mtta;
+
+            // Hora do dia da ABERTURA do evento, como o gráfico sempre mostrou:
+            // a pergunta é "em que horário o plantão responde pior", e a hora
+            // que descreve isso é a da chegada do alarme.
+            $hora = date('H', (int)$l['ev_clock']);
+            $porHora[$hora]['total'] = ($porHora[$hora]['total'] ?? 0) + 1;
+            $porHora[$hora]['soma']  = ($porHora[$hora]['soma'] ?? 0) + $mtta;
+        }
+
+        foreach ($porAnalista as &$a) {
+            $a['avg_mtta'] = (int)round($a['soma'] / max(1, $a['total_acks']));
+            unset($a['soma']);
+        }
+        unset($a);
+        usort($porAnalista, fn($x, $y) => $x['avg_mtta'] <=> $y['avg_mtta']);
+
+        $sevSaida = [];
+        foreach ($porSeveridade as $sev => $d) {
+            $sevSaida[$sev] = ['severity' => $sev, 'total' => $d['total'],
+                               'avg_mtta' => (int)round($d['soma'] / max(1, $d['total']))];
+        }
+        krsort($sevSaida);   // Disaster primeiro, como no resto da tela
+
+        $horas = [];
+        foreach ($porHora as $hora => $d) {
+            $horas[] = ['hora' => (string)$hora, 'avg_mtta' => (int)round($d['soma'] / max(1, $d['total']))];
+        }
+        usort($horas, fn($x, $y) => strcmp($x['hora'], $y['hora']));
+
+        return [
+            'analysts' => $this->withFullName(array_values($porAnalista)),
+            'severity' => array_values($sevSaida),
+            'hours'    => $horas,
+        ];
+    }
+
     private function alertRowLimit(): int {
         return 50;
     }
@@ -542,7 +829,8 @@ trait TurnosReportBase {
      * Solução: MIN() em vez de ANY_VALUE() — compatível com MariaDB < 10.2 (determinístico neste
      * contexto pois eventid→host é 1-para-1 via trigger/function/item).
      */
-    private function queryInheritedAlerts(ZbxDb $db, int $ts_start, string $hostFilter = ''): array {
+    private function queryInheritedAlerts(ZbxDb $db, int $ts_start, string $hostFilter = '', array $tags = []): array {
+        $tagFilter = $this->tagFilter($tags, 'p');
         // PERF FIX v2.4.4 (substitui a tentativa v2.4.2): a v2.4.2 limitou a
         // busca em `events` a 180 dias, mas mesmo assim a query levava 200+
         // segundos e nunca terminava nesse ambiente (confirmado via SHOW FULL
@@ -575,6 +863,7 @@ trait TurnosReportBase {
                   AND p.clock < ?
                   AND (p.r_eventid IS NULL OR p.r_clock > ?)
                   $hostFilter
+                  $tagFilter
                 GROUP BY p.eventid, p.clock, p.severity
                 ORDER BY p.severity DESC, p.clock ASC
                 LIMIT " . ($this->alertRowLimit() + 1);
@@ -589,7 +878,8 @@ trait TurnosReportBase {
      * FIX ONLY_FULL_GROUP_BY:
      * Mesma correção — MIN() para colunas de JOIN não agrupadas.
      */
-    private function queryUnackedAlerts(ZbxDb $db, int $s, int $e, string $hostFilter = ''): array {
+    private function queryUnackedAlerts(ZbxDb $db, int $s, int $e, string $hostFilter = '', array $tags = []): array {
+        $tagFilter = $this->tagFilter($tags, 'ev');
         $sql = "SELECT ev.eventid, ev.clock, ev.severity,
                     REPLACE(MIN(t.description), '{HOST.NAME}', MIN(h.name)) AS trigger_desc,
                     MIN(h.host) AS host,
@@ -606,6 +896,7 @@ trait TurnosReportBase {
                       SELECT 1 FROM acknowledges ak WHERE ak.eventid = ev.eventid
                   )
                   $hostFilter
+                  $tagFilter
                 GROUP BY ev.eventid, ev.clock, ev.severity
                 ORDER BY ev.severity DESC, ev.clock DESC
                 LIMIT " . ($this->alertRowLimit() + 1);
@@ -628,7 +919,8 @@ trait TurnosReportBase {
      * espírito da tabela irmã, que também não filtra — os dois são "o que
      * aconteceu no turno", não "o que está em aberto agora".
      */
-    private function queryInProgressAlerts(ZbxDb $db, int $s, int $e, string $hostFilter = ''): array {
+    private function queryInProgressAlerts(ZbxDb $db, int $s, int $e, string $hostFilter = '', array $tags = []): array {
+        $tagFilter = $this->tagFilter($tags, 'ev');
         $sql = "SELECT ev.eventid, ev.clock, ev.severity,
                     REPLACE(MIN(t.description), '{HOST.NAME}', MIN(h.name)) AS trigger_desc,
                     MIN(h.host) AS host,
@@ -645,6 +937,7 @@ trait TurnosReportBase {
                       SELECT 1 FROM acknowledges ak WHERE ak.eventid = ev.eventid
                   )
                   $hostFilter
+                  $tagFilter
                 GROUP BY ev.eventid, ev.clock, ev.severity
                 ORDER BY ev.severity DESC, ev.clock DESC
                 LIMIT " . ($this->alertRowLimit() + 1);
@@ -675,7 +968,8 @@ trait TurnosReportBase {
      * fechamento manual já aparece lá como um item type=close), evitando
      * duplicar a mesma lógica em duas consultas.
      */
-    private function queryResolvedAlerts(ZbxDb $db, int $s, int $e, string $hostFilter = ''): array {
+    private function queryResolvedAlerts(ZbxDb $db, int $s, int $e, string $hostFilter = '', array $tags = []): array {
+        $tagFilter = $this->tagFilter($tags, 'p');
         $sql = "SELECT p.eventid, p.clock, p.severity, p.r_clock,
                     REPLACE(MIN(t.description), '{HOST.NAME}', MIN(h.name)) AS trigger_desc,
                     MIN(h.host)  AS host,
@@ -691,6 +985,7 @@ trait TurnosReportBase {
                   AND p.r_eventid IS NOT NULL
                   AND p.r_clock BETWEEN ? AND ?
                   $hostFilter
+                  $tagFilter
                 GROUP BY p.eventid, p.clock, p.severity, p.r_clock
                 ORDER BY p.r_clock DESC, p.severity DESC
                 LIMIT " . ($this->alertRowLimit() + 1);
@@ -990,7 +1285,8 @@ trait TurnosReportBase {
             : 'Por tempo indeterminado';
     }
 
-    private function queryTopHosts(ZbxDb $db, int $s, int $e, int $limit, string $hostFilter = ''): array {
+    private function queryTopHosts(ZbxDb $db, int $s, int $e, int $limit, string $hostFilter = '', array $tags = []): array {
+        $tagFilter = $this->tagFilter($tags, 'ev');
         $limitClause = $limit > 0 ? 'LIMIT ' . (int)$limit : '';
         $sql = "SELECT h.hostid, h.host, h.name AS host_name,
                     COUNT(DISTINCT ev.eventid) AS event_count,
@@ -1003,6 +1299,7 @@ trait TurnosReportBase {
                 WHERE ev.source = 0 AND ev.object = 0 AND ev.value = 1
                   AND ev.clock BETWEEN ? AND ?
                   $hostFilter
+                  $tagFilter
                 GROUP BY h.hostid, h.host, h.name
                 ORDER BY event_count DESC $limitClause";
 
@@ -1012,7 +1309,8 @@ trait TurnosReportBase {
         return $stmt->get_result()->fetch_all();
     }
 
-    private function queryTopTriggers(ZbxDb $db, int $s, int $e, int $limit, string $hostFilter = ''): array {
+    private function queryTopTriggers(ZbxDb $db, int $s, int $e, int $limit, string $hostFilter = '', array $tags = []): array {
+        $tagFilter = $this->tagFilter($tags, 'ev');
         $limitClause = $limit > 0 ? 'LIMIT ' . (int)$limit : '';
         $sql = "SELECT t.triggerid,
                     REPLACE(t.description, '{HOST.NAME}', MIN(h.name)) AS description,
@@ -1026,6 +1324,7 @@ trait TurnosReportBase {
                 WHERE ev.source = 0 AND ev.object = 0 AND ev.value = 1
                   AND ev.clock BETWEEN ? AND ?
                   $hostFilter
+                  $tagFilter
                 GROUP BY t.triggerid, t.description, t.priority
                 ORDER BY t.priority DESC, event_count DESC $limitClause";
 
@@ -1035,12 +1334,13 @@ trait TurnosReportBase {
         return $stmt->get_result()->fetch_all();
     }
 
-    private function queryEventTotals(ZbxDb $db, int $s, int $e, string $hostFilter = ''): array {
+    private function queryEventTotals(ZbxDb $db, int $s, int $e, string $hostFilter = '', array $tags = []): array {
         // COUNT(DISTINCT ... CASE ...), não SUM(CASE ...): o JOIN em
         // functions/items devolve uma linha por item da trigger, então o SUM
         // contava o mesmo evento várias vezes enquanto o `total` (que já era
         // DISTINCT) contava uma — os três recortes somavam MAIS que o total no
         // mesmo SELECT, e os KPIs da tela se contradiziam.
+        $tagFilter = $this->tagFilter($tags, 'ev');
         $sql = "SELECT COUNT(DISTINCT ev.eventid) AS total,
                     COUNT(DISTINCT CASE WHEN ev.severity >= 4 THEN ev.eventid END) AS critical,
                     COUNT(DISTINCT CASE WHEN ev.severity = 3  THEN ev.eventid END) AS average,
@@ -1052,7 +1352,8 @@ trait TurnosReportBase {
                 INNER JOIN hosts h     ON h.hostid     = i.hostid
                 WHERE ev.source = 0 AND ev.object = 0 AND ev.value = 1
                   AND ev.clock BETWEEN ? AND ?
-                  $hostFilter";
+                  $hostFilter
+                  $tagFilter";
 
         $stmt = $db->prepare($sql);
         $stmt->bind_param('ii', $s, $e);
@@ -1061,69 +1362,11 @@ trait TurnosReportBase {
             ?: ['total' => 0, 'critical' => 0, 'average' => 0, 'low' => 0];
     }
 
-    /**
-     * MTTA por hora do turno.
-     *
-     * @param int $roleType papel de QUEM ESTÁ OLHANDO; com User (1) o gráfico
-     *        é restrito aos ACKs do próprio usuário, igual ao KPI e à tabela.
-     *        Sem isso a tela se contradizia: a tabela dizia "você não
-     *        registrou nenhum ACK" e o gráfico ao lado desenhava as barras de
-     *        todo mundo — além de mostrar a um User o tempo de resposta dos
-     *        colegas, que é exatamente o que restrictMttaByRole() impede nos
-     *        outros três pontos (tela, PDF ao vivo e documento fechado).
-     */
-    private function queryMttaTimeline(ZbxDb $db, int $s, int $e, string $hostFilter = '',
-                                       int $roleType = 3, int $userid = 0): array {
-        $tzOffset = (int)date('Z');
-
-        // A restrição entra no SQL, e não em PHP: a média por hora é agregada
-        // pelo banco, então filtrar depois não teria como desfazer o agregado.
-        $filtroAnalista = ($roleType < 2 && $userid > 0) ? 'AND a.userid = ?' : '';
-
-        // A média sai de uma subconsulta com DISTINCT (ver a nota em
-        // queryMTTA): direto sobre o JOIN, cada evento entrava na média tantas
-        // vezes quantos itens a trigger referencia, e o gráfico de MTTA por
-        // hora ficava puxado pelas triggers de expressão mais longa — não pelo
-        // tempo de resposta do turno, que é o que ele existe para mostrar.
-        $sql = "SELECT sub.hora, ROUND(AVG(sub.mtta), 0) AS avg_mtta
-                FROM (
-                    SELECT DISTINCT a.eventid,
-                        " . SqlFn::hourFromEpoch('ev.clock + ?') . " AS hora,
-                        (a.clock - ev.clock) AS mtta
-                    FROM acknowledges a
-                    INNER JOIN events ev   ON ev.eventid  = a.eventid
-                    INNER JOIN triggers t  ON t.triggerid = ev.objectid
-                    INNER JOIN functions f ON f.triggerid  = t.triggerid
-                    INNER JOIN items i     ON i.itemid     = f.itemid
-                    INNER JOIN hosts h     ON h.hostid     = i.hostid
-                    WHERE ev.source = 0 AND ev.object = 0
-                      AND ev.clock BETWEEN ? AND ?
-                      AND a.acknowledgeid = (
-                          SELECT MIN(a2.acknowledgeid)
-                          FROM acknowledges a2
-                          WHERE a2.eventid = a.eventid
-                      )
-                      $filtroAnalista
-                      $hostFilter
-                ) sub
-                GROUP BY sub.hora
-                ORDER BY sub.hora ASC";
-
-        $stmt = $db->prepare($sql);
-        // A ordem dos parâmetros acompanha a dos `?` no SQL, e o do analista
-        // fica ENTRE a janela e o hostFilter — que não tem placeholder, é
-        // interpolado. Trocar a ordem aqui filtraria por userid errado.
-        $filtroAnalista === ''
-            ? $stmt->bind_param('iii', $tzOffset, $s, $e)
-            : $stmt->bind_param('iiii', $tzOffset, $s, $e, $userid);
-        $stmt->execute();
-        return $stmt->get_result()->fetch_all();
-    }
-
-    private function querySeverityDistribution(ZbxDb $db, int $s, int $e, string $hostFilter = ''): array {
-        // COUNT(DISTINCT ev.eventid), não COUNT(*): ver a nota em queryMTTA —
+    private function querySeverityDistribution(ZbxDb $db, int $s, int $e, string $hostFilter = '', array $tags = []): array {
+        // COUNT(DISTINCT ev.eventid), não COUNT(*): ver a nota em queryAckRows —
         // sem isso a rosca de severidade mostrava mais eventos que o KPI de
         // total, porque cada item da trigger virava uma linha.
+        $tagFilter = $this->tagFilter($tags, 'ev');
         $sql = "SELECT ev.severity, COUNT(DISTINCT ev.eventid) AS cnt
                 FROM events ev
                 INNER JOIN triggers t  ON t.triggerid = ev.objectid
@@ -1133,6 +1376,7 @@ trait TurnosReportBase {
                 WHERE ev.source = 0 AND ev.object = 0 AND ev.value = 1
                   AND ev.clock BETWEEN ? AND ?
                   $hostFilter
+                  $tagFilter
                 GROUP BY ev.severity
                 ORDER BY ev.severity ASC";
 
@@ -1145,6 +1389,578 @@ trait TurnosReportBase {
             $rows[(int)$r['severity']] = (int)$r['cnt'];
         }
         return $rows;
+    }
+
+    /**
+     * Resolve os grupos pedidos pela tela em (1) o que mostrar como escolhido e
+     * (2) o que efetivamente filtrar — este último **incluindo os subgrupos**.
+     *
+     * ── O defeito que isto corrige ────────────────────────────────────────
+     *
+     * Grupo de host no Zabbix é hierárquico POR NOME, com `/` de separador:
+     * "HOSTS/PRD/EMPRESAS/ROCK" é pai de "HOSTS/PRD/EMPRESAS/ROCK/CONTAS" e de
+     * "HOSTS/PRD/EMPRESAS/ROCK/CLOUD/AWS/EC2". Filtrar pelo id do pai pegava só
+     * os hosts ligados diretamente a ele — que num ambiente organizado em
+     * árvore costuma ser NENHUM, porque os hosts moram nas folhas.
+     *
+     * ── Por que a função nativa ───────────────────────────────────────────
+     *
+     * `getSubGroups()` (ui/include/hostgroups.inc.php, carregada pelo
+     * `ZBase::init()` em toda requisição) é a definição canônica de "subgrupo"
+     * no Zabbix: ela busca por `nome + '/'` com `startSearch`, que é a mesma
+     * regra que a tela de Problemas usa. Reimplementar isso em SQL daria a
+     * mesma resposta hoje e uma resposta diferente no dia em que o Zabbix
+     * mudar de critério — além de exigir escapar `%` e `_` no nome do grupo,
+     * que aparecem em nome de grupo de verdade.
+     *
+     * De quebra ela passa pela API, ou seja, aplica permissão: id de grupo que
+     * o usuário não enxerga não volta, e isso vale como validação.
+     *
+     * @param int[] $groupids ids vindos da tela
+     * @return array{selected: array, expanded: int[]} `selected` no formato do
+     *         multiselect ([{id, name}], só os ESCOLHIDOS); `expanded` com os
+     *         escolhidos MAIS os descendentes, que é o que vai para o SQL
+     */
+    private function resolveGroupFilter(array $groupids): array {
+        $ids = array_values(array_unique(array_filter(
+            array_map('intval', $groupids),
+            fn($id) => $id > 0
+        )));
+
+        if (!$ids) {
+            return ['selected' => [], 'expanded' => []];
+        }
+
+        // Teto na ESCOLHA, não na expansão: limitar o que a árvore devolve
+        // esconderia hosts sem avisar, que é pior que recusar a seleção.
+        $ids = array_slice($ids, 0, 50);
+
+        try {
+            $msGroups = [];
+            $expandidos = \getSubGroups($ids, $msGroups);
+
+            return [
+                'selected' => array_values($msGroups),
+                'expanded' => array_map('intval', $expandidos),
+            ];
+        }
+        catch (\Throwable $e) {
+            error_log('[plantonistas] resolveGroupFilter() falhou: ' . $e->getMessage());
+
+            // Sem a árvore, filtra pelos escolhidos — recorte mais estreito do
+            // que o pedido, nunca mais largo. E some o rótulo, para a tela não
+            // afirmar um nome que não conseguiu confirmar.
+            return ['selected' => [], 'expanded' => $ids];
+        }
+    }
+
+    /**
+     * Recorte por grupo de host, no MESMO formato do `host_filter` de
+     * permissão: um `AND h.hostid IN (…)` que entra onde o alias `h` já está
+     * em escopo. É por isso que ele não custa uma linha sequer nas nove
+     * consultas do relatório — elas já recebem esse trecho pronto.
+     *
+     * **Compõe com o filtro de permissão, nunca o substitui.** Os dois são
+     * concatenados: quem não enxerga o host continua sem enxergá-lo, escolha
+     * de grupo nenhuma muda isso. Por isso também não há caminho em que este
+     * filtro "abra" algo — no máximo restringe.
+     *
+     * O id é convertido para int antes de entrar no SQL (mesma técnica do
+     * host_filter, que interpola ids inteiros direto). Grupo inexistente vira
+     * um IN vazio e o relatório sai zerado, que é a resposta honesta.
+     *
+     * Sufixo `_gf` nos aliases: as consultas que recebem este trecho já usam
+     * ev, t, f, i, h, a, ak, p — e o filtro de permissão usa `_hf`.
+     */
+    private function groupFilter(array $groupids): string {
+        $ids = array_values(array_unique(array_filter(
+            array_map('intval', $groupids),
+            fn($id) => $id > 0
+        )));
+
+        if (!$ids) {
+            return '';
+        }
+
+        return ' AND h.hostid IN (
+                    SELECT hg_gf.hostid FROM hosts_groups hg_gf
+                     WHERE hg_gf.groupid IN (' . implode(',', $ids) . ')
+                )';
+    }
+
+    /**
+     * Normaliza o que veio da tela em uma lista de tags válida.
+     *
+     * Roda no CONTROLLER, antes de qualquer SQL: nome vazio, operador fora da
+     * lista e excesso de linhas são descartados aqui, não no meio da consulta.
+     * O teto de linhas existe porque cada uma vira um EXISTS por consulta —
+     * dez já é mais do que qualquer validação real precisa, e é o que separa
+     * "filtro" de "jeito de derrubar o banco pela querystring".
+     *
+     * @param string $json o que o formulário mandou
+     * @return array lista saneada, pronta para tagFilter()
+     */
+    private function parseTagFilter(string $json): array {
+        if (trim($json) === '') {
+            return [];
+        }
+
+        $bruto = json_decode($json, true);
+        if (!is_array($bruto)) {
+            error_log('[plantonistas] parseTagFilter(): JSON inválido, filtro por tag ignorado.');
+
+            return [];
+        }
+
+        $ops   = $this->tagOperators();
+        $saida = [];
+
+        foreach ($bruto as $linha) {
+            if (!is_array($linha)) {
+                continue;
+            }
+
+            $nome = trim((string)($linha['t'] ?? ''));
+            $op   = (string)($linha['o'] ?? $this->tagOperatorDefault());
+            $val  = trim((string)($linha['v'] ?? ''));
+
+            if ($nome === '' || !isset($ops[$op])) {
+                continue;
+            }
+
+            // Operador que não usa valor tem o valor ZERADO aqui, não só
+            // ignorado na hora de montar o SQL: assim o que fica guardado, o
+            // que viaja na URL e o que o PDF carimba dizem a mesma coisa —
+            // "env existe", nunca "env existe <texto que não filtra nada>".
+            if (in_array($op, ['exists', 'nexists'], true)) {
+                $val = '';
+            }
+
+            // 255 é o tamanho de `event_tag.tag` e `.value` no schema do
+            // Zabbix: texto maior nunca casaria com nada.
+            $saida[] = [
+                't' => mb_substr($nome, 0, 255),
+                'o' => $op,
+                'v' => mb_substr($val, 0, 255),
+            ];
+
+            if (count($saida) >= 10) {
+                break;
+            }
+        }
+
+        return $saida;
+    }
+
+    /**
+     * Limites de MTTA que separam Excelente / Aceitável / Atenção, em SEGUNDOS —
+     * o padrão e as exceções POR EQUIPE.
+     *
+     * ── Por que por equipe (grupo de usuário) ─────────────────────────────
+     *
+     * Cada empresa atendida tem time próprio e o permissionamento já separa
+     * quem vê quem: a equipe É a empresa. Como a linha da tabela de MTTA é um
+     * ANALISTA, e o analista pertence a uma equipe, a meta da empresa dele cai
+     * naturalmente sobre a linha — sem depender de filtro na tela e sem
+     * ambiguidade.
+     *
+     * A alternativa cogitada (meta por tag do alarme) não fecha para esta
+     * tabela: um analista pode ter dado ACK em alarmes de empresas diferentes,
+     * e a média DELE é uma só — não haveria qual das duas metas aplicar.
+     *
+     * ── Formato no banco ─────────────────────────────────────────────────
+     *
+     * Chave/valor em `module_plantonistas_settings`, sem tabela nova:
+     *
+     *   mtta_good            / mtta_ok            → padrão, para quem não tem
+     *                                               meta de equipe
+     *   mtta_good.<usrgrpid> / mtta_ok.<usrgrpid> → meta daquela equipe
+     *
+     * É para isto que a tabela nasceu chave/valor (ver Schema.php): empresa
+     * nova é uma linha, não uma migração de schema.
+     *
+     * @return array{default: array{good:int,ok:int}, groups: array<int,array{good:int,ok:int}>}
+     */
+    private function mttaThresholds(ZbxDb $db): array {
+        $padrao  = ['good' => 900, 'ok' => 3600];
+        $equipes = [];
+
+        try {
+            $stmt = $db->prepare(
+                "SELECT skey, svalue FROM module_plantonistas_settings WHERE skey LIKE 'mtta!_%' ESCAPE '!'"
+            );
+            $stmt->execute();
+
+            foreach ($stmt->get_result()->fetch_all() as $r) {
+                $chave = (string)$r['skey'];
+                $valor = (int)$r['svalue'];
+
+                // O descarte de valor <= 0 vale para LIMITE (minuto zero não
+                // existe), mas não para o flag 24/7, em que `0` é a resposta
+                // "não cobre" — e é justamente a que muda o comportamento.
+                if ($valor <= 0 && strpos($chave, 'mtta_247.') !== 0) {
+                    continue;
+                }
+
+                // mtta_good / mtta_ok            → padrão
+                // mtta_good.<id> / mtta_ok.<id>   → meta da equipe
+                // mtta_247.<id>                   → equipe cobre 24/7? (1/0)
+                $partes = explode('.', $chave, 2);
+
+                if ($partes[0] === 'mtta_247' && isset($partes[1])) {
+                    $usrgrpid = (int)$partes[1];
+                    if ($usrgrpid > 0) {
+                        $equipes[$usrgrpid]['always'] = ((int)$r['svalue'] === 1);
+                    }
+                    continue;
+                }
+
+                $qual = $partes[0] === 'mtta_good' ? 'good' : ($partes[0] === 'mtta_ok' ? 'ok' : null);
+                if ($qual === null) {
+                    continue;
+                }
+
+                if (!isset($partes[1])) {
+                    $padrao[$qual] = $valor;
+                    continue;
+                }
+
+                $usrgrpid = (int)$partes[1];
+                if ($usrgrpid > 0) {
+                    $equipes[$usrgrpid][$qual] = $valor;
+                }
+            }
+        }
+        catch (\Throwable $e) {
+            // Tabela ainda não criada (módulo recém-atualizado, init() não
+            // rodou) ou consulta quebrada: vale o default. Um selo com o
+            // limite de fábrica é melhor que uma tela em branco.
+            error_log('[plantonistas] mttaThresholds() caiu no default: ' . $e->getMessage());
+        }
+
+        $padrao = $this->sanearLimites($padrao, ['good' => 900, 'ok' => 3600]);
+
+        // Equipe com só um dos dois lados gravado herda o outro do padrão: meia
+        // configuração não pode virar faixa invertida.
+        foreach ($equipes as $id => $par) {
+            $always = $par['always'] ?? true;
+            unset($par['always']);
+            // Equipe que só tem o flag 24/7 gravado (sem limites próprios) usa
+            // os limites padrão — o flag sozinho já muda o cálculo do MTTA.
+            $equipes[$id] = $this->sanearLimites($par + $padrao, $padrao) + ['always' => $always];
+        }
+
+        return ['default' => $padrao, 'groups' => $equipes];
+    }
+
+    /**
+     * "Excelente" tem de ser MENOR que "Aceitável": com os dois trocados, a
+     * faixa do meio desaparece e todo mundo cai em Atenção — o sintoma que
+     * originou esta configuração (ver a entrada da v5.9.0).
+     *
+     * A tela e a action de gravação já recusam antes; esta é a terceira guarda,
+     * para o caso de a linha ter sido escrita direto no banco.
+     */
+    private function sanearLimites(array $par, array $padrao): array {
+        $good = (int)($par['good'] ?? $padrao['good']);
+        $ok   = (int)($par['ok']   ?? $padrao['ok']);
+
+        if ($good <= 0 || $ok <= 0) {
+            return $padrao;
+        }
+
+        if ($good >= $ok) {
+            $good = (int)max(60, floor($ok / 2));
+        }
+
+        return ['good' => $good, 'ok' => $ok];
+    }
+
+    /**
+     * Equipes (grupos de usuário) de cada analista da lista, numa consulta só.
+     *
+     * Serve para decidir QUAL meta vale em cada linha do MTTA. Uma consulta por
+     * analista seria N+1 na tabela mais cara da tela.
+     *
+     * @param int[] $userids
+     * @return array<int,int[]> userid => [usrgrpid, …]
+     */
+    private function queryUserGroups(ZbxDb $db, array $userids): array {
+        $ids = array_values(array_unique(array_filter(
+            array_map('intval', $userids),
+            fn($id) => $id > 0
+        )));
+
+        if (!$ids) {
+            return [];
+        }
+
+        try {
+            $stmt = $db->prepare(
+                'SELECT userid, usrgrpid FROM users_groups WHERE userid IN (' . implode(',', $ids) . ')'
+            );
+            $stmt->execute();
+
+            $out = [];
+            foreach ($stmt->get_result()->fetch_all() as $r) {
+                $out[(int)$r['userid']][] = (int)$r['usrgrpid'];
+            }
+
+            return $out;
+        }
+        catch (\Throwable $e) {
+            error_log('[plantonistas] queryUserGroups() falhou: ' . $e->getMessage());
+
+            return [];
+        }
+    }
+
+    /**
+     * Nome das equipes (grupos de usuário) que têm meta própria.
+     *
+     * Serve à dica do selo ("meta da equipe NOC ROCK") e ao diálogo de
+     * configuração. Consulta pelos ids que JÁ estão configurados — nunca o
+     * catálogo inteiro de grupos, que num ambiente com muitas empresas é longo.
+     *
+     * @param int[] $ids
+     * @return array<int,string> usrgrpid => nome
+     */
+    private function queryUserGroupNames(ZbxDb $db, array $ids): array {
+        $limpos = array_values(array_unique(array_filter(
+            array_map('intval', $ids),
+            fn($id) => $id > 0
+        )));
+
+        if (!$limpos) {
+            return [];
+        }
+
+        try {
+            $stmt = $db->prepare(
+                'SELECT usrgrpid, name FROM usrgrp WHERE usrgrpid IN (' . implode(',', $limpos) . ')'
+            );
+            $stmt->execute();
+
+            $out = [];
+            foreach ($stmt->get_result()->fetch_all() as $r) {
+                $out[(int)$r['usrgrpid']] = (string)$r['name'];
+            }
+
+            return $out;
+        }
+        catch (\Throwable $e) {
+            error_log('[plantonistas] queryUserGroupNames() falhou: ' . $e->getMessage());
+
+            return [];
+        }
+    }
+
+    /**
+     * Anexa a cada linha de MTTA a meta que vale para ela.
+     *
+     * Analista em DUAS equipes com metas diferentes fica com a **mais rígida**.
+     * A escolha é deliberada: errar para o lado de cobrar mais deixa um selo
+     * pessimista, que alguém questiona e corrige; errar para o lado frouxo
+     * esconde atraso, e ninguém vai perguntar por um selo verde.
+     *
+     * A linha leva também a origem da meta, que a tela mostra na dica do selo —
+     * meta que muda em silêncio é como se perde a confiança no indicador.
+     */
+    private function attachMttaLimits(ZbxDb $db, array $mtta, array $limites): array {
+        if (!$mtta) {
+            return $mtta;
+        }
+
+        $equipesPorUser = $limites['groups']
+            ? $this->queryUserGroups($db, array_column($mtta, 'userid'))
+            : [];
+
+        foreach ($mtta as &$linha) {
+            $escolhida = null;
+            $origem    = null;
+
+            foreach ($equipesPorUser[(int)$linha['userid']] ?? [] as $usrgrpid) {
+                if (!isset($limites['groups'][$usrgrpid])) {
+                    continue;
+                }
+                $candidata = $limites['groups'][$usrgrpid];
+                if ($escolhida === null || $candidata['ok'] < $escolhida['ok']) {
+                    $escolhida = $candidata;
+                    $origem    = $usrgrpid;
+                }
+            }
+
+            $linha['mtta_lim']    = $escolhida ?? $limites['default'];
+            $linha['mtta_lim_of'] = $origem;
+        }
+        unset($linha);
+
+        return $mtta;
+    }
+
+    /**
+     * Apaga as metas de equipe que NÃO estão na lista — é o que faz o botão de
+     * remover linha funcionar sem uma action de exclusão própria.
+     *
+     * Apaga por prefixo `mtta_good.` / `mtta_ok.`, nunca as chaves sem sufixo:
+     * um DELETE largo aqui levaria junto a meta PADRÃO, e a tela voltaria ao
+     * limite de fábrica sem ninguém ter pedido.
+     *
+     * @param int[] $manter usrgrpids que continuam configurados
+     */
+    private function deleteSettingsExcept(ZbxDb $db, array $manter): bool {
+        $ids = array_values(array_unique(array_filter(
+            array_map('intval', $manter),
+            fn($id) => $id > 0
+        )));
+
+        try {
+            $sql = "DELETE FROM module_plantonistas_settings
+                     WHERE (skey LIKE 'mtta!_good.%' ESCAPE '!'
+                            OR skey LIKE 'mtta!_ok.%' ESCAPE '!'
+                            OR skey LIKE 'mtta!_247.%' ESCAPE '!')";
+
+            if ($ids) {
+                // Ids comparados como TEXTO, entre aspas: o sufixo da chave é
+                // texto, e o PostgreSQL não compara text com integer sem cast
+                // ("operator does not exist: text <> integer"). Um CAST
+                // resolveria, mas estouraria numa chave malformada — comparar
+                // texto com texto não tem esse risco. Os valores são inteiros
+                // convertidos acima, então não há entrada de usuário aqui.
+                $lista = "'" . implode("','", $ids) . "'";
+                $sql .= " AND SUBSTRING(skey FROM POSITION('.' IN skey) + 1) NOT IN ($lista)";
+            }
+
+            $stmt = $db->prepare($sql);
+            $stmt->execute();
+
+            return true;
+        }
+        catch (\Throwable $e) {
+            error_log('[plantonistas] deleteSettingsExcept() falhou: ' . $e->getMessage());
+
+            return false;
+        }
+    }
+
+    /**
+     * Grava um parâmetro do módulo (upsert), para a tela de configuração.
+     *
+     * Usa o `SqlFn::upsert()` que o resto do módulo já usa: uma ida ao banco,
+     * sem SELECT-antes-de-gravar e sem janela de corrida entre dois Super
+     * Admin salvando ao mesmo tempo.
+     */
+    private function saveSetting(ZbxDb $db, string $chave, string $valor): bool {
+        try {
+            $stmt = $db->prepare(
+                'INSERT INTO module_plantonistas_settings (skey, svalue, updated_at)
+                 VALUES (?, ?, ' . SqlFn::now() . ')'
+                 . SqlFn::upsert('skey', ['svalue', 'updated_at'])
+            );
+            $stmt->bind_param('ss', $chave, $valor);
+            $stmt->execute();
+
+            return true;
+        }
+        catch (\Throwable $e) {
+            error_log('[plantonistas] saveSetting(' . $chave . ') falhou: ' . $e->getMessage());
+
+            return false;
+        }
+    }
+
+    /**
+     * Operador que uma condição de tag NOVA já vem marcada.
+     *
+     * "Contém" é o padrão do próprio Zabbix (`TAG_OPERATOR_LIKE` é o valor
+     * default do filtro de Problemas) — e é o que quase sempre se quer ao
+     * começar a digitar.
+     */
+    private function tagOperatorDefault(): string {
+        return 'like';
+    }
+
+    /** Operadores aceitos no filtro por tag, e o que cada um vira em SQL. */
+    private function tagOperators(): array {
+        return [
+            'exists'  => 'Existe',
+            'eq'      => 'Igual a',
+            'like'    => 'Contém',
+            'nexists' => 'Não existe',
+            'ne'      => 'Diferente de',
+            'nlike'   => 'Não contém',
+        ];
+    }
+
+    /**
+     * Recorte por TAG do evento.
+     *
+     * Diferente do filtro por host, este NÃO cabe no trecho `$hostFilter`: tag
+     * é do evento, e o alias do evento muda de consulta para consulta (`ev` nas
+     * que leem `events`, `p` nas duas que leem `problem`). Por isso quem monta
+     * o trecho é cada consulta, que sabe o próprio alias — a assinatura recebe
+     * as tags, não o SQL pronto.
+     *
+     * **Sempre `event_tag`, nunca `problem_tag`**, mesmo nas consultas sobre
+     * `problem`: as duas são indexadas por `eventid` e valem para o mesmo
+     * evento, mas o Zabbix APAGA a linha de `problem_tag` quando o problema
+     * fecha. Filtrar "Alarmes Resolvidos" por tag olhando `problem_tag` daria
+     * uma lista que encolhe sozinha conforme os problemas são resolvidos.
+     *
+     * `LOWER()` dos dois lados em igual/contém porque o valor é digitado por
+     * gente: o MySQL `_ci` ignora caixa, o PostgreSQL não (regra do CLAUDE.md).
+     *
+     * Escape: `\zbx_dbstr()` (função nativa do frontend) em todo texto, e
+     * `ESCAPE '!'` nos LIKE, com `%`, `_` e o próprio `!` neutralizados — sem
+     * isso, um valor com `%` casaria com qualquer coisa.
+     *
+     * As condições são combinadas com **E**: cada linha do filtro estreita
+     * mais. É o que "validar um recorte" pede — "ou" entre tags diferentes
+     * devolveria mais linhas a cada critério, o oposto do que se quer aqui.
+     *
+     * @param array $tags cada item: ['t' => nome, 'o' => operador, 'v' => valor]
+     */
+    private function tagFilter(array $tags, string $alias): string {
+        $sql = '';
+
+        foreach ($tags as $t) {
+            $nome = trim((string)($t['t'] ?? ''));
+            $op   = (string)($t['o'] ?? $this->tagOperatorDefault());
+            $val  = trim((string)($t['v'] ?? ''));
+
+            if ($nome === '' || !isset($this->tagOperators()[$op])) {
+                continue;
+            }
+
+            $cond = 'LOWER(tg_tf.tag) = LOWER(' . \zbx_dbstr($nome) . ')';
+
+            switch ($op) {
+                case 'eq':
+                case 'ne':
+                    $cond .= ' AND LOWER(tg_tf.value) = LOWER(' . \zbx_dbstr($val) . ')';
+                    break;
+
+                case 'like':
+                case 'nlike':
+                    // Valor vazio em "contém" casaria com tudo — nesse caso a
+                    // condição vira só "a tag existe", que é o que a pessoa
+                    // quis dizer.
+                    if ($val !== '') {
+                        $escapado = str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $val);
+                        $cond .= ' AND LOWER(tg_tf.value) LIKE LOWER('
+                               . \zbx_dbstr('%' . $escapado . '%') . ") ESCAPE '!'";
+                    }
+                    break;
+            }
+
+            $negado = in_array($op, ['nexists', 'ne', 'nlike'], true);
+
+            $sql .= ($negado ? ' AND NOT EXISTS (' : ' AND EXISTS (')
+                  . 'SELECT 1 FROM event_tag tg_tf'
+                  . ' WHERE tg_tf.eventid = ' . $alias . '.eventid AND ' . $cond . ')';
+        }
+
+        return $sql;
     }
 
     /**
@@ -1224,6 +2040,128 @@ trait TurnosReportBase {
      * sem WHERE. Falha (linha ausente, sem permissão) cai no default de
      * fábrica: a tela continua funcionando, só sem refletir customização.
      */
+    /**
+     * Onde este Zabbix guarda a configuração global: `config` ou `settings`.
+     *
+     * Até o 7.0 a configuração global era UMA linha da tabela `config`, com uma
+     * coluna por parâmetro (`severity_name_3`, `login_attempts`, …). Em versões
+     * seguintes ela virou a tabela `settings`, chave/valor, com o valor em
+     * `value_str` ou `value_int` conforme o tipo.
+     *
+     * Consultar a tabela errada não é um resultado vazio: é **erro de SQL**, e
+     * no módulo isso caía no `catch` — a busca de menção por `@` devolvia lista
+     * vazia (com cara de "não há ninguém para mencionar") e os nomes/cores de
+     * severidade voltavam ao padrão de fábrica silenciosamente, ignorando o que
+     * estivesse customizado em Administração → Geral.
+     *
+     * A sonda é feita UMA vez por requisição (`self::$configTable`): são duas
+     * telas e várias chamadas por carga, e a resposta não muda no meio.
+     */
+    private static $configTable = null;
+
+    private function configTable(ZbxDb $db): string {
+        if (self::$configTable !== null) {
+            return self::$configTable;
+        }
+
+        self::$configTable = 'config';   // reserva: o schema do 7.0 LTS
+
+        try {
+            $stmt = $db->prepare(
+                'SELECT table_name FROM information_schema.tables' .
+                " WHERE table_name IN ('settings', 'config')" .
+                '   AND table_schema = ' . (SqlFn::isPgsql() ? 'current_schema()' : 'DATABASE()')
+            );
+            $stmt->execute();
+            $res = $stmt->get_result();
+
+            $tem = [];
+            while ($r = $res->fetch_assoc()) {
+                // Chave do INFORMATION_SCHEMA muda de caixa entre bancos.
+                $r = array_change_key_case($r, CASE_LOWER);
+                $tem[strtolower((string) ($r['table_name'] ?? ''))] = true;
+            }
+
+            // `settings` primeiro: numa instalação que passou pelo upgrade as
+            // duas podem coexistir por um tempo, e a que vale é a nova.
+            if (isset($tem['settings'])) {
+                self::$configTable = 'settings';
+            }
+        } catch (\Throwable $e) {
+            error_log('[plantonistas] configTable(): sonda falhou, assumindo `config`: ' . $e->getMessage());
+        }
+
+        return self::$configTable;
+    }
+
+    /**
+     * Lê parâmetros da configuração global, seja qual for o schema.
+     *
+     * @param  string[] $chaves nomes como aparecem no `settings` (que são os
+     *                          mesmos nomes das colunas do `config`)
+     * @return array<string,string> só o que existir; chave ausente não vira ''
+     */
+    private function queryGlobalSettings(ZbxDb $db, array $chaves): array {
+        if (!$chaves) {
+            return [];
+        }
+
+        $out = [];
+
+        try {
+            if ($this->configTable($db) === 'settings') {
+                // `type` diz onde o valor está. Não dá para usar COALESCE dos
+                // dois: `value_str` de um parâmetro numérico vem como string
+                // VAZIA (não NULL), então o COALESCE devolveria '' e o número
+                // se perderia — foi o que o `login_attempts` deste ambiente
+                // mostrou (value_str '', value_int 5).
+                $marcas = implode(',', array_fill(0, count($chaves), '?'));
+                $stmt   = $db->prepare(
+                    "SELECT name, type, value_str, value_int FROM settings WHERE name IN ($marcas)"
+                );
+                $stmt->bind_param(str_repeat('s', count($chaves)), ...array_values($chaves));
+                $stmt->execute();
+                $res = $stmt->get_result();
+
+                while ($r = $res->fetch_assoc()) {
+                    $nome = (string) ($r['name'] ?? '');
+                    $str  = (string) ($r['value_str'] ?? '');
+                    $out[$nome] = ($str !== '') ? $str : (string) ($r['value_int'] ?? '');
+                }
+
+                return $out;
+            }
+
+            // Schema antigo: uma coluna por parâmetro, linha única.
+            $cols = [];
+            foreach ($chaves as $c) {
+                // Nome de coluna não passa por bind_param. A allowlist é
+                // estreita de propósito: só o que o próprio módulo pede.
+                if (preg_match('/^[a-z0-9_]+$/', $c)) {
+                    $cols[] = $c;
+                }
+            }
+            if (!$cols) {
+                return [];
+            }
+
+            $stmt = $db->prepare('SELECT ' . implode(', ', $cols) . ' FROM config');
+            $stmt->execute();
+            $row = $stmt->get_result()->fetch_assoc();
+            if ($row) {
+                foreach ($cols as $c) {
+                    if (array_key_exists($c, $row) && $row[$c] !== null) {
+                        $out[$c] = (string) $row[$c];
+                    }
+                }
+            }
+        } catch (\Throwable $e) {
+            error_log('[plantonistas] queryGlobalSettings() falhou: ' . $e->getMessage());
+        }
+
+        return $out;
+    }
+
     private function querySeverities(ZbxDb $db): array {
         $default = [
             0 => ['name' => 'Not classified', 'color' => '97AAB3'],
@@ -1235,15 +2173,13 @@ trait TurnosReportBase {
         ];
 
         try {
-            $stmt = $db->prepare(
-                'SELECT severity_name_0, severity_name_1, severity_name_2, severity_name_3,' .
-                '       severity_name_4, severity_name_5,' .
-                '       severity_color_0, severity_color_1, severity_color_2, severity_color_3,' .
-                '       severity_color_4, severity_color_5' .
-                ' FROM config'
-            );
-            $stmt->execute();
-            $row = $stmt->get_result()->fetch_assoc();
+            $chaves = [];
+            for ($i = 0; $i <= 5; $i++) {
+                $chaves[] = 'severity_name_'  . $i;
+                $chaves[] = 'severity_color_' . $i;
+            }
+
+            $row = $this->queryGlobalSettings($db, $chaves);
             if (!$row) {
                 return $default;
             }
@@ -1268,7 +2204,7 @@ trait TurnosReportBase {
         }
     }
 
-    private function queryCalendarHeatmap(ZbxDb $db, string $hostFilter = ''): array {
+    private function queryCalendarHeatmap(ZbxDb $db, string $hostFilter = '', array $tags = []): array {
         $ts30     = (int)strtotime('-30 days 00:00:00');
         $tsNow    = (int)time();
         $tzOffset = (int)date('Z');
@@ -1276,6 +2212,7 @@ trait TurnosReportBase {
         // `critical` com COUNT(DISTINCT ... CASE ...) pelo mesmo motivo do
         // queryEventTotals: com SUM, a célula do heatmap dizia mais críticos
         // do que eventos no dia.
+        $tagFilter = $this->tagFilter($tags, 'ev');
         $sql = "SELECT " . SqlFn::dateFromEpoch('ev.clock + ?') . " AS dia,
                     COUNT(DISTINCT ev.eventid) AS cnt,
                     COUNT(DISTINCT CASE WHEN ev.severity >= 4 THEN ev.eventid END) AS critical
@@ -1287,6 +2224,7 @@ trait TurnosReportBase {
                 WHERE ev.source = 0 AND ev.object = 0 AND ev.value = 1
                   AND ev.clock BETWEEN ? AND ?
                   $hostFilter
+                  $tagFilter
                 GROUP BY dia
                 ORDER BY dia ASC";
 
@@ -1826,28 +2764,72 @@ trait TurnosReportBase {
      * Hostgroups visíveis ao usuário — mesma regra de host_filter em
      * resolveUserContext() (rights.permission >= 2). Super Admin vê todos.
      */
+    /**
+     * Monta as condições de busca de um texto digitado sobre N colunas.
+     *
+     * Cada PALAVRA vira uma condição AND que precisa aparecer em alguma das
+     * colunas; a ordem digitada não importa ("ereno rafael" acha o mesmo que
+     * "rafael ereno") e dá para misturar campos ("rafael z14" = nome + login).
+     * Dentro da palavra a comparação é `contém`, dobrada por caixa e acento
+     * (SqlFn::foldText/foldTerm), que é o que faz "leao" achar "Leão".
+     *
+     * Teto de 5 palavras: acima disso a consulta cresce sem o resultado
+     * melhorar, e busca de menção é digitação, não relatório.
+     *
+     * @param  string[] $colunas expressões SQL (coluna ou CONCAT já montado)
+     * @return array{sql:string,types:string,values:array}
+     */
+    private function buildSearchTerms(string $q, array $colunas): array {
+        $termos = preg_split('/\s+/', trim($q), -1, PREG_SPLIT_NO_EMPTY) ?: [];
+        $termos = array_slice($termos, 0, 5);
+
+        $sql    = '';
+        $types  = '';
+        $values = [];
+
+        foreach ($termos as $t) {
+            // O termo é dobrado UMA vez e serve para as duas coisas: virar o
+            // valor ligado e dizer quais acentos a coluna precisa dobrar.
+            $dobrado = SqlFn::foldTerm($t);
+            $ors     = [];
+
+            foreach ($colunas as $col) {
+                $ors[]    = SqlFn::foldText($col, $dobrado) . ' LIKE ?' . SqlFn::likeEscape();
+                $types   .= 's';
+                $values[] = '%' . $dobrado . '%';
+            }
+
+            $sql .= ' AND (' . implode(' OR ', $ors) . ')';
+        }
+
+        return ['sql' => $sql, 'types' => $types, 'values' => $values];
+    }
+
     private function searchHostgroups(ZbxDb $db, array $ctx, string $q): array {
-        $like = '%' . $q . '%';
         try {
             if (!empty($ctx['is_superadmin'])) {
+                $t = $this->buildSearchTerms($q, ['hg.name']);
                 $stmt = $db->prepare(
-                    "SELECT groupid AS id, name AS label
-                     FROM hstgrp
-                     WHERE name LIKE ?
-                     ORDER BY name LIMIT 20"
+                    "SELECT hg.groupid AS id, hg.name AS label
+                     FROM hstgrp hg
+                     WHERE hg.type = 0 {$t['sql']}
+                     ORDER BY hg.name LIMIT 20"
                 );
-                $stmt->bind_param('s', $like);
+                if ($t['types'] !== '') {
+                    $stmt->bind_param($t['types'], ...$t['values']);
+                }
             } else {
                 $userid = (int)$ctx['userid'];
+                $t = $this->buildSearchTerms($q, ['hg.name']);
                 $stmt = $db->prepare(
                     "SELECT DISTINCT hg.groupid AS id, hg.name AS label
                      FROM hstgrp hg
                      INNER JOIN rights r ON r.id = hg.groupid
                      INNER JOIN users_groups ug ON ug.usrgrpid = r.groupid
-                     WHERE ug.userid = ? AND r.permission >= 2 AND hg.name LIKE ?
+                     WHERE ug.userid = ? AND r.permission >= 2 AND hg.type = 0 {$t['sql']}
                      ORDER BY hg.name LIMIT 20"
                 );
-                $stmt->bind_param('is', $userid, $like);
+                $stmt->bind_param('i' . $t['types'], $userid, ...$t['values']);
             }
             $stmt->execute();
             $rows = $stmt->get_result()->fetch_all();
@@ -1864,20 +2846,42 @@ trait TurnosReportBase {
     /**
      * Hosts visíveis ao usuário — mesma regra de host_filter. Exclui
      * templates (status=3); inclui monitorados (0) e não monitorados (1).
+     *
+     * `flags IN (0, 4)` é o que separa HOST de PROTÓTIPO DE HOST, e sem ele a
+     * lista do `_h` vinha poluída: neste ambiente são 2 hosts reais contra 126
+     * protótipos, com nomes que são a macro não resolvida (`{#AWS.EC2.INSTANCE.ID}`,
+     * `Task Replication {#DMS_TASK_ID}`). Protótipo é o MOLDE que a descoberta
+     * usa; ele não coleta, não gera evento e não tem o que ser mencionado num
+     * repasse.
+     *
+     * Os valores saem do `defines.inc.php`: NORMAL = 0 e DISCOVERY_CREATED = 4
+     * (host que a descoberta criou — esse É real e entra). O bit de protótipo é
+     * o 2, e ele aparece tanto sozinho quanto somado ao 4 (`flags = 6`,
+     * PROTOTYPE_CREATED) — por isso a lista positiva `IN (0,4)`, e não uma
+     * exclusão de `flags = 2`, que deixaria os 6 passarem. É a mesma condição
+     * que o `CHost.php` da API usa.
+     *
+     * Grupos NÃO precisam do mesmo tratamento: protótipo de grupo mora em
+     * `group_prototype`, não em `hstgrp` — conferido neste banco, onde nenhum
+     * nome de grupo contém macro. Lá o `flags = 4` são grupos DESCOBERTOS, que
+     * são reais e devem aparecer.
      */
     private function searchHosts(ZbxDb $db, array $ctx, string $q): array {
-        $like = '%' . $q . '%';
         try {
             if (!empty($ctx['is_superadmin'])) {
+                $t = $this->buildSearchTerms($q, ['h.host', 'h.name']);
                 $stmt = $db->prepare(
-                    "SELECT hostid AS id, name AS label
-                     FROM hosts
-                     WHERE status IN (0,1) AND (host LIKE ? OR name LIKE ?)
-                     ORDER BY name LIMIT 20"
+                    "SELECT h.hostid AS id, h.name AS label
+                     FROM hosts h
+                     WHERE h.status IN (0,1) AND h.flags IN (0,4) {$t['sql']}
+                     ORDER BY h.name LIMIT 20"
                 );
-                $stmt->bind_param('ss', $like, $like);
+                if ($t['types'] !== '') {
+                    $stmt->bind_param($t['types'], ...$t['values']);
+                }
             } else {
                 $userid = (int)$ctx['userid'];
+                $t = $this->buildSearchTerms($q, ['h.host', 'h.name']);
                 $stmt = $db->prepare(
                     "SELECT DISTINCT h.hostid AS id, h.name AS label
                      FROM hosts h
@@ -1885,10 +2889,10 @@ trait TurnosReportBase {
                      INNER JOIN rights r ON r.id = hg.groupid
                      INNER JOIN users_groups ug ON ug.usrgrpid = r.groupid
                      WHERE ug.userid = ? AND r.permission >= 2
-                       AND h.status IN (0,1) AND (h.host LIKE ? OR h.name LIKE ?)
+                       AND h.status IN (0,1) AND h.flags IN (0,4) {$t['sql']}
                      ORDER BY h.name LIMIT 20"
                 );
-                $stmt->bind_param('iss', $userid, $like, $like);
+                $stmt->bind_param('i' . $t['types'], $userid, ...$t['values']);
             }
             $stmt->execute();
             $rows = $stmt->get_result()->fetch_all();
@@ -2004,7 +3008,20 @@ trait TurnosReportBase {
      * a de sempre: bloqueio é estado transitório de segurança e não define
      * elegibilidade (ver CLAUDE.md).
      */
-    private function notBlockedUserClause(string $alias = 'u'): string {
+    private function notBlockedUserClause(string $alias = 'u', ?ZbxDb $db = null): string {
+        // Sem $db não dá para sondar o schema; nesse caso a cláusula sai de
+        // cena em vez de arriscar derrubar a consulta inteira — o filtro de
+        // bloqueio é acessório, e a regra da casa é que acessório não leva o
+        // dado principal junto quando falha.
+        if ($db === null) {
+            return '1=1';
+        }
+
+        if ($this->configTable($db) === 'settings') {
+            return "$alias.attempt_failed < (SELECT MIN(value_int) FROM settings"
+                 . " WHERE name = 'login_attempts')";
+        }
+
         return "$alias.attempt_failed < (SELECT MIN(login_attempts) FROM config)";
     }
 
@@ -2015,7 +3032,7 @@ trait TurnosReportBase {
      */
     private function searchMentionableUsers(ZbxDb $db, array $ctx, string $q): array {
         $activeClause = $this->enabledUserClause('u')
-            . ' AND ' . $this->notBlockedUserClause('u');
+            . ' AND ' . $this->notBlockedUserClause('u', $db);
         // ORDER BY pelo nome efetivo (username quando não há nome cadastrado):
         // ordenar pelo CONCAT cru jogava todos os labels vazios pro topo da
         // lista, que era exatamente o que aparecia como "itens em branco".
@@ -2040,24 +3057,16 @@ trait TurnosReportBase {
         // dois campos. Como cada termo é uma condição AND, a ordem digitada não
         // importa ("ereno rafael" acha igual) e dá pra combinar nome + username.
         $fullName = "TRIM(CONCAT(COALESCE(u.name,''), ' ', COALESCE(u.surname,'')))";
-        $terms    = preg_split('/\s+/', $q, -1, PREG_SPLIT_NO_EMPTY) ?: [];
-        $terms    = array_slice($terms, 0, 5); // teto de termos: query previsível
 
         // LOWER() nos dois lados do LIKE em vez de LIKE direto: o MySQL com
         // collation _ci ignora a caixa sozinho, o PostgreSQL não. Sem isso,
         // digitar "rafael" deixaria de achar "Rafael" no PG — e a busca do @
         // ficaria praticamente inútil, com cara de bug intermitente (funciona
         // se você acertar a caixa exata). LOWER() vale nos dois bancos.
-        $termSql    = '';
-        $bindTypes  = '';
-        $bindValues = [];
-        foreach ($terms as $t) {
-            $termSql .= " AND (LOWER(u.username) LIKE ? OR LOWER(u.name) LIKE ?"
-                      . " OR LOWER(u.surname) LIKE ? OR LOWER($fullName) LIKE ?)";
-            $like     = '%' . mb_strtolower($t) . '%';
-            $bindTypes .= 'ssss';
-            array_push($bindValues, $like, $like, $like, $like);
-        }
+        $t          = $this->buildSearchTerms($q, ['u.username', 'u.name', 'u.surname', $fullName]);
+        $termSql    = $t['sql'];
+        $bindTypes  = $t['types'];
+        $bindValues = $t['values'];
 
         try {
             if (!empty($ctx['is_superadmin'])) {

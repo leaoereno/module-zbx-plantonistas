@@ -45,7 +45,7 @@ class Module extends CModule {
      * ganharem alguma coisa nova** — é ele que decide se a migração precisa
      * rodar de novo num frontend que já a executou (ver migrateSchema()).
      */
-    private const SCHEMA_VERSION = 1;
+    private const SCHEMA_VERSION = 2;   // v2: module_plantonistas_settings
 
     /** Revalidação periódica do marcador (1 dia). Ver migrateSchema(). */
     private const SCHEMA_RECHECK_SEC = 86400;

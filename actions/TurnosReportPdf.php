@@ -24,6 +24,11 @@ class TurnosReportPdf extends CController {
             'date'  => 'string',
             'shift' => 'string',
             'limit' => 'string',
+            // Mesmo recorte da tela: sem isto, "Gerar PDF" com um filtro
+            // aplicado devolvia o relatório do ambiente inteiro, e os dois
+            // números não batiam.
+            'groupids' => 'string',
+            'tags'     => 'string',
             // Com report_id, renderiza o snapshot de um turno FECHADO em vez
             // de consultar o banco — é assim que o documento da issue #2 é
             // exibido, sem precisar de tela nova.
@@ -362,6 +367,9 @@ class TurnosReportPdf extends CController {
             $shift        = $snap['shift'] ?? $shiftRaw;
             $shiftOptions = [$shift => $snap['shift_label'] ?? $shift];
             $nocLabel     = $snap['noc_label'] ?? null;
+            // Snapshot é do turno inteiro: documento fechado nunca é recorte.
+            $groupLabel   = null;
+            $pdfTags      = [];
             // Papel do LEITOR: decide os rótulos ("Seu MTTA" x "MTTA Global")
             // e tem que casar com a restrição aplicada logo abaixo.
             $roleType     = (int) $nocCtx['role_type'];
@@ -406,6 +414,28 @@ class TurnosReportPdf extends CController {
             try {
                 $hostFilter   = $nocCtx['host_filter'];
                 $roleType     = $nocCtx['role_type'];
+
+                // Mesmo recorte por grupo da tela, com a MESMA regra de quem
+                // pode: Super Admin. A validação é refeita aqui porque esta
+                // action tem URL própria — confiar no que a tela mandou seria
+                // confiar no que o navegador mandou.
+                $groupLabel = null;
+                $pdfGroupids = [];
+                $pdfTags     = [];
+                if (!empty($nocCtx['is_superadmin'])) {
+                    $pedidos = array_map('intval', array_filter(explode(',', (string)$this->getInput('groupids', ''))));
+                    if ($pedidos) {
+                        // Mesma resolução da tela, subgrupos incluídos: o papel
+                        // tem de recortar exatamente o mesmo conjunto que a
+                        // tela, senão os números do PDF não batem com os dela.
+                        $grupos      = $this->resolveGroupFilter($pedidos);
+                        $pdfGroupids = $grupos['expanded'];
+                        $nomes       = array_map(fn($g) => $g['name'], $grupos['selected']);
+                        $groupLabel  = $nomes ? implode(', ', $nomes) : null;
+                    }
+                    $pdfTags = $this->parseTagFilter((string)$this->getInput('tags', ''));
+                }
+                $hostFilter .= $this->groupFilter($pdfGroupids);
                 $nocLabel     = !empty($nocCtx['display_groups'])
                                 ? implode(' / ', $nocCtx['display_groups'])
                                 : null;
@@ -415,12 +445,15 @@ class TurnosReportPdf extends CController {
 
                 [$ts_start, $ts_end] = $this->getShiftBounds($db, $date, $shift);
 
-                $mtta         = $this->queryMTTA($db, $ts_start, $ts_end, $hostFilter);
+                // Mesma conta da tela, corte por turno incluído — dois
+                // caminhos de cálculo dariam dois MTTAs para o mesmo turno.
+                $mtta         = $this->queryMttaData($db, $ts_start, $ts_end, $hostFilter, $pdfTags,
+                                                     $roleType, $userid, $this->mttaThresholds($db))['analysts'];
                 $mtta         = $this->restrictMttaByRole($mtta, $roleType, $userid);
-                $inherited    = $this->queryInheritedAlerts($db, $ts_start, $hostFilter);
-                $unacked      = $this->queryUnackedAlerts($db, $ts_start, $ts_end, $hostFilter);
-                $in_progress  = $this->queryInProgressAlerts($db, $ts_start, $ts_end, $hostFilter);
-                $resolved     = $this->queryResolvedAlerts($db, $ts_start, $ts_end, $hostFilter);
+                $inherited    = $this->queryInheritedAlerts($db, $ts_start, $hostFilter, $pdfTags);
+                $unacked      = $this->queryUnackedAlerts($db, $ts_start, $ts_end, $hostFilter, $pdfTags);
+                $in_progress  = $this->queryInProgressAlerts($db, $ts_start, $ts_end, $hostFilter, $pdfTags);
+                $resolved     = $this->queryResolvedAlerts($db, $ts_start, $ts_end, $hostFilter, $pdfTags);
                 // Corte no teto antes das ações e dos KPIs (ver capAlertRows()).
                 $truncated    = [
                     'inherited'   => $this->capAlertRows($inherited),
@@ -434,9 +467,9 @@ class TurnosReportPdf extends CController {
                     array_column($in_progress, 'eventid'),
                     array_column($resolved, 'eventid')
                 ));
-                $top_hosts    = $this->queryTopHosts($db, $ts_start, $ts_end, $limit, $hostFilter);
-                $top_triggers = $this->queryTopTriggers($db, $ts_start, $ts_end, $limit, $hostFilter);
-                $totals       = $this->queryEventTotals($db, $ts_start, $ts_end, $hostFilter);
+                $top_hosts    = $this->queryTopHosts($db, $ts_start, $ts_end, $limit, $hostFilter, $pdfTags);
+                $top_triggers = $this->queryTopTriggers($db, $ts_start, $ts_end, $limit, $hostFilter, $pdfTags);
+                $totals       = $this->queryEventTotals($db, $ts_start, $ts_end, $hostFilter, $pdfTags);
                 $notes        = $this->queryNotes($db, $date, $shift, $userid, $isSuperadmin);
                 $severities   = $this->querySeverities($db);
                 $db->close();
@@ -458,8 +491,12 @@ class TurnosReportPdf extends CController {
         }
 
         $isUserRole = ($roleType < 2);
+        // O KPI continua nos dois papéis, com rótulo diferente: para o User ele
+        // mostra o MTTA DELE (restrictMttaByRole() já reduziu a lista antes de
+        // chegar aqui), e é a informação que serve a quem está no plantão.
         $mttaKpiLabel  = $isUserRole ? 'Seu MTTA' : 'MTTA Global';
-        $mttaCardTitle = $isUserRole ? 'Seu MTTA' : 'MTTA por Analista';
+        // Sem ternário: a tabela por analista só é impressa quando NÃO é User.
+        $mttaCardTitle = 'MTTA por Analista';
 
         // Título completo para o PDF inclui o contexto NOC.
         // Data com hífen (17-08-2026), não barra: o <title> é o que o navegador
@@ -468,6 +505,7 @@ class TurnosReportPdf extends CController {
         // dependendo do sistema. Continua dia-mês-ano, padrão brasileiro.
         $pdfTitle = ($closedMeta !== null ? 'Repasse Fechado' : 'Repasse de Plantão')
             . ($nocLabel ? ' — ' . $nocLabel : '')
+            . (!empty($groupLabel) ? ' — ' . $groupLabel : '')
             . ' — ' . $this->shiftLabel($shift, $shiftOptions)
             . ' — ' . str_replace('/', '-', $this->formatDateBr($date));
 
@@ -548,6 +586,23 @@ class TurnosReportPdf extends CController {
         if ($nocLabel) {
             echo '<span class="rp-noc-badge"><i class="fas fa-shield-alt"></i> ' . htmlspecialchars($nocLabel) . '</span>';
         }
+        // O recorte por grupo PRECISA estar escrito no documento. Um PDF de um
+        // grupo só é indistinguível de um PDF do ambiente inteiro depois de
+        // impresso — e é justamente ele que circula por e-mail.
+        if (!empty($groupLabel)) {
+            echo '<span class="rp-noc-badge"><i class="fas fa-filter"></i> Grupo: '
+               . htmlspecialchars($groupLabel) . '</span>';
+        }
+        if (!empty($pdfTags)) {
+            $ops = $this->tagOperators();
+            $txt = [];
+            foreach ($pdfTags as $tg) {
+                $txt[] = $tg['t'] . ' ' . mb_strtolower($ops[$tg['o']] ?? '')
+                       . ($tg['v'] !== '' ? ' ' . $tg['v'] : '');
+            }
+            echo '<span class="rp-noc-badge"><i class="fas fa-tags"></i> '
+               . htmlspecialchars(implode(' · ', $txt)) . '</span>';
+        }
         // htmlspecialchars no rótulo do turno: ele é montado com o NOME do
         // turno e o NOME do grupo de usuário (queryShiftOptions()), os dois
         // digitados por um Admin. A tela ao vivo escapa nos três pontos
@@ -606,8 +661,10 @@ class TurnosReportPdf extends CController {
         echo '<div class="rp-kpi"><div class="rp-kpi-icon bg-green"><i class="fas fa-check-circle"></i></div><div class="rp-kpi-body"><span class="rp-kpi-val">' . $this->alertCount($resolved, $truncated, 'resolved') . '</span><span class="rp-kpi-label">Resolvidos</span></div></div>';
         echo '</div>';
 
-        // MTTA por analista
-        if ($mtta) {
+        // MTTA por analista — bloco GERENCIAL, some para o papel User (1), igual
+        // à tela ao vivo. Se saísse só na tela e continuasse no papel, bastaria
+        // clicar em "Gerar PDF" para reaver o que a tela decidiu não mostrar.
+        if ($mtta && !$isUserRole) {
             echo '<div class="rp-card"><div class="rp-card-head"><i class="fas fa-stopwatch"></i> ' . $mttaCardTitle . '</div>';
             echo '<table class="rp-table"><thead><tr><th>Analista</th><th>ACKs</th><th>MTTA Médio</th><th>Mín</th><th>Máx</th></tr></thead><tbody>';
             foreach ($mtta as $m) {

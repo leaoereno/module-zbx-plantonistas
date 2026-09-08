@@ -148,6 +148,83 @@ class SqlFn {
         return "'" . date('Y-m-d H:i:s') . "'";
     }
 
+    // ── Busca tolerante (caixa e acento) ─────────────────────────────────
+    //
+    // Quem digita o nome de um colega escreve "leao", não "Leão". Comparar do
+    // jeito cru exige acerto exato dos dois — e no PostgreSQL nem a caixa
+    // perdoa (o MySQL com collation _ci perdoa, o que faz o defeito parecer
+    // intermitente entre ambientes).
+    //
+    // O dobramento é feito com REPLACE aninhado porque é o que existe NOS DOIS
+    // bancos: `TRANSLATE` é do PostgreSQL e o `unaccent()` exige extensão
+    // instalada — nenhum dos dois pode ser pré-requisito de um módulo que
+    // precisa rodar onde já está instalado. Só as letras acentuadas do
+    // português entram na tabela; é o alfabeto dos nomes que este módulo
+    // pesquisa, e cada par custa um REPLACE na consulta.
+
+    /** Pares acento → letra simples, usados no SQL e no PHP (a MESMA lista). */
+    private const ACENTOS = [
+        'á'=>'a','à'=>'a','â'=>'a','ã'=>'a','ä'=>'a',
+        'é'=>'e','è'=>'e','ê'=>'e','ë'=>'e',
+        'í'=>'i','ì'=>'i','î'=>'i','ï'=>'i',
+        'ó'=>'o','ò'=>'o','ô'=>'o','õ'=>'o','ö'=>'o',
+        'ú'=>'u','ù'=>'u','û'=>'u','ü'=>'u',
+        'ç'=>'c','ñ'=>'n',
+    ];
+
+    /**
+     * Expressão SQL que devolve o texto em minúsculas e SEM acento.
+     *
+     * O `LOWER()` vem primeiro e a tabela só tem minúsculas: assim "LEÃO" é
+     * dobrado com metade dos REPLACEs — e, mais importante, não depende de o
+     * banco saber fazer `LOWER()` de caractere acentuado multibyte.
+     */
+    public static function foldText(string $expr, ?string $termoDobrado = null): string {
+        $sql = "LOWER($expr)";
+
+        foreach (self::ACENTOS as $de => $para) {
+            // Só entra o par cuja letra SIMPLES aparece no termo procurado.
+            //
+            // Para casar, o caractere dobrado da coluna tem de ser igual a
+            // algum caractere do termo: procurando "leao", o que precisa cair
+            // é o acento de a/e/o — o de "ç" ou "ü" não muda resultado nenhum,
+            // só engorda a consulta. Buscar "srv01" não gera REPLACE algum e a
+            // comparação volta a ser o LOWER() simples.
+            //
+            // Sem esse recorte eram 24 REPLACE aninhados por coluna POR TERMO
+            // (4 colunas × 5 termos = 20 dessas pilhas numa consulta só), e o
+            // custo caía sobre `hosts`, que neste ambiente é grande.
+            if ($termoDobrado !== null && mb_strpos($termoDobrado, $para) === false) {
+                continue;
+            }
+
+            $sql = "REPLACE($sql, " . \zbx_dbstr($de) . ', ' . \zbx_dbstr($para) . ')';
+        }
+
+        return $sql;
+    }
+
+    /**
+     * O mesmo dobramento, em PHP, para o termo digitado — mais os curingas do
+     * LIKE neutralizados.
+     *
+     * Sem escapar, quem digitasse `%` casaria com tudo e `_` com qualquer
+     * caractere; o `!` é escapado primeiro por ser o próprio caractere de
+     * escape (invertida a ordem, ele escaparia a barra que acabou de pôr).
+     * Quem usa isto TEM de emitir `ESCAPE '!'` no LIKE — ver likeEscape().
+     */
+    public static function foldTerm(string $termo): string {
+        $t = function_exists('mb_strtolower') ? mb_strtolower($termo, 'UTF-8') : strtolower($termo);
+        $t = strtr($t, self::ACENTOS);
+
+        return str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $t);
+    }
+
+    /** Sufixo obrigatório de todo LIKE alimentado por foldTerm(). */
+    public static function likeEscape(): string {
+        return " ESCAPE '!'";
+    }
+
     /**
      * Sufixo de "insere, ou atualiza se já existe".
      *

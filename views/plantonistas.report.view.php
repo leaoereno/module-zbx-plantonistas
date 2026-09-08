@@ -100,6 +100,36 @@ function rp_hostLabel(array $r): string {
 
     return $visivel !== '' ? $visivel : (string)($r['host'] ?? '');
 }
+/**
+ * Selo da coluna Performance a partir do MTTA médio, em segundos.
+ *
+ * Os limites vêm do banco (`TurnosReportBase::mttaThresholds()`, configuráveis
+ * por Super Admin) e são os MESMOS que a descrição do card imprime — antes
+ * havia dois números contando histórias diferentes: a classificação usava 5 e
+ * 15 minutos enquanto o texto logo acima da tabela prometia "meta abaixo de 60
+ * minutos", e quem tinha 20 minutos aparecia como "Atenção" estando dentro da
+ * meta anunciada.
+ *
+ * @return array{0: string, 1: string} classe CSS e rótulo
+ */
+function rp_mttaPerf(int $avg, array $limites): array {
+    if ($avg < (int)$limites['good']) {
+        return ['perf-good', 'Excelente'];
+    }
+
+    return $avg < (int)$limites['ok'] ? ['perf-ok', 'Aceitável'] : ['perf-bad', 'Atenção'];
+}
+/** "15 min" / "1 h" / "1 h 30 min" — para escrever a meta na descrição do card. */
+function rp_limiteLabel(int $seg): string {
+    if ($seg % 3600 === 0) {
+        return ($seg / 3600) . ' h';
+    }
+    if ($seg < 3600) {
+        return ($seg / 60) . ' min';
+    }
+
+    return intdiv($seg, 3600) . ' h ' . intdiv($seg % 3600, 60) . ' min';
+}
 function rp_shiftLabel(string $sh): string {
     return ['manha'=>'Manhã (07h–13h)','tarde'=>'Tarde (13h–19h)','noite'=>'Noite (19h–07h)','24h'=>'24 Horas'][$sh] ?? $sh;
 }
@@ -478,6 +508,29 @@ if (is_array($rp_mf) && !empty($rp_mf['version'])) {
 // Nomes/cores reais de severidade — ver rp_sevLabel() e o bloco de <style>
 // logo abaixo de _theme.php, que sobrescreve --sev-* com as cores de verdade.
 $rp_sev = $data['severities'] ?? [];
+/* Textos do multiselect nativo, em PT-BR.
+ *
+ * O componente traz os rótulos dele traduzidos pelo idioma DO FRONTEND — e este
+ * ambiente roda em en_US, então a caixa aparecia com "type here to search" no
+ * meio de uma tela inteira em português. O módulo é PT-BR fixo por convenção
+ * (ver CLAUDE.md), então os rótulos vêm daqui, não do idioma da instalação.
+ *
+ * Ficam num lugar só porque servem às DUAS caixas: a de grupos de host (montada
+ * em PHP pelo CMultiSelect) e a de equipe (montada em JS, uma por linha de meta). */
+$rp_ms_labels = [
+    'No matches found'      => 'Nenhum resultado encontrado',
+    'More matches found...' => 'Há mais resultados — refine a busca',
+    'type here to search'   => 'digite para buscar',
+    'new'                   => 'novo',
+    'Select'                => 'Selecionar',
+];
+// Limites do selo de Performance (MTTA), do banco — ver rp_mttaPerf().
+// `default` é a meta geral; `groups` são as exceções por equipe, já aplicadas
+// linha a linha pelo controller (mtta_lim / mtta_lim_of em cada registro).
+$rp_mtta_cfg     = $data['mtta_thresholds'] ?? [];
+$rp_mtta_lim     = $rp_mtta_cfg['default'] ?? ['good' => 900, 'ok' => 3600];
+$rp_mtta_metas   = $rp_mtta_cfg['groups'] ?? [];
+$rp_mtta_equipes = $data['mtta_group_names'] ?? [];
 // Coluna Ações das 4 tabelas de alarme — ver rp_actionChips() acima.
 $rp_actions = $data['actions'] ?? [];
 $chart_mtta_labels = json_encode(array_column($data['mtta_timeline'], 'hora'));
@@ -590,7 +643,10 @@ if ($rp_sev) {
         <?php endif; ?>
     </div>
     <div class="rp-nh-right">
-        <form method="GET" action="zabbix.php" class="rp-nh-controls">
+        <?php /* `name` no form: o pop-up de seleção do multiselect nativo recebe
+                 o nome do formulário de destino (`dstfrm`) e o procura por nome
+                 na página. Sem ele o "Selecionar" abre e não devolve nada. */ ?>
+        <form method="GET" action="zabbix.php" name="rpFiltroForm" class="rp-nh-controls">
             <input type="hidden" name="action" value="plantonistas.report.view">
             <input type="date" name="date" class="rp-nh-input" value="<?= $date ?>" onchange="this.form.submit()">
             <select name="shift" class="rp-nh-input" onchange="this.form.submit()">
@@ -598,6 +654,26 @@ if ($rp_sev) {
                     <option value="<?= $k ?>" <?= ((string)$k===(string)$shift)?'selected':'' ?>><?= htmlspecialchars($v) ?></option>
                 <?php endforeach; ?>
             </select>
+            <?php /* Filtros do Super Admin: grupos de host e tags. O controller
+                     devolve `can_filter` falso para os demais perfis, então a
+                     view não repete a regra de permissão — só reage ao que
+                     recebe. Os dois campos são HIDDEN dentro do form de
+                     navegação: quem os preenche é o diálogo, e o filtro
+                     acompanha data, turno e Top N em toda troca sem JS de
+                     navegação. */ ?>
+            <?php if (!empty($data['can_filter'])):
+                $rp_gids  = array_map('intval', $data['groupids'] ?? []);
+                $rp_tags  = $data['tags'] ?? [];
+                $rp_nfilt = count($rp_gids) + count($rp_tags);
+            ?>
+            <input type="hidden" name="groupids" id="rpFiltroGrupos" value="<?= htmlspecialchars(implode(',', $rp_gids)) ?>">
+            <input type="hidden" name="tags"     id="rpFiltroTags"   value="<?= htmlspecialchars(json_encode($rp_tags, JSON_UNESCAPED_UNICODE)) ?>">
+            <button type="button" class="rp-nh-btn rp-filtro-btn<?= $rp_nfilt ? ' is-on' : '' ?>"
+                    onclick="rpAbrirFiltros()" title="Filtrar por grupo de host e por tag">
+                <i class="fas fa-filter"></i>
+                <?= $rp_nfilt ? 'Filtros (' . $rp_nfilt . ')' : 'Filtros' ?>
+            </button>
+            <?php endif; ?>
             <select name="limit" class="rp-nh-input" onchange="this.form.submit()">
                 <option value="5" <?= $data['limit']==='5'?'selected':'' ?>>Top 5</option>
                 <option value="10" <?= $data['limit']==='10'?'selected':'' ?>>Top 10</option>
@@ -636,7 +712,7 @@ if ($rp_sev) {
            title="Todos os repasses, abertos e fechados — inclusive os fechamentos anteriores deste turno">
             <i class="fas fa-folder-open"></i> Repasses
         </a>
-        <a href="zabbix.php?action=plantonistas.report.pdf&date=<?= $date ?>&shift=<?= $shift ?>&limit=<?= $data['limit'] ?>" target="_blank"
+        <a href="zabbix.php?action=plantonistas.report.pdf&date=<?= $date ?>&shift=<?= $shift ?>&limit=<?= $data['limit'] ?><?= !empty($data['groupids']) ? '&groupids=' . urlencode(implode(',', array_map('intval', $data['groupids']))) : '' ?><?= !empty($data['tags']) ? '&tags=' . urlencode(json_encode($data['tags'], JSON_UNESCAPED_UNICODE)) : '' ?>" target="_blank"
            class="rp-nh-btn" title="Gerar PDF (abre em nova aba)">
             <i class="fas fa-file-pdf"></i> Gerar PDF
         </a>
@@ -758,7 +834,10 @@ $pview_base = "zabbix.php?action=problem.view&filter_set=1&filter_show=3&from=".
         <div class="rp-kpi-body"><span class="rp-kpi-val"><?= (int)$data['totals']['critical'] ?></span><span class="rp-kpi-label">Críticos</span></div>
     </a>
     <?php $isUserRole = ($data['role_type'] ?? 1) < 2; ?>
-    <div class="rp-kpi" title="MTTA (Mean Time To Acknowledge): tempo médio entre a abertura do alerta e o primeiro reconhecimento (ACK)<?= $isUserRole ? ' pelo seu usuário' : ' por um analista' ?>. Meta: abaixo de 60 minutos.">
+    <?php /* A meta na dica sai do limite configurado, não de um "60 minutos"
+             escrito à mão: era o mesmo número solto que fazia a coluna
+             Performance contradizer a descrição do card (ver v5.9.0). */ ?>
+    <div class="rp-kpi" title="MTTA (Mean Time To Acknowledge): tempo médio entre a abertura do alerta e o primeiro reconhecimento (ACK)<?= $isUserRole ? ' pelo seu usuário' : ' por um analista' ?>. Meta: abaixo de <?= rp_limiteLabel((int)$rp_mtta_lim['ok']) ?>.">
         <div class="rp-kpi-icon txt-orange"><i class="far fa-clock"></i></div>
         <div class="rp-kpi-body"><span class="rp-kpi-val"><?= rp_duration($data['global_mtta']) ?></span><span class="rp-kpi-label"><?= $isUserRole ? 'Seu MTTA' : 'MTTA Global' ?></span></div>
     </div>
@@ -804,10 +883,30 @@ $pview_base = "zabbix.php?action=problem.view&filter_set=1&filter_show=3&from=".
 </div>
 
 <!-- CHARTS -->
+<?php /* Duas linhas, e não três cards espremidos numa só:
+
+         1ª linha — os dois blocos por SEVERIDADE, lado a lado. Compartilham a
+         mesma chave e a mesma paleta, então comparam-se de relance: "onde a
+         resposta demora" ao lado de "onde está o volume".
+
+         O MTTA por Severidade fica na coluna LARGA (3fr) e a rosca na estreita
+         (2fr): as barras são horizontais com rótulo de até "Não classificado",
+         e é a largura que decide se o rótulo cabe; a rosca já vinha dimensionada
+         para 2fr e volta para o lado em que sempre esteve.
+
+         2ª linha — MTTA por Hora ocupando a largura inteira. É série temporal
+         com até 24 rótulos no eixo; espremido em 2fr os rótulos colidem, que é
+         o problema que a Recorrência já teve e está documentado no CLAUDE.md
+         da suíte. */ ?>
 <div class="rp-charts-row">
     <div class="rp-card rp-card-chart">
-        <div class="rp-card-head"><i class="fas fa-chart-line"></i> MTTA por Hora</div>
-        <div class="rp-card-body"><div class="rp-chart-wrap"><canvas id="chartMtta"></canvas></div></div>
+        <div class="rp-card-head"><i class="fas fa-stopwatch"></i> MTTA por Severidade</div>
+        <div class="rp-card-desc">Tempo médio até o primeiro ACK, por severidade do alarme — mostra se o mais grave é atendido primeiro.</div>
+        <?php if (empty($data['mtta_severity'])): ?>
+            <div class="rp-card-body rp-empty">Nenhum ACK registrado neste período.</div>
+        <?php else: ?>
+        <div class="rp-card-body"><div class="rp-chart-wrap"><canvas id="chartMttaSev"></canvas></div></div>
+        <?php endif; ?>
     </div>
     <div class="rp-card rp-card-chart">
         <div class="rp-card-head" style="justify-content:space-between;">
@@ -818,24 +917,63 @@ $pview_base = "zabbix.php?action=problem.view&filter_set=1&filter_show=3&from=".
     </div>
 </div>
 
+<div class="rp-card rp-card-chart">
+    <div class="rp-card-head"><i class="fas fa-chart-line"></i> MTTA por Hora</div>
+    <div class="rp-card-body"><div class="rp-chart-wrap"><canvas id="chartMtta"></canvas></div></div>
+</div>
+
 <!-- MTTA PER USER -->
+<?php /* Bloco GERENCIAL: comparar o tempo de resposta de um analista com o dos
+         colegas é leitura de quem coordena o plantão, não de quem está nele —
+         e o selo de Performance ao lado do nome torna isso explícito. Some
+         inteiro para o papel User (1).
+
+         Não é controle de acesso, é escopo de tela: o dado de outro analista já
+         era negado no SERVIDOR (restrictMttaByRole() reduz a lista ao próprio
+         usuário antes de chegar aqui), então o que sai daqui é a tabela do
+         próprio User — informação que ele podia ver, mas que sozinha não diz
+         nada. O KPI "Seu MTTA" continua na linha de cima, que é onde essa
+         informação serve para ele. */ ?>
+<?php if (!$isUserRole): ?>
 <div class="rp-card">
-    <div class="rp-card-head"><i class="fas fa-stopwatch"></i> <?= $isUserRole ? 'Seu MTTA' : 'MTTA por Analista' ?> <span class="rp-badge"><?= count($data['mtta']) ?> analista<?= count($data['mtta'])===1?'':'s' ?></span></div>
+    <div class="rp-card-head"><i class="fas fa-stopwatch"></i> MTTA por Analista
+        <span class="rp-badge"><?= count($data['mtta']) ?> analista<?= count($data['mtta'])===1?'':'s' ?></span>
+        <?php /* A engrenagem fica NO CARD que ela configura, e não numa tela de
+                 preferências à parte: o limite só faz sentido olhando a coluna
+                 que ele pinta. Só Super Admin — quem decide é o controller. */ ?>
+        <?php if (!empty($data['can_filter'])): ?>
+        <button type="button" class="rp-chart-btn rp-mtta-cfg" onclick="rpAbrirLimites()"
+                title="Configurar os limites de Performance"><i class="fas fa-cog"></i></button>
+        <?php endif; ?>
+    </div>
     <div class="rp-card-desc">
-        <?php if ($isUserRole): ?>
-            MTTA (Mean Time To Acknowledge) — tempo médio entre a abertura do evento e o seu primeiro reconhecimento (ACK). O MTTA de outros analistas é visível apenas para Admin/Super Admin. Meta: abaixo de 60 minutos.
-        <?php else: ?>
-            MTTA (Mean Time To Acknowledge) — tempo médio entre a abertura do evento e o primeiro reconhecimento (ACK) de cada analista. Meta: abaixo de 60 minutos.
+        <?php /* A meta escrita aqui SAI DOS MESMOS limites que pintam o selo —
+                 antes eram dois números independentes, e divergiam. */ ?>
+        MTTA (Mean Time To Acknowledge) — tempo médio entre a abertura do evento e
+        o primeiro reconhecimento (ACK) de cada analista.
+        Excelente abaixo de <?= rp_limiteLabel((int)$rp_mtta_lim['good']) ?>,
+        aceitável abaixo de <?= rp_limiteLabel((int)$rp_mtta_lim['ok']) ?>.
+        <?php if ($rp_mtta_metas): ?>
+            <?= count($rp_mtta_metas) === 1 ? 'Uma equipe tem' : count($rp_mtta_metas) . ' equipes têm' ?>
+            meta própria — passe o mouse no selo para ver qual valeu em cada linha.
         <?php endif; ?>
     </div>
     <?php if (empty($data['mtta'])): ?>
-        <div class="rp-card-body rp-empty"><?= $isUserRole ? 'Você não registrou nenhum ACK neste período.' : 'Nenhum ACK registrado neste período.' ?></div>
+        <div class="rp-card-body rp-empty">Nenhum ACK registrado neste período.</div>
     <?php else: ?>
         <table class="rp-table"><thead><tr><th>Analista</th><th>Username</th><th>ACKs</th><th>MTTA Médio</th><th>Mín</th><th>Máx</th><th>Performance</th></tr></thead><tbody>
         <?php foreach ($data['mtta'] as $m):
             $avg = (int)$m['avg_mtta'];
-            $pcls = $avg<300?'perf-good':($avg<900?'perf-ok':'perf-bad');
-            $plbl = $avg<300?'Excelente':($avg<900?'Aceitável':'Atenção');
+            // A meta vem NA LINHA (attachMttaLimits()): é a da equipe do
+            // analista quando existe, senão a padrão. A view não escolhe.
+            $lim  = $m['mtta_lim'] ?? $rp_mtta_lim;
+            $de   = $m['mtta_lim_of'] ?? null;
+            [$pcls, $plbl] = rp_mttaPerf($avg, $lim);
+            $dica = 'Excelente < ' . rp_limiteLabel((int)$lim['good'])
+                  . ' · Aceitável < ' . rp_limiteLabel((int)$lim['ok'])
+                  . ($de !== null && isset($rp_mtta_equipes[$de])
+                        ? ' (meta da equipe ' . $rp_mtta_equipes[$de] . ')'
+                        : ' (meta padrão)');
         ?>
         <tr>
             <td class="td-bold"><?= htmlspecialchars($m['fullname']) ?></td>
@@ -844,12 +982,13 @@ $pview_base = "zabbix.php?action=problem.view&filter_set=1&filter_show=3&from=".
             <td class="td-mono"><?= rp_duration($avg) ?></td>
             <td class="td-mono"><?= rp_duration((int)$m['min_mtta']) ?></td>
             <td class="td-mono"><?= rp_duration((int)$m['max_mtta']) ?></td>
-            <td><span class="rp-perf <?= $pcls ?>"><?= $plbl ?></span></td>
+            <td><span class="rp-perf <?= $pcls ?>" title="<?= htmlspecialchars($dica) ?>"><?= $plbl ?></span></td>
         </tr>
         <?php endforeach; ?>
         </tbody></table>
     <?php endif; ?>
 </div>
+<?php endif; /* fim do bloco gerencial de MTTA por Analista */ ?>
 
 <!-- INHERITED ALERTS -->
 <div class="rp-card" id="table-inherited">
@@ -1109,6 +1248,148 @@ $pview_base = "zabbix.php?action=problem.view&filter_set=1&filter_show=3&from=".
     <span>Módulo Plantonistas <?= htmlspecialchars($rp_versao) ?></span>
 </div>
 
+<?php if (!empty($data['can_filter'])): ?>
+<?php /* Diálogo dos limites de Performance. Mesmas classes nativas do diálogo
+         de filtros; grava por POST com token CSRF da action COMPLETA. */ ?>
+<div id="rpLimBg" class="overlay-bg" style="display:none" onclick="rpFecharLimites()"></div>
+<div id="rpLimModal" class="overlay-dialogue modal modal-popup" role="dialog"
+     style="display:none;top:90px;left:50%;transform:translateX(-50%);max-width:560px;"
+     aria-label="Limites de performance">
+    <div class="overlay-dialogue-header">
+        <h4>Limites de Performance (MTTA)</h4>
+        <button class="btn-overlay-close" type="button" onclick="rpFecharLimites()"></button>
+    </div>
+    <div class="overlay-dialogue-body">
+        <div class="rp-card-desc" style="padding:0 0 10px">
+            Valem para o selo da coluna Performance e para a meta escrita na descrição do card.
+        </div>
+
+        <h4 class="rp-filtro-sec">Meta padrão</h4>
+        <div class="rp-card-desc" style="padding:0 0 8px">
+            Vale para <strong>todo analista que não tiver meta de equipe</strong> declarada abaixo.
+        </div>
+        <div class="rp-lim-linha">
+            <label for="rpLimGood">Excelente abaixo de</label>
+            <input type="number" id="rpLimGood" class="rp-input" min="1" max="1440" step="1"
+                   value="<?= (int)round((int)$rp_mtta_lim['good'] / 60) ?>">
+            <span class="rp-muted">min</span>
+        </div>
+        <div class="rp-lim-linha">
+            <label for="rpLimOk">Aceitável abaixo de</label>
+            <input type="number" id="rpLimOk" class="rp-input" min="1" max="1440" step="1"
+                   value="<?= (int)round((int)$rp_mtta_lim['ok'] / 60) ?>">
+            <span class="rp-muted">min</span>
+        </div>
+        <div class="rp-card-desc" style="padding:8px 0 0">
+            Acima do segundo limite, o selo vira <strong>Atenção</strong>.
+        </div>
+
+        <h4 class="rp-filtro-sec">Metas por equipe</h4>
+        <div class="rp-card-desc" style="padding:0 0 8px">
+            Exceções à meta padrão. A meta acompanha a <strong>equipe do analista</strong>, então vale
+            linha a linha, sem depender de filtro. <strong>Equipe que não estiver listada aqui usa a
+            meta padrão e é tratada como 24/7</strong> — declarar uma empresa não muda nada para as
+            outras. Quem estiver em duas equipes fica com a <strong>mais rígida</strong>; preencher só
+            um dos dois limites herda o outro do padrão.
+            Desmarcar <strong>24/7</strong> faz o MTTA contar a partir do início do turno, e não da
+            abertura do alarme — para equipe que não cobre a madrugada.
+        </div>
+        <?php /* Cabeçalho das colunas. Fica DENTRO do contêiner das linhas (é o
+                 primeiro filho) e com classe própria — se levasse a classe da
+                 linha, o JS que pergunta "já há linha?" contaria o cabeçalho e
+                 nunca carregaria as metas salvas. */ ?>
+        <div id="rpLimEquipes">
+            <div class="rp-lim-cabecalho" id="rpLimCabecalho" hidden>
+                <span>Grupo de usuário</span>
+                <span class="rp-eq-h-num">Exc. (min)</span>
+                <span class="rp-eq-h-num">Aceit. (min)</span>
+                <span class="rp-eq-h-247" title="Equipe cobre 24 horas por dia, 7 dias por semana">24/7</span>
+                <span></span>
+            </div>
+        </div>
+        <button type="button" class="rp-sel-preset" onclick="rpAddEquipe()">+ Adicionar equipe</button>
+
+        <div id="rpLimStatus" class="rp-lim-status"></div>
+    </div>
+    <div class="overlay-dialogue-footer">
+        <button type="button" class="btn-alt" onclick="rpFecharLimites()">Cancelar</button>
+        <button type="button" class="btn" id="rpLimSalvar" onclick="rpSalvarLimites()">Salvar</button>
+    </div>
+</div>
+
+<?php /* Diálogo de filtros. Usa as classes NATIVAS do Zabbix (`overlay-bg`,
+         `overlay-dialogue modal modal-popup`, `list-table`) — o mesmo caminho
+         que a tela de Escala já faz para escolher técnico. Sem CSS de modal
+         próprio e com a aparência da casa nos quatro temas. */ ?>
+<div id="rpFiltroBg" class="overlay-bg" style="display:none" onclick="rpFecharFiltros()"></div>
+<div id="rpFiltroModal" class="overlay-dialogue modal modal-popup modal-popup-medium"
+     style="display:none;top:70px;left:50%;transform:translateX(-50%);max-width:640px;" role="dialog"
+     aria-label="Filtros do relatório">
+    <div class="overlay-dialogue-header">
+        <h4>Filtrar relatório</h4>
+        <button class="btn-overlay-close" type="button" onclick="rpFecharFiltros()"></button>
+    </div>
+    <div class="overlay-dialogue-body">
+        <h4 class="rp-filtro-sec">Grupos de host</h4>
+        <?php
+        /* Multiselect NATIVO do Zabbix — o mesmo componente da aba Problemas.
+           Digitar busca no servidor (`jsrpc.php`, que já aplica permissão) e a
+           lupa abre o pop-up de seleção; o que entra vira uma "pílula" dentro
+           da caixa.
+
+           É por isso que o módulo não carrega mais catálogo de grupo nenhum:
+           a lista de centenas que a versão anterior desenhava em caixas de
+           seleção simplesmente não existe mais — quem procura é o servidor,
+           uma busca por vez.
+
+           `add_post_js => false`: o init sai no bloco de JS desta view, logo
+           abaixo, em vez de depender do post-JS da página. */
+        $rp_ms_grupos = (new CMultiSelect([
+            'name'        => 'rp_groupids[]',
+            'object_name' => 'hostGroup',
+            'data'        => $data['group_selected'] ?? [],
+            'popup'       => [
+                'parameters' => [
+                    'srctbl'                => 'host_groups',
+                    'srcfld1'               => 'groupid',
+                    'dstfrm'                => 'rpFiltroForm',
+                    'dstfld1'               => 'rp_groupids_',
+                    'with_hosts'            => true,
+                    'enrich_parent_groups'  => true,
+                ],
+            ],
+            'add_post_js' => false,
+        ]));
+        /* `labels` não passa pelo construtor (o CMultiSelect monta o dele com
+           `_()` e não aceita override), então a troca é no data-params já
+           pronto — que é de onde o plugin lê tudo. */
+        $rp_ms_params = $rp_ms_grupos->getParams();
+        $rp_ms_params['labels']      = $rp_ms_labels;
+        $rp_ms_params['placeholder'] = $rp_ms_labels['type here to search'];
+        echo $rp_ms_grupos
+            ->setId('rp_groupids_')
+            ->addStyle('width: 100%;')
+            ->setAttribute('data-params', $rp_ms_params)
+            ->toString();
+        ?>
+        <div class="rp-card-desc" style="padding:6px 0 0">
+            Sem nenhum grupo aqui, o relatório considera o ambiente inteiro.
+        </div>
+
+        <h4 class="rp-filtro-sec">Tags</h4>
+        <div class="rp-card-desc" style="padding:0 0 8px">
+            Todas as condições valem ao mesmo tempo (E) — cada linha estreita mais o recorte.
+        </div>
+        <div id="rpTagLinhas"></div>
+        <button type="button" class="rp-sel-preset" onclick="rpAddTag()">+ Adicionar condição</button>
+    </div>
+    <div class="overlay-dialogue-footer">
+        <button type="button" class="btn-alt" onclick="rpFecharFiltros()">Cancelar</button>
+        <button type="button" class="btn" onclick="rpAplicarFiltros()">Aplicar</button>
+    </div>
+</div>
+<?php endif; ?>
+
 </div><!-- /rp-native-container -->
 
 <script>
@@ -1149,6 +1430,15 @@ const SEV_COLORS = <?= json_encode([
 const SEV_DATA = <?= $sev_data ?>;
 const NOTE_SHIFT = '<?= $shift ?>';
 const NOTE_DATE = '<?= $date ?>';
+// MTTA por severidade: rótulos e cores saem das MESMAS fontes do gráfico de
+// distribuição (nomes e cores reais de Administração > Geral), para os dois
+// blocos da linha falarem a mesma língua.
+const MTTA_SEV = <?= json_encode(array_map(fn($r) => [
+    'sev'   => (int)$r['severity'],
+    'label' => rp_sevLabel((int)$r['severity'], $rp_sev),
+    'avg'   => (int)$r['avg_mtta'],
+    'total' => (int)$r['total'],
+], $data['mtta_severity'] ?? []), JSON_HEX_TAG | JSON_UNESCAPED_UNICODE) ?>;
 const CALENDAR_DATA = <?= $calendar_json ?>;
 // Tema de GRÁFICO do Zabbix (tabela `graph_theme` do tema ativo) — cor de
 // rótulo de eixo, de legenda e de grade. Ver TurnosReportBase::graphTheme().
@@ -1159,6 +1449,7 @@ const GRAPH_THEME = <?= json_encode($data['graph_theme'] ?? ['text' => '#1F2C33'
 const ZBX_FONT = 'Arial, Tahoma, Verdana, sans-serif';
 // Tokens CSRF das actions de escrita chamadas por esta tela.
 const CSRF_NOTES_SAVE    = <?= json_encode($data['csrf_notes_save'] ?? '') ?>;
+const CSRF_SETTINGS_SAVE = <?= json_encode($data['csrf_settings_save'] ?? '') ?>;
 const CSRF_MENTIONS_READ = <?= json_encode($data['csrf_mentions_read'] ?? '') ?>;
 const CSRF_REPORT_CLOSE  = <?= json_encode($data['csrf_report_close'] ?? '') ?>;
 const REPORT_LIMIT       = <?= json_encode((string)($data['limit'] ?? '5')) ?>;
@@ -1167,10 +1458,13 @@ const ALREADY_CLOSED     = <?= !empty($data['closed_report']) ? 'true' : 'false'
 // ── Charts ──
 //
 // Se a biblioteca não carregou (F5 bloqueando o .js), a falha NÃO pode ser
-// silenciosa: sem esta guarda o `new Chart(...)` estoura no console, os dois
-// cards ficam vazios, e ninguém liga uma coisa à outra.
+// silenciosa: sem esta guarda o `new Chart(...)` estoura no console, os cards
+// ficam vazios, e ninguém liga uma coisa à outra.
+//
+// A lista tem de citar TODOS os canvas da tela — o de MTTA por Severidade
+// entrou depois e ficou de fora até a v5.11.2, quando teria falhado calado.
 if (typeof Chart === 'undefined') {
-    ['chartMtta', 'chartSev'].forEach(function (id) {
+    ['chartMtta', 'chartSev', 'chartMttaSev'].forEach(function (id) {
         var c = document.getElementById(id);
         if (!c || !c.parentElement) return;
         c.parentElement.classList.add('rp-chart-off');
@@ -1219,6 +1513,49 @@ if (document.getElementById('chartMtta')) {
                 y:{grid:{color: GRAPH_THEME.grid}, suggestedMax: mttaSuggestedMax,
                    beginAtZero:true,ticks:{color: GRAPH_THEME.text,
                     callback:function(v){return v<60?v+'s':Math.floor(v/60)+'m';}}}}}
+    });
+}
+
+// ── MTTA por severidade ───────────────────────────────────────────────────
+//
+// Barras horizontais, e não verticais: são até seis categorias com nome
+// comprido ("Não classificado"), e na horizontal o rótulo cabe inteiro sem
+// girar texto. Cada barra usa a COR DA SEVERIDADE — a mesma da rosca ao lado,
+// então as duas se leem juntas sem legenda extra.
+if (document.getElementById('chartMttaSev') && MTTA_SEV.length) {
+    new Chart(document.getElementById('chartMttaSev'), {
+        type: 'bar',
+        data: {
+            labels: MTTA_SEV.map(function (r) { return r.label; }),
+            datasets: [{
+                data: MTTA_SEV.map(function (r) { return r.avg; }),
+                backgroundColor: MTTA_SEV.map(function (r) { return SEV_COLORS[r.sev] || SEV_COLORS[0]; }),
+                borderRadius: 3
+            }]
+        },
+        options: {
+            indexAxis: 'y',
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: {display: false},
+                tooltip: {callbacks: {label: function (c) {
+                    const r = MTTA_SEV[c.dataIndex];
+                    const s = r.avg;
+                    const t = s < 60 ? s + 's' : (s < 3600 ? Math.floor(s / 60) + 'm ' + (s % 60) + 's'
+                                                           : Math.floor(s / 3600) + 'h ' + Math.floor((s % 3600) / 60) + 'm');
+                    return t + ' — ' + r.total + (r.total === 1 ? ' ACK' : ' ACKs');
+                }}}
+            },
+            scales: {
+                x: {
+                    grid: {color: GRAPH_THEME.grid}, beginAtZero: true,
+                    ticks: {color: GRAPH_THEME.text,
+                        callback: function (v) { return v < 60 ? v + 's' : Math.floor(v / 60) + 'm'; }}
+                },
+                y: {grid: {display: false}, ticks: {color: GRAPH_THEME.text}}
+            }
+        }
     });
 }
 
@@ -1498,6 +1835,332 @@ function toggleSevChart() {
     container.innerHTML = html;
 })();
 
+// ── Limites de Performance (MTTA) ─────────────────────────────────────────
+//
+// Grava por POST com token CSRF da action COMPLETA — em módulo o Zabbix não
+// agrupa token por prefixo. Depois de salvar, a página recarrega: os limites
+// pintam selo E texto do card, e recalcular os dois no cliente seria manter uma
+// segunda implementação da mesma regra.
+const RP_MS_LABELS = <?= json_encode($rp_ms_labels, JSON_UNESCAPED_UNICODE) ?>;
+const RP_MTTA_EQUIPES = <?= json_encode(array_map(
+    fn($id, $par) => [
+        'id'   => (string)$id,
+        'nome' => (string)($rp_mtta_equipes[$id] ?? ('Grupo ' . $id)),
+        'good'   => (int)round($par['good'] / 60),
+        'ok'     => (int)round($par['ok'] / 60),
+        'always' => (bool)($par['always'] ?? true),
+    ],
+    array_keys($rp_mtta_metas),
+    $rp_mtta_metas
+), JSON_UNESCAPED_UNICODE) ?>;
+
+function rpAbrirLimites() {
+    document.getElementById('rpLimBg').style.display = '';
+    document.getElementById('rpLimModal').style.display = '';
+    document.getElementById('rpLimStatus').textContent = '';
+    if (!document.querySelector('#rpLimEquipes .rp-lim-equipe')) {
+        RP_MTTA_EQUIPES.forEach(function (e) { rpAddEquipe(e); });
+    }
+    document.getElementById('rpLimGood').focus();
+}
+
+// Uma linha de meta por equipe: quem é a equipe, e os dois limites dela.
+//
+// A equipe entra pelo multiselect NATIVO (`object_name: usersGroups`), pelo
+// mesmo motivo do filtro de grupos: com muitas empresas, um <select> com o
+// catálogo inteiro é uma lista impossível — aqui quem busca é o servidor.
+// `selectedLimit: 1` porque a linha é de UMA equipe.
+let rpEquipeSeq = 0;
+function rpAddEquipe(valores) {
+    const id = 'rpEqMs' + (++rpEquipeSeq);
+    const linha = document.createElement('div');
+    linha.className = 'rp-lim-equipe';
+
+    const ms = document.createElement('div');
+    ms.id = id;
+    ms.className = 'multiselect';
+    ms.setAttribute('role', 'application');
+    ms.dataset.params = JSON.stringify({
+        name: id + '[]',
+        object_name: 'usersGroups',
+        url: 'jsrpc.php?type=11&method=multiselect.get&object_name=usersGroups',
+        selectedLimit: 1,
+        // Mesmos textos da caixa de grupos — sem isto o plugin usa os dele, no
+        // idioma do frontend (en_US aqui).
+        labels: RP_MS_LABELS,
+        placeholder: RP_MS_LABELS['type here to search'],
+        data: valores ? [{id: valores.id, name: valores.nome}] : []
+    });
+
+    const good = document.createElement('input');
+    good.type = 'number'; good.className = 'rp-input rp-eq-good';
+    good.min = '1'; good.max = '1440'; good.title = 'Excelente abaixo de (min)';
+    good.value = valores ? valores.good : '';
+    good.placeholder = 'exc.';
+
+    const ok = document.createElement('input');
+    ok.type = 'number'; ok.className = 'rp-input rp-eq-ok';
+    ok.min = '1'; ok.max = '1440'; ok.title = 'Aceitável abaixo de (min)';
+    ok.value = valores ? valores.ok : '';
+    ok.placeholder = 'aceit.';
+
+    // 24/7: marcado = a equipe cobre a madrugada, e o MTTA conta desde a
+    // abertura do alarme. Desmarcado = o relógio só começa quando o turno do
+    // analista começa (ver TurnosReportBase::mttaAdjust()).
+    const sempre = document.createElement('input');
+    sempre.type = 'checkbox';
+    sempre.className = 'rp-eq-247';
+    sempre.title = 'Marcado: a equipe cobre 24 horas e o MTTA conta desde a abertura do alarme. '
+                 + 'Desmarcado: o MTTA conta a partir do início do turno em que o ACK caiu — '
+                 + 'alarme das 00:01 reconhecido às 07:01 por quem entra às 07:00 vira 1 min, não 7 h.';
+    sempre.checked = valores ? valores.always !== false : true;
+
+    const remover = document.createElement('button');
+    remover.type = 'button';
+    remover.className = 'rp-action rp-action-danger';
+    remover.title = 'Remover a meta desta equipe';
+    remover.innerHTML = '<i class="fas fa-times"></i>';
+    remover.onclick = function () { linha.remove(); rpCabecalhoEquipes(); };
+
+    [ms, good, ok, sempre, remover].forEach(function (el) { linha.appendChild(el); });
+    document.getElementById('rpLimEquipes').appendChild(linha);
+    rpCabecalhoEquipes();
+
+    if (jQuery.fn.multiSelect) {
+        jQuery('#' + id).multiSelect();
+    }
+}
+
+// Cabeçalho de coluna só faz sentido com coluna embaixo: sem linha nenhuma ele
+// pareceria um resto de tabela.
+function rpCabecalhoEquipes() {
+    const cab = document.getElementById('rpLimCabecalho');
+    cab.hidden = !document.querySelector('#rpLimEquipes .rp-lim-equipe');
+}
+
+function rpFecharLimites() {
+    document.getElementById('rpLimBg').style.display = 'none';
+    document.getElementById('rpLimModal').style.display = 'none';
+}
+
+function rpSalvarLimites() {
+    const st   = document.getElementById('rpLimStatus');
+    const good = parseInt(document.getElementById('rpLimGood').value, 10);
+    const ok   = parseInt(document.getElementById('rpLimOk').value, 10);
+
+    // A mesma checagem existe no servidor: esta aqui é só para não gastar um
+    // request e para o erro aparecer ao lado do campo.
+    if (!(good > 0) || !(ok > 0)) {
+        st.textContent = 'Preencha os dois limites, em minutos.';
+        st.className = 'rp-lim-status rp-status-err';
+        return;
+    }
+    if (good >= ok) {
+        st.textContent = 'O limite de "Excelente" precisa ser menor que o de "Aceitável".';
+        st.className = 'rp-lim-status rp-status-err';
+        return;
+    }
+
+    const btn = document.getElementById('rpLimSalvar');
+    btn.disabled = true;
+    st.textContent = 'Salvando…';
+    st.className = 'rp-lim-status';
+
+    // Equipes: linha sem equipe escolhida é linha em branco e não viaja. As
+    // que ficarem de fora do envio são APAGADAS no servidor — é assim que
+    // "remover a meta desta equipe" funciona sem uma action de exclusão.
+    const equipes = [];
+    let erroEquipe = null;
+    document.querySelectorAll('#rpLimEquipes .rp-lim-equipe').forEach(function (l) {
+        const ms = jQuery(l.querySelector('.multiselect'));
+        const sel = (jQuery.fn.multiSelect && ms.length) ? ms.multiSelect('getData') : [];
+        if (!sel.length) { return; }
+
+        const g = parseInt(l.querySelector('.rp-eq-good').value, 10);
+        const o = parseInt(l.querySelector('.rp-eq-ok').value, 10);
+        if (!(g > 0) || !(o > 0)) { erroEquipe = 'Preencha os dois limites da equipe ' + sel[0].name + '.'; return; }
+        if (g >= o) { erroEquipe = 'Na equipe ' + sel[0].name + ', "Excelente" precisa ser menor que "Aceitável".'; return; }
+
+        equipes.push({
+            usrgrpid: sel[0].id, good: g * 60, ok: o * 60,
+            always: l.querySelector('.rp-eq-247').checked
+        });
+    });
+
+    if (erroEquipe) {
+        st.textContent = erroEquipe;
+        st.className = 'rp-lim-status rp-status-err';
+        return;
+    }
+
+    fetch('zabbix.php?action=plantonistas.settings.save', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8'},
+        body: new URLSearchParams({
+            mtta_good: String(good * 60),
+            mtta_ok: String(ok * 60),
+            equipes: JSON.stringify(equipes),
+            _csrf_token: CSRF_SETTINGS_SAVE
+        })
+    }).then(function (r) {
+        // Falha de CSRF responde HTML de "Acesso negado", não JSON — sem esta
+        // guarda o usuário só veria "Erro de conexão". Mesma proteção do
+        // salvamento do Diário de Bordo.
+        const ct = r.headers.get('content-type') || '';
+        if (!r.ok || ct.indexOf('json') === -1) {
+            return {success: false, message: 'Sessão expirada ou acesso negado. Recarregue a página (F5).'};
+        }
+        return r.json();
+    }).then(function (j) {
+        st.textContent = j.message || (j.success ? 'Salvo.' : 'Erro.');
+        st.className = 'rp-lim-status ' + (j.success ? 'rp-status-ok' : 'rp-status-err');
+        if (j.success) {
+            setTimeout(function () { window.location.reload(); }, 600);
+        } else {
+            btn.disabled = false;
+        }
+    }).catch(function () {
+        st.textContent = 'Erro de conexão.';
+        st.className = 'rp-lim-status rp-status-err';
+        btn.disabled = false;
+    });
+}
+
+// ── Filtros do relatório (grupos de host e tags) ──────────────────────────
+//
+// Os valores moram em dois <input hidden> DENTRO do form de navegação, e o
+// diálogo só os preenche antes de submeter: assim data, turno, Top N e filtro
+// viajam juntos, sem montar URL na mão em lugar nenhum.
+const RP_TAG_OPS = <?= json_encode($data['tag_operators'] ?? [], JSON_UNESCAPED_UNICODE) ?>;
+const RP_TAGS_INI = <?= json_encode($data['tags'] ?? [], JSON_UNESCAPED_UNICODE) ?>;
+const RP_TAG_OP_PADRAO = <?= json_encode($data['tag_operator_default'] ?? 'like') ?>;
+
+function rpAbrirFiltros() {
+    document.getElementById('rpFiltroBg').style.display = '';
+    document.getElementById('rpFiltroModal').style.display = '';
+    if (!document.querySelector('#rpTagLinhas .rp-tag-linha')) {
+        (RP_TAGS_INI.length ? RP_TAGS_INI : [null]).forEach(function (t) { rpAddTag(t); });
+    }
+}
+
+function rpFecharFiltros() {
+    document.getElementById('rpFiltroBg').style.display = 'none';
+    document.getElementById('rpFiltroModal').style.display = 'none';
+}
+
+// Esc fecha, como em qualquer diálogo do Zabbix — mas só se nenhum pop-up do
+// próprio Zabbix estiver aberto por cima (o de selecionar grupo, por exemplo):
+// senão o Esc que fecha o pop-up fecharia os dois de uma vez.
+document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') {
+        const lim = document.getElementById('rpLimModal');
+        if (lim && lim.style.display !== 'none') { rpFecharLimites(); return; }
+    }
+    const modal = document.getElementById('rpFiltroModal');
+    if (e.key !== 'Escape' || !modal || modal.style.display === 'none') {
+        return;
+    }
+    if (document.querySelector('.overlay-dialogue.modal[data-dialogueid]')) {
+        return;
+    }
+    rpFecharFiltros();
+});
+
+// Inicializa o multiselect nativo. `jQuery(...)` para esperar o DOM: o bloco de
+// JS da view roda antes do fim da página em algumas cargas, e o plugin precisa
+// do elemento já montado.
+jQuery(function () {
+    const $ms = jQuery('#rp_groupids_');
+    if ($ms.length && jQuery.fn.multiSelect) {
+        $ms.multiSelect();
+    }
+});
+
+function rpAddTag(valores) {
+    const linha = document.createElement('div');
+    linha.className = 'rp-tag-linha';
+
+    const nome = document.createElement('input');
+    nome.type = 'text';
+    nome.className = 'rp-input rp-tag-nome';
+    nome.placeholder = 'nome da tag';
+    nome.value = valores ? (valores.t || '') : '';
+
+    const op = document.createElement('select');
+    op.className = 'rp-input rp-tag-op';
+    Object.keys(RP_TAG_OPS).forEach(function (k) {
+        const o = document.createElement('option');
+        o.value = k;
+        o.textContent = RP_TAG_OPS[k];
+        // Linha nova começa em "Contém", que é o padrão do próprio Zabbix
+        // (TAG_OPERATOR_LIKE, o valor default do filtro de Problemas).
+        if (valores ? valores.o === k : k === RP_TAG_OP_PADRAO) { o.selected = true; }
+        op.appendChild(o);
+    });
+    op.onchange = function () { rpTagValorVisivel(linha); };
+
+    const valor = document.createElement('input');
+    valor.type = 'text';
+    valor.className = 'rp-input rp-tag-valor';
+    valor.placeholder = 'valor';
+    valor.value = valores ? (valores.v || '') : '';
+
+    const remover = document.createElement('button');
+    remover.type = 'button';
+    remover.className = 'rp-action rp-action-danger';
+    remover.title = 'Remover condição';
+    remover.innerHTML = '<i class="fas fa-times"></i>';
+    remover.onclick = function () { linha.remove(); };
+
+    [nome, op, valor, remover].forEach(function (el) { linha.appendChild(el); });
+    document.getElementById('rpTagLinhas').appendChild(linha);
+    rpTagValorVisivel(linha);
+}
+
+// "Existe" e "Não existe" perguntam pela TAG, não pelo valor: a caixa de valor
+// some, em vez de ficar aceitando um texto que o filtro ignora. É o mesmo
+// comportamento do filtro de Problemas do Zabbix.
+//
+// Classe, e não o atributo `hidden`: o campo fica INVISÍVEL mas continua
+// ocupando o lugar dele (ver .rp-tag-valor.is-oculto no CSS). Com `hidden` o
+// elemento sai do fluxo, o campo de nome estica e o seletor de operador muda de
+// posição a cada troca — a linha inteira dança.
+function rpTagValorVisivel(linha) {
+    const op = linha.querySelector('.rp-tag-op').value;
+    linha.querySelector('.rp-tag-valor')
+         .classList.toggle('is-oculto', op === 'exists' || op === 'nexists');
+}
+
+function rpAplicarFiltros() {
+    // getData() devolve [{id, name}] do multiselect nativo — é a API dele, e
+    // evita depender da marcação interna do componente, que muda entre versões
+    // do Zabbix. O campo hidden do form continua sendo a lista de ids: o que
+    // viaja na URL é o mesmo de antes.
+    let gids = [];
+    if (jQuery.fn.multiSelect && jQuery('#rp_groupids_').length) {
+        gids = jQuery('#rp_groupids_').multiSelect('getData').map(function (g) { return g.id; });
+    }
+    document.getElementById('rpFiltroGrupos').value = gids.join(',');
+
+    const tags = [];
+    document.querySelectorAll('#rpTagLinhas .rp-tag-linha').forEach(function (l) {
+        const nome = l.querySelector('.rp-tag-nome').value.trim();
+        // Linha sem nome de tag é linha em branco: o operador sozinho não
+        // filtra nada, e mandá-la ao servidor só para ele descartar seria
+        // guardar sujeira na URL.
+        if (!nome) { return; }
+        const op = l.querySelector('.rp-tag-op').value;
+        // Operador que não usa valor manda valor VAZIO, e não o que estiver
+        // escondido na caixa: senão um texto antigo continuaria viajando na URL
+        // e apareceria no carimbo do PDF dizendo algo que o filtro não faz.
+        const semValor = (op === 'exists' || op === 'nexists');
+        tags.push({t: nome, o: op, v: semValor ? '' : l.querySelector('.rp-tag-valor').value.trim()});
+    });
+    document.getElementById('rpFiltroTags').value = tags.length ? JSON.stringify(tags) : '';
+
+    document.getElementById('rpFiltroGrupos').form.submit();
+}
+
 // ── Editor rico + menções @usuário / _h host / _hg grupo de hosts ──
 const editor   = document.getElementById('noteText');
 const dropdown = document.getElementById('mentionDropdown');
@@ -1627,7 +2290,10 @@ function renderMentionResults(type, results) {
             + '</span></div>';
     }).join('');
 
+    // O rodapé anunciava só teclado, e quem lia concluía que a lista não
+    // respondia ao mouse. Clicar sempre funcionou; faltava dizer.
     const foot = '<div class="rp-mention-foot">'
+        + 'clique para inserir &middot; '
         + '<kbd>&uarr;</kbd> <kbd>&darr;</kbd> navegar &middot; '
         + '<kbd>Enter</kbd> inserir &middot; <kbd>Esc</kbd> fechar</div>';
 
@@ -1637,10 +2303,24 @@ function renderMentionResults(type, results) {
     positionDropdown();
 
     dropdown.querySelectorAll('.rp-mention-opt').forEach(function (el, i) {
+        // Quem insere é o mousedown, e não o click, de propósito: o editor é um
+        // contenteditable, e o mousedown na lista tira o foco dele ANTES de o
+        // click disparar — sem o preventDefault a seleção onde o texto seria
+        // inserido já teria se perdido.
         el.addEventListener('mousedown', function (e) {
-            e.preventDefault(); // não perder a seleção do editor antes de inserir
+            e.preventDefault();
             insertMention(type, results[i]);
         });
+
+        // O click só existe para o caso em que o mousedown não veio (toque em
+        // tela sensível, tecnologia assistiva que sintetiza o clique inteiro).
+        // Inserir duas vezes não é risco: o mousedown fecha a lista e zera o
+        // mentionState, e o insertMention volta na primeira linha sem ele.
+        el.addEventListener('click', function (e) {
+            e.preventDefault();
+            insertMention(type, results[i]);
+        });
+
         el.addEventListener('mouseenter', function () { setMentionActive(i); });
     });
 }
