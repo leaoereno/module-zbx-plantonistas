@@ -51,7 +51,7 @@ namespace Modules\Plantonistas;
 class Schema {
 
     /**
-     * As 9 tabelas do módulo.
+     * As 10 tabelas do módulo.
      *
      * Formato de cada coluna: [nome, tipo, opções].
      *   tipo:    serial | bigint | epoch | int | flag | varchar:N | text |
@@ -224,6 +224,23 @@ class Schema {
                 'primary' => ['userid'],
                 'index'   => ['idx_cush_shift' => ['shift_id']],
                 'comment' => 'Vínculo analista -> turno (1 turno por analista)',
+            ],
+
+            // Configuração do módulo, editável pela tela (Super Admin).
+            //
+            // Chave/valor, e não uma coluna por parâmetro: cada novo ajuste
+            // seria uma migração de schema, e o histórico deste módulo mostra
+            // que ajuste de número aparece com frequência. Valor em VARCHAR
+            // porque quem sabe o tipo é quem lê — hoje são segundos, amanhã
+            // pode ser um rótulo.
+            'module_plantonistas_settings' => [
+                'columns' => [
+                    ['skey',       'varchar:64'],
+                    ['svalue',     'varchar:255', ['default' => '']],
+                    ['updated_at', 'touch'],
+                ],
+                'primary' => ['skey'],
+                'comment' => 'Parâmetros do módulo editáveis pela tela',
             ],
         ];
     }

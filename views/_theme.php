@@ -108,36 +108,46 @@
 }
 
 /* ── Paleta — tema escuro ───────────────────────────────────────────────
-   Valores herdados do visual original da família escala, que era o padrão
-   antes desta unificação: quem já usa o Zabbix no escuro não vê diferença. */
+   Alinhada ao tema escuro do PRÓPRIO Zabbix (assets/styles/dark-theme.css):
+   superfície de tabela/painel #2b2b2b, hover de linha #383838, texto #f2f2f2,
+   verde #59db8f, vermelho #e45959. Os cinzas já vinham do visual original da
+   família escala e batiam; o que destoava era o resto — texto auxiliar
+   azulado (#c8d8e4/#8faabc), bordas claras demais (#4f4f4f) e fundos de
+   estado em hex chapado. Trocados por cinza neutro e por lavado em alfa, que
+   é o que o CrowdStrike (tokens --cs-*) já faz na suíte. */
 .plt-dark {
-    --plt-bg:            #2b2b2b;
-    --plt-bg-alt:        #222222;
-    --plt-bg-hover:      #383838;
-    --plt-panel:         #303030;
-    --plt-panel-alt:     #262626;
+    --plt-bg:            #2b2b2b;   /* = .list-table do dark-theme.css    */
+    --plt-bg-alt:        #242424;
+    --plt-bg-hover:      #383838;   /* = hover de linha do dark-theme.css */
+    --plt-panel:         #333638;
+    --plt-panel-alt:     #2f3234;
 
-    --plt-border:        #4f4f4f;
-    --plt-border-strong: #5a5a5a;
+    /* Borda em alfa: a mesma linha serve sobre #2b2b2b e sobre #333638 sem
+       virar duas variáveis. Equivale ao #383838 entre linhas de tabela. */
+    --plt-border:        rgba(255, 255, 255, 0.14);
+    --plt-border-strong: rgba(255, 255, 255, 0.30);
 
     --plt-text:          #f2f2f2;
-    --plt-text-soft:     #c8d8e4;
-    --plt-text-muted:    #8faabc;
-    --plt-text-faint:    #666666;
+    --plt-text-soft:     #b9bcbf;
+    --plt-text-muted:    #9ca1a4;
+    /* 4,3:1 sobre o fundo do card. O #666666 anterior dava 2,5:1 — e esta
+       variável carrega "sem telefone", "Nenhum histórico registrado" e o "—"
+       das células, que é justamente o que precisa ser lido. */
+    --plt-text-faint:    #8a8f92;
 
-    --plt-accent:        #4a82c4;
-    --plt-accent-bg:     #1a2d4a;
-    --plt-ok:            #59db8f;
-    --plt-ok-bg:         #162616;
-    --plt-ok-border:     #2a5a2a;
+    --plt-accent:        #4796c4;   /* cor de link do dark-theme.css      */
+    --plt-accent-bg:     rgba(71, 150, 196, 0.16);
+    --plt-ok:            #59db8f;   /* = .green do dark-theme.css         */
+    --plt-ok-bg:         rgba(89, 219, 143, 0.14);
+    --plt-ok-border:     rgba(89, 219, 143, 0.36);
     --plt-warn:          #e99003;
-    --plt-warn-bg:       #2e2200;
-    --plt-warn-border:   #7a4400;
-    --plt-danger:        #e45959;
-    --plt-danger-bg:     #2a1010;
-    --plt-danger-border: #5a2a2a;
-    --plt-tag-bg:        #1a2a3a;
-    --plt-tag-text:      #8faabc;
-    --plt-tag-border:    #2a4a6a;
+    --plt-warn-bg:       rgba(233, 144, 3, 0.14);
+    --plt-warn-border:   rgba(233, 144, 3, 0.36);
+    --plt-danger:        #e45959;   /* = .red do dark-theme.css           */
+    --plt-danger-bg:     rgba(228, 89, 89, 0.14);
+    --plt-danger-border: rgba(228, 89, 89, 0.36);
+    --plt-tag-bg:        rgba(255, 255, 255, 0.08);
+    --plt-tag-text:      #b9bcbf;
+    --plt-tag-border:    rgba(255, 255, 255, 0.16);
 }
 </style>

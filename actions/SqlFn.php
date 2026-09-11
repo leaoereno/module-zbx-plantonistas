@@ -103,30 +103,126 @@ class SqlFn {
     /**
      * "Agora menos N minutos", para comparar com uma coluna de data/hora.
      *
-     * `INTERVAL 15 MINUTE` é MySQL; o padrão exige a unidade entre aspas.
+     * Sai do MESMO relógio que o now() — ver o porquê no docblock dele.
      */
     public static function nowMinusMinutes(int $minutos): string {
-        return self::isPgsql()
-            ? "(" . self::now() . " - INTERVAL '$minutos minutes')"
-            : "(NOW() - INTERVAL $minutos MINUTE)";
+        return "'" . date('Y-m-d H:i:s', time() - $minutos * 60) . "'";
     }
 
     /**
      * "Agora" para gravar em coluna de data/hora, ou comparar com uma.
      *
-     * `NOW()` do MySQL devolve `DATETIME` — hora de parede, sem fuso — e as
-     * colunas do módulo são desse tipo nos dois bancos (`TIMESTAMP(0)` sem
-     * fuso no PG, ver Schema.php). Mas o `now()` do PostgreSQL devolve
-     * `timestamptz`, e converter para `timestamp` usa o `TimeZone` **da
-     * sessão**, que ninguém configura no frontend do Zabbix: com o servidor em
-     * UTC e o cron gravando em America/Sao_Paulo, o "online nos últimos 15
-     * minutos" erraria por 3 horas e a nota nasceria com carimbo adiantado.
+     * Devolve a hora do PHP como LITERAL entre aspas — não `NOW()`, não
+     * `LOCALTIMESTAMP`. Quem responde "que horas são" é a APLICAÇÃO, e não o
+     * banco, porque é a aplicação que escreve todo o resto:
      *
-     * `LOCALTIMESTAMP` é a tradução literal: hora local do servidor, sem fuso.
-     * É o quarto lugar deste módulo em que fuso ia morder.
+     * - o cron de presença grava `lastaccess` com `date()` do PHP;
+     * - o controller monta os limites do turno com `date()` do PHP;
+     * - as notas, as menções e o fechamento de turno também.
+     *
+     * Perguntar a hora ao banco no meio disso mistura dois relógios. A versão
+     * anterior usava `LOCALTIMESTAMP` (PG) / `NOW()` (MySQL) e isso QUEBROU em
+     * produção: o PostgreSQL do ambiente roda com `timezone = UTC`, então
+     * `LOCALTIMESTAMP` devolvia 15:49 enquanto a linha de presença gravada
+     * pelo cron dizia 12:42. O "online nos últimos 15 minutos" comparava
+     * `12:42 >= 15:34` e dava sempre falso — **todo mundo aparecia offline em
+     * "Analistas Escalados neste Turno"**, mesmo com o coletor rodando de 5 em
+     * 5 minutos e gravando certo.
+     *
+     * `LOCALTIMESTAMP` corrigia OUTRA coisa (o `now()` do PG é `timestamptz`, e
+     * converter para `timestamp` usa o fuso da sessão), mas continuava sendo o
+     * relógio do BANCO — e o docblock antigo descrevia exatamente este cenário
+     * ("com o servidor em UTC e o cron gravando em America/Sao_Paulo…") sem
+     * perceber que a correção não o cobria. O mesmo desencontro carimbava nota
+     * do Diário de Bordo e `read_at` de menção 3 horas adiantados.
+     *
+     * Literal, e não parâmetro ligado, porque estes call sites montam SQL sem
+     * um `?` sobrando (um deles é `\DBexecute()` no Module.php). O valor vem de
+     * `date()` — texto gerado pelo próprio PHP, sem nada digitado por usuário.
+     *
+     * Efeito colateral bem-vindo: some a diferença de dialeto. Os dois bancos
+     * aceitam o literal, e a data gravada passa a ser sempre a mesma
+     * independentemente de como o servidor de banco está configurado.
      */
     public static function now(): string {
-        return self::isPgsql() ? 'LOCALTIMESTAMP' : 'NOW()';
+        return "'" . date('Y-m-d H:i:s') . "'";
+    }
+
+    // ── Busca tolerante (caixa e acento) ─────────────────────────────────
+    //
+    // Quem digita o nome de um colega escreve "leao", não "Leão". Comparar do
+    // jeito cru exige acerto exato dos dois — e no PostgreSQL nem a caixa
+    // perdoa (o MySQL com collation _ci perdoa, o que faz o defeito parecer
+    // intermitente entre ambientes).
+    //
+    // O dobramento é feito com REPLACE aninhado porque é o que existe NOS DOIS
+    // bancos: `TRANSLATE` é do PostgreSQL e o `unaccent()` exige extensão
+    // instalada — nenhum dos dois pode ser pré-requisito de um módulo que
+    // precisa rodar onde já está instalado. Só as letras acentuadas do
+    // português entram na tabela; é o alfabeto dos nomes que este módulo
+    // pesquisa, e cada par custa um REPLACE na consulta.
+
+    /** Pares acento → letra simples, usados no SQL e no PHP (a MESMA lista). */
+    private const ACENTOS = [
+        'á'=>'a','à'=>'a','â'=>'a','ã'=>'a','ä'=>'a',
+        'é'=>'e','è'=>'e','ê'=>'e','ë'=>'e',
+        'í'=>'i','ì'=>'i','î'=>'i','ï'=>'i',
+        'ó'=>'o','ò'=>'o','ô'=>'o','õ'=>'o','ö'=>'o',
+        'ú'=>'u','ù'=>'u','û'=>'u','ü'=>'u',
+        'ç'=>'c','ñ'=>'n',
+    ];
+
+    /**
+     * Expressão SQL que devolve o texto em minúsculas e SEM acento.
+     *
+     * O `LOWER()` vem primeiro e a tabela só tem minúsculas: assim "LEÃO" é
+     * dobrado com metade dos REPLACEs — e, mais importante, não depende de o
+     * banco saber fazer `LOWER()` de caractere acentuado multibyte.
+     */
+    public static function foldText(string $expr, ?string $termoDobrado = null): string {
+        $sql = "LOWER($expr)";
+
+        foreach (self::ACENTOS as $de => $para) {
+            // Só entra o par cuja letra SIMPLES aparece no termo procurado.
+            //
+            // Para casar, o caractere dobrado da coluna tem de ser igual a
+            // algum caractere do termo: procurando "leao", o que precisa cair
+            // é o acento de a/e/o — o de "ç" ou "ü" não muda resultado nenhum,
+            // só engorda a consulta. Buscar "srv01" não gera REPLACE algum e a
+            // comparação volta a ser o LOWER() simples.
+            //
+            // Sem esse recorte eram 24 REPLACE aninhados por coluna POR TERMO
+            // (4 colunas × 5 termos = 20 dessas pilhas numa consulta só), e o
+            // custo caía sobre `hosts`, que neste ambiente é grande.
+            if ($termoDobrado !== null && mb_strpos($termoDobrado, $para) === false) {
+                continue;
+            }
+
+            $sql = "REPLACE($sql, " . \zbx_dbstr($de) . ', ' . \zbx_dbstr($para) . ')';
+        }
+
+        return $sql;
+    }
+
+    /**
+     * O mesmo dobramento, em PHP, para o termo digitado — mais os curingas do
+     * LIKE neutralizados.
+     *
+     * Sem escapar, quem digitasse `%` casaria com tudo e `_` com qualquer
+     * caractere; o `!` é escapado primeiro por ser o próprio caractere de
+     * escape (invertida a ordem, ele escaparia a barra que acabou de pôr).
+     * Quem usa isto TEM de emitir `ESCAPE '!'` no LIKE — ver likeEscape().
+     */
+    public static function foldTerm(string $termo): string {
+        $t = function_exists('mb_strtolower') ? mb_strtolower($termo, 'UTF-8') : strtolower($termo);
+        $t = strtr($t, self::ACENTOS);
+
+        return str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $t);
+    }
+
+    /** Sufixo obrigatório de todo LIKE alimentado por foldTerm(). */
+    public static function likeEscape(): string {
+        return " ESCAPE '!'";
     }
 
     /**

@@ -2196,6 +2196,1986 @@ de vermelho um aviso de lista cortada manda procurar um problema que não há.
 **Não validado no lab** — `listClosedReports()` e `countNotesByShift()`
 dependem de `ZbxDb $db` e não entram na suíte de testes puros. Ver Backlog.
 
+### Host visível, idade no formato do Zabbix e tema escuro neutro (2026-09-02, v5.4.2)
+
+Dois pedidos do Rafael sobre o Repasse, um de dado e um de cor.
+
+**1. Coluna Host mostrava o nome TÉCNICO.** As quatro consultas de alarme já
+traziam `MIN(h.name) AS host_name` ao lado de `MIN(h.host) AS host` — quem
+renderizava é que pegava o `host`. Trocado por `rp_hostLabel()` (view) /
+`hostLabel()` (PDF), que devolve o visível e só cai no técnico se ele vier
+vazio. Em ambiente onde ninguém preenche "Nome visível" os dois são iguais e
+nada muda; onde muda (host cadastrado por IP, host renomeado para o cliente) o
+relatório passa a falar o mesmo nome que o resto do Zabbix. Aplicado nas quatro
+tabelas de alarme e em Top Hosts — a mesma coluna nas cinco, senão o relatório
+diria dois nomes para o mesmo host na mesma página. O link mudou junto (o
+`filter_name` leva o nome exibido), porque um link que busca um texto diferente
+do que está escrito nele é pior que o nome errado.
+
+**2. Idade fora do padrão.** `rp_duration()` (usada também em MTTA/MTTR)
+satura em horas: um alarme de 40 dias saía como "960h 12m". A coluna Idade
+passou a usar `rp_age()`, e quem formata é a função NATIVA `convertUnitsS()`
+— a mesma que `zbx_date2age()` chama por baixo da coluna "Duração" de
+Monitoramento > Problemas. Sai "1M 3d 4h", "2d 5h 50m", "3h 55m 20s": até três
+unidades, começando na maior que existe e pulando as vazias.
+
+*Por que a nativa e não uma reimplementação:* "padronizar com o Zabbix" e
+"copiar a regra do Zabbix" divergem no primeiro upgrade que mexer na regra. O
+fallback local (para o caso improvável de a função global sumir) reproduz o
+algoritmo — ano = 365 dias, mês = 30 dias, corte três níveis abaixo do primeiro
+preenchido, segundos só quando o maior nível é hora ou menos, e os 12 meses
+inteiros que viram um ano. Conferido contra uma cópia literal do
+`convertUnitsS()` nas 260.016 durações de 1s a 3 anos: nenhuma divergência.
+`rp_duration()` continua servindo MTTA/MTTR, que são duração medida e não idade
+de alarme.
+
+**3. Tema escuro destoante.** O Repasse tinha paleta escura PRÓPRIA, azul-ardósia
+(card `#2b3c51`, borda `#3d5166`, faixa `#121c29`, azul `#02a0ff`), dentro de um
+Zabbix cinza-neutro (`#0e1012` de página, `#2b2b2b` de tabela, `#383838` de
+linha, `#f2f2f2` de texto, `#4796c4` de link). O azul só se percebe ao lado do
+cinza — e é exatamente aí que ele aparecia. Os tokens `--rp-*` do tema escuro
+passaram a sair de `assets/styles/dark-theme.css`, e o mesmo foi feito na paleta
+`.plt-dark` da família escala (texto auxiliar azulado, bordas claras demais).
+É a escolha que os tokens `--cs-*` do CrowdStrike já fazem na suíte.
+
+Três coisas que o ajuste de cor obrigou a corrigir, todas invisíveis no tema
+claro:
+
+- **`--rp-dark` era superfície E tinta.** `.rp-kpi-val` e `.rp-hm-month` pintavam
+  texto com a cor da FAIXA do topo: no escuro, `#121c29` sobre card escuro — o
+  numeral do KPI existia e não se lia. Virou `--rp-strong`, token separado.
+- **Chips pastel do Material** (`.rp-perf`, `.rp-act-*`, `.rp-alert-danger`) são
+  fundo claro com tinta escura: no escuro viravam caixinhas brancas acesas.
+  Passaram a fundo lavado (mesma cor em alfa baixo) com a tinta clara do tema
+  escuro do Zabbix. **A ordem no arquivo importa:** `.rp-act` e `.rp-act-ack` têm
+  a mesma especificidade, então o chip sem tipo próprio vem PRIMEIRO — invertido,
+  todo chip fica cinza.
+- **Quadradinho "Menos" do mapa de calor** tinha `#ebedf0` escrito na legenda e
+  `rgba(255,255,255,.06)` no JS. Só o do JS sabia do tema escuro; agora os dois
+  leem `--rp-hm-empty`. Mesmo motivo do `SEV_CUTOUT`: dois literais do mesmo
+  valor divergem na primeira vez que um deles é ajustado.
+
+Também: `.rp-ack-yes` e `.rp-resolve-manual` (verde `#2e7d32`, 2,1:1 sobre o card
+escuro) e o hover dos links (que ESCURECIA no escuro, apagando o link sob o
+ponteiro) seguem agora o verde/azul do tema escuro. A cor da barra do gráfico de
+MTTA passou a ser lida do token `--rp-blue` via `getComputedStyle` — canvas não
+herda CSS, e era o único lugar em que o `#02a0ff` antigo sobrevivia.
+
+**Não validado no lab** — as duas mudanças são de view/CSS e não entram na suíte
+de testes puros. Conferir no lab: coluna Host de um host com nome visível
+diferente do técnico; um alarme com mais de um mês na coluna Idade; e as quatro
+tabelas + Diário de Bordo nos temas Dark e High-contrast dark.
+
+### Tipografia e cores no padrão do Zabbix (2026-09-02, v5.4.3)
+
+Continuação do ajuste de tema. O Rafael apontou dois lugares — "o nome das
+severidades ao lado da pizza está ruim" e "os números do Volume de Alertas
+também não" — e pediu para pegar **o padrão do Zabbix** para fonte e cor, não
+para escolher outro tom. Foi o que se fez: cada valor abaixo tem origem em
+arquivo do frontend, e está anotada no CSS ao lado dele.
+
+**De onde saiu cada coisa**
+
+| O quê | Fonte no Zabbix | Valor |
+|---|---|---|
+| Fonte | `body` do blue/dark-theme.css | `Arial, Tahoma, Verdana, sans-serif` |
+| Corpo de texto | `body` (`font-size: 75%`, `line-height: 1.4em`) | 12px / 1.4 |
+| Tinta primária | `body` | `#1f2c33` claro, `#f2f2f2` escuro |
+| Tinta de rótulo | `.list-table thead th` | `#768d99` claro, `#737373` escuro (aqui `#9ca1a4`, ver abaixo) |
+| Título de card | `.dashboard-grid-widget-header h4` (1,167em) | 14px, negrito, tinta primária |
+| Texto sobre severidade | `.disaster-bg`, `.high-bg`, … dos temas | `#4b0c0c`, `#52190b`, `#733100`, `#734d00`, `#00268e`, `#2a353a` |
+| Eixo, legenda e grade de gráfico | tabela `graph_theme` do tema ativo | `textcolor` / `gridcolor` |
+| Legenda de pizza | `.svg-pie-chart-legend` | embaixo, em colunas, marcador 10×4 |
+
+**Fonte.** A tela era a única da suíte com pilha própria (`-apple-system,
+BlinkMacSystemFont, 'Segoe UI'…`) — as telas da família escala nunca
+declararam fonte e por isso já herdavam a do Zabbix. Agora as duas famílias
+usam a mesma. Junto foi a coluna `.td-mono`, que trocava para uma pilha
+monoespaçada só para alinhar hora e duração: os algarismos do Arial já têm
+largura fixa, e `font-variant-numeric: tabular-nums` garante o mesmo se a
+pilha cair no Tahoma/Verdana. Duas famílias na mesma tela é o tipo de
+diferença que se percebe sem se saber nomear.
+
+**Cabeçalho de tabela.** Era 10px em CAIXA ALTA com espaçamento de letra — a
+tipografia mais distante do Zabbix que a tela tinha. Virou o `thead th` do
+Zabbix: mesmo corpo do resto da tabela, caixa normal, cor de rótulo, borda de
+2px. O padding maior ficou: é respiro do card, não tipografia.
+
+**Texto sobre severidade — era chute, e um deles ilegível.** O Zabbix trata
+severidade como *fundo configurável + tinta fixa*: `getTriggerSeverityCss()`
+(`ui/include/html.inc.php`) gera o `background-color` a partir de
+Administração > Geral, e o CSS do tema traz a cor do texto escrita à mão por
+classe, igual nos quatro temas. O módulo já lia o fundo da mesma configuração,
+mas inventava a tinta: branco sobre o amarelo de Warning dá **1,54:1** e
+branco sobre o cinza de "Não classificado", 2,41:1. Com as tintas do Zabbix a
+faixa toda fica entre 4,3:1 e 6,6:1. Caixa alta saiu também — o nome da
+severidade pode vir traduzido, e versalete estica justamente o mais comprido.
+
+**Mapa de calor: os números.** Duas coisas erradas ao mesmo tempo. A cor do
+número era do TEMA (`rgba(0,0,0,.5)` claro, `rgba(255,255,255,.8)` escuro)
+enquanto o fundo da célula era da RAMPA, igual nos dois temas — no escuro, o
+número saía branco sobre verde-claro. E a rampa era a escala verde do GitHub
+com um vermelho solto no fim. Agora a rampa é a escala de severidade de
+fábrica do Zabbix (normal → aviso → média → alta → desastre) e cada nível
+carrega **o par fundo+tinta**, nas classes `.rp-hm-l0..l5` do CSS — nada de
+hex no JS, que era a regra do módulo sendo furada. O número subiu de 9px para
+11px: 9px sobre cor é o tamanho em que o algarismo vira mancha.
+
+O nível 0 (dia sem alerta) é a exceção que confirma a regra: ali o fundo É do
+tema, então a tinta também é — `#3c5563` no claro (a tinta de rótulo, #768d99,
+dá 2,96:1 sobre o cinza vazio e o número some) e `#9ca1a4` no escuro.
+
+**Gráficos.** O Chart.js desenha em canvas, que não herda CSS: sem
+`Chart.defaults` ele usa a fonte dele (Helvetica) e um cinza próprio. Agora
+`Chart.defaults.font` recebe a pilha do Zabbix em 12px e `Chart.defaults.color`
+recebe o `textcolor` do tema de gráfico — que **não é escolhido aqui**: vem da
+tabela `graph_theme`, a mesma linha que os gráficos nativos usam, por
+`TurnosReportBase::graphTheme()`. Ela existe porque o Zabbix já tem um lugar
+canônico (e customizável) para essa cor; inventar um segundo era garantir
+divergência na primeira mudança. A armadilha está documentada no método:
+`getUserGraphTheme()` devolve o tema AZUL quando não encontra a linha do tema
+ativo, o que num frontend escuro daria texto quase preto sobre gráfico escuro
+— por isso o retorno só é aceito se o `theme` que veio for o tema ativo.
+
+A cor vem do **controller** e não da detecção por luminância do `_theme.php`:
+a heurística acerta "claro ou escuro", que é tudo que ela precisa acertar para
+escolher paleta, mas não a cor exata que os gráficos nativos usam. As duas
+convivem — `IS_DARK_THEME` continua servindo de rede quando o CSS não carrega.
+
+**Legenda da rosca.** Ganhou o marcador retangular de 10×4 do widget de pizza
+do Zabbix (`.svg-pie-chart-legend`) e foi movida para baixo, em colunas.
+
+> **As duas conclusões deste parágrafo estavam erradas** — ver "A cor da
+> legenda da rosca não era `labels.color`" (v5.4.4): a mudança de posição foi
+> revertida a pedido, e a cor não trocou porque `labels.color` nunca chegava a
+> ser lida.
+
+**Não validado no lab** — tudo é view/CSS e não entra na suíte de testes
+puros. Conferir: a rosca com os seis nomes de severidade (de preferência num
+ambiente com os nomes em PT-BR, que são mais compridos), o mapa de calor com
+dias cheios e vazios nos dois temas, e uma tabela do Repasse ao lado de uma
+tabela nativa do Zabbix — é a comparação que denuncia diferença de fonte.
+
+### A cor da legenda da rosca não era `labels.color` (2026-09-02, v5.4.4)
+
+Depois do ajuste de tipografia o Rafael respondeu: o mapa de calor ficou bom, a
+mudança de posição da legenda não agradou, e **a cor do nome das severidades
+continuou preta**. As duas coisas são independentes e as duas foram atendidas —
+a posição voltou para a direita, e a cor mudou de verdade agora.
+
+**Por que `labels.color` não fazia nada.** O Chart.js pinta o texto da legenda
+com a cor de CADA ITEM, não com a opção:
+
+```js
+this.legendItems.forEach((y, v) => { s.strokeStyle = y.fontColor, s.fillStyle = y.fontColor;
+```
+
+Quem copia `labels.color` para dentro de cada item são as implementações
+**padrão** de `generateLabels()`. Esta rosca tem um `generateLabels()` próprio
+(existe para juntar o valor ao nome: "Disaster (12)") e ele nunca devolveu
+`fontColor` — então a propriedade chegava `undefined`, o canvas **ignora em
+silêncio** um `fillStyle` inválido, e o texto saía com o `fillStyle` que o
+contexto tinha: preto. Mexer em `labels.color` não mudava nada porque a opção
+nunca era lida; o preto sobre card escuro estava lá desde antes, e sobreviveu
+justamente à rodada que foi mexer na cor.
+
+O desenho do marcador não salva a situação: ele roda entre `s.save()` e
+`s.restore()`, então a cor que ele usa não vaza para o `fillText` seguinte.
+
+Correção: `fontColor: GRAPH_THEME.text` em cada item devolvido por
+`generateLabels()`. `labels.color` fica onde está, para o dia em que este
+`generateLabels()` sumir.
+
+**Regra que fica:** ao customizar `generateLabels()` no Chart.js, devolver
+`fontColor` junto — toda opção de estilo de texto da legenda passa pelo item, e
+a falha é muda.
+
+**Posição.** Voltou para `position: 'right'`. O ganho de diâmetro que a versão
+embaixo trazia era real, mas é troca de layout, não padronização — e não foi o
+que se pediu.
+
+### Severidade na linha da tabela: só a barra (2026-09-02, v5.4.5)
+
+Pedido do Rafael: tirar a cor da linha inteira nas quatro tabelas de alarme e
+deixar só a barrinha da esquerda.
+
+O que existia era meia regra: `.row-disaster` e `.row-high` pintavam o fundo da
+linha (`--sev-*-bg`) **e** a barra; as outras quatro severidades pintavam só a
+barra. Duas leituras diferentes para a mesma coluna — e num turno ruim, em que a
+maioria dos alarmes é High/Disaster, a tabela saía quase toda tingida, que é o
+oposto de destacar. Ficou só `border-left-color`, igual para as seis.
+
+Efeitos colaterais tratados:
+
+- **Cinco tokens `--sev-*-bg` ficaram sem uso** e saíram (dos dois temas). Só
+  `--sev-disaster-bg` continua: é o hover do botão de remover turno
+  (`.rp-action-danger`), que precisa de área vermelha e não de linha.
+- **`print-color-adjust` das `.row-*` no PDF fica.** Elas não têm mais fundo,
+  mas continuam com a barra, e é ela que precisa sair impressa em navegador
+  configurado para não imprimir gráficos de fundo. A lista original já incluía
+  `.row-avg`/`.row-warn`, que nunca tiveram fundo — ou seja, sempre foi pela
+  barra. Anotado lá, para ninguém "limpar" de novo.
+- O comentário do bloco de chips no tema escuro citava a linha tingida como um
+  dos fundos que o alfa acompanha; atualizado.
+
+### Chip "Mensagem" abre a mensagem num hintbox (2026-09-02, v5.4.6)
+
+Pedido do Rafael: nas tabelas de alarme, o chip "Mensagem" da coluna Ações só
+dizia que existia mensagem — o texto ficava no `title`, que some ao mover o
+mouse e não dá para copiar. Agora o chip é clicável e abre a mensagem com quem
+a escreveu.
+
+**A caixa é o hintbox NATIVO do Zabbix**, o mesmo componente que a tela
+Monitoramento > Problemas usa para mensagens de ACK (`makeEventMessagesIcon()`,
+em `ui/include/actions.inc.php`), inclusive com a mesma tabela `list-table` de
+três colunas (Hora | Usuário | Mensagem) por dentro. **Não há JS novo:** o
+`init.js` do frontend roda `hintBox.bindEvents()`, que delega em `document`
+para `[data-hintbox=1]` — marcação renderizada por módulo é atendida igual à do
+core. Basta obedecer ao contrato do `CTag::setHint()`:
+
+```
+data-hintbox="1"            liga o componente
+data-hintbox-static="1"     clique FIXA a caixa (com botão de fechar);
+                            passar o mouse continua mostrando
+data-hintbox-class=…        classe do invólucro interno
+data-hintbox-contents="…"   o HTML da caixa
+```
+
+Vale lembrar por que isso funciona atrás do balanceador que bloqueia `.js`
+estático: o JS do Zabbix não é servido como arquivo `.js`, e sim pelo
+`jsLoader.php` (o `init.js` está no pacote padrão de toda página). É o mesmo
+motivo pelo qual a UI nativa funciona lá e o `chart.min.js` do módulo precisa
+do modo inline.
+
+Três detalhes que o formato exige, todos anotados na função:
+
+- **`<button>`, não `<span>`.** O handler nativo também escuta `keydown` de
+  Enter/Espaço, e só elemento focável recebe esse evento — é como o core faz
+  (lá é um `CButtonIcon`). O CSS devolve a aparência de chip.
+- **Quebra de linha por `str_replace`, nunca `nl2br()`.** O `nl2br()` INSERE a
+  tag e MANTÉM o `\n`, e o `hintBox.createBox()` faz
+  `hintText.replace(/\n/g, '<br />')` no que recebe: as duas juntas dobram toda
+  quebra de linha da mensagem.
+- **Sem `title`.** O hintbox já abre no hover; com o atributo, a dica nativa do
+  navegador apareceria por cima da caixa.
+
+**Escape em duas camadas, e as duas são necessárias:** `htmlspecialchars()` no
+texto (mensagem de ACK é escrita por analista) e de novo no HTML inteiro ao
+entrar em `data-hintbox-contents`. O navegador desfaz a segunda camada ao ler o
+atributo e entrega ao JS um HTML em que o conteúdo do usuário já é texto — um
+`<script>` digitado na mensagem aparece escrito, não executa.
+
+**Achado no caminho:** `.rp-act-message` estava fora da lista de chips do tema
+escuro (a v5.4.3 assumiu que bastavam os tokens `--rp-blue-light`/`--rp-blue`,
+que já viram sozinhos). Só que o seletor escuro do `.rp-act` base tem
+especificidade maior que a de `.rp-act-message` sozinha, e o chip caía no cinza
+dos sem-tipo — justamente o único clicável. Corrigido.
+
+O chip vale nas quatro tabelas de alarme, não só em Herdados: é a mesma coluna
+Ações, montada pela mesma `rp_actionChips()`. No PDF nada muda — lá a mensagem
+inteira já é impressa na linha de detalhe abaixo do alarme, que é o que serve
+no papel.
+
+**Não validado no lab** — `rp_messageHint()` vive numa view e não entra na
+suíte de testes puros (mesma limitação de `rp_age()`); o escape foi conferido
+fora da tela, com mensagem contendo aspas, quebras de linha e uma tag
+`<script>`. Conferir no lab: clique no chip, tecla Enter com o chip focado, e
+uma mensagem de várias linhas (para ver se a quebra não dobrou).
+
+### Coluna Ações: todo chip abre caixa, e o alinhamento veio junto (2026-09-02, v5.4.7)
+
+O Rafael notou que o "ACK" ficava mais alto que o "Mensagem" na mesma linha e
+pediu para padronizar: qualquer informação da coluna Ações clicável, com caixa.
+As duas coisas têm a mesma causa e a mesma correção.
+
+**O desalinhamento era o `stretch` do flex.** Na v5.4.6 só o chip de mensagem
+virou `<button>`; o resto continuou `<span>`. Em `.rp-act-list`
+(`display: flex`) o padrão é `align-items: stretch`: os dois esticam para a
+altura da linha, mas um `<button>` centraliza o próprio texto e um `<span>`
+deixa o texto no topo. Daí o "ACK" alto e o "Mensagem" no meio — nada a ver com
+padding ou fonte. Agora todo chip é botão **e** `.rp-act-list` ganhou
+`align-items: center`: o alinhamento passa a ser garantido pela regra, não pela
+coincidência de todos os chips serem do mesmo elemento.
+
+**`rp_messageHint()` virou `rp_actionHint()`** e atende os cinco tipos. A caixa
+continua sendo o hintbox nativo (ver a entrada da v5.4.6 para o contrato do
+`CTag::setHint()` e as armadilhas do `nl2br()`/`title`); o que muda é a terceira
+coluna da tabela, que acompanha o tipo da ação:
+
+| Tipo do item | Cabeçalho | Conteúdo |
+|---|---|---|
+| `message` | Mensagem | o texto escrito, com as quebras de linha |
+| `severity` | Severidade | "Average → High", nos nomes reais do Zabbix |
+| `notify` | Status | "Enviada" / "Falhou: …" — e Usuário sai como travessão, porque quem disparou foi o Zabbix |
+| `ack`, `close`, `unack`, `suppress`, `unsuppress`, `rank_*` | Ação | o próprio rótulo; o que interessa é quem fez e quando |
+
+Cabeçalho por tipo e não um "Detalhe" genérico porque "Mensagem" e "Enviada"
+não são a mesma informação com nomes diferentes — e a caixa é lida por quem
+está pegando o turno, não por quem escreveu o código.
+
+O ganho não é só visual: o que estava só no `title` — que some ao mover o mouse
+e não dá para copiar — passou a ter um lugar fixo e igual para toda ação.
+
+**Hover do chip:** contorno em `currentColor` (`box-shadow: inset`) em vez de
+`filter: brightness()`. Brilho escurece no tema claro e apaga no escuro, ou
+seja, precisaria de duas regras para dizer a mesma coisa; `currentColor` já é a
+tinta certa nos dois.
+
+No PDF nada muda: lá os chips continuam `<span>` com `title`, e a mensagem
+inteira já é impressa na linha de detalhe abaixo do alarme — caixa que abre com
+clique não serve para papel.
+
+**Não validado no lab** — `rp_actionHint()` vive numa view e não entra na suíte
+de testes puros. Conferida fora da tela a saída dos cinco tipos, incluindo
+mensagem com aspas, quebra de linha e uma tag `<script>`. No lab: uma linha que
+tenha ACK, mensagem, mudança de severidade e notificação ao mesmo tempo — é
+onde o alinhamento aparecia.
+
+### Supressão na lista expandida do PDF (2026-09-02, v5.4.8)
+
+Pedido do Rafael: o PDF já imprime, abaixo de cada alarme, a mensagem escrita e
+as notificações que falharam; a supressão também precisa aparecer ali.
+
+**Por que ela não aparecia.** `actionDetailRow()` só imprime item COM conteúdo
+(`$body === ''` → `continue`), e o item de supressão vinha sem nenhum: o
+`queryEventActions()` preenchia `message` apenas para o tipo `message`. O chip
+"Suprimido" existia na linha, mas não tinha o que expandir.
+
+**O que a supressão carrega é o PRAZO**, e ele estava no banco sem ser lido:
+`acknowledges.suppress_until`. Agora entra na consulta e vira o conteúdo do
+item — "Até 06/09/2026 08:00" ou "Por tempo indeterminado".
+
+`0` em `suppress_until` significa **sem prazo** (`ZBX_PROBLEM_SUPPRESS_TIME_INDEFINITE`
+em include/defines.inc.php), não "expirou em 1970" — que é no que dá formatar o
+valor cru, e é o erro que esta linha existe para não cometer.
+
+**Onde a frase é montada:** no controller (`suppressUntilLabel()`), ao lado do
+`alertStatusLabel()`, que já fazia exatamente isto para o status de envio das
+notificações. É o precedente da própria função — e é o que faz a supressão
+aparecer no PDF **sem uma linha sequer de mudança no renderizador**: ele já
+imprime todo item com conteúdo.
+
+O Zabbix mostra só a HORA quando o prazo cai no dia corrente e data+hora nos
+demais casos; aqui é sempre data+hora, porque o Repasse é lido por data e um
+"08:00" solto num relatório de um turno da semana passada não diz de que dia se
+trata.
+
+Efeitos, todos de graça pelo mesmo caminho: o `title` do chip no PDF passou a
+trazer o prazo, e a caixa da tela ao vivo ganhou a coluna "Supressão" (a
+`rp_actionHint()` recebeu o `case`, senão a supressão cairia no ramo genérico e
+mostraria só "Suprimido", que é o que o chip já diz).
+
+`unsuppress` continua fora da lista expandida: não carrega dado nenhum além de
+quem removeu e quando, que é o que o chip e a caixa já mostram.
+
+**Não validado no lab.** Conferidas fora da tela as duas saídas: a caixa da tela
+(prazo e "por tempo indeterminado") e a lista expandida do PDF, que passou a
+imprimir Mensagem, Suprimido e notificação falha — e a continuar deixando de
+fora ACK, supressão removida e notificação bem-sucedida. No lab: um alarme
+suprimido com prazo e outro sem, no PDF e na tela.
+
+### Legenda da rosca: estado desativado e total que acompanha (2026-09-02, v5.4.9)
+
+Clicar numa severidade da legenda já escondia a fatia — é o `onClick` padrão da
+legenda do Chart.js (`chart.toggleDataVisibility()`), que continua valendo
+porque o `generateLabels()` próprio devolve o `index` de cada item. Faltavam as
+duas consequências que o Rafael cobrou: a severidade clicada não parecia
+desligada, e o total no centro não descia.
+
+**O `hidden: false` fixo.** O item devolvido pelo `generateLabels()` trazia
+`hidden` escrito como `false`, e é esse campo que o Chart.js lê para riscar o
+rótulo. Como estava mentindo, a legenda ficava idêntica antes e depois do
+clique. Agora sai de `chart.getDataVisibility(i)`.
+
+Riscar sozinho é discreto demais para um clique parecer ter efeito, então o
+marcador e o texto do item escondido vão para o cinza de rótulo do tema
+(`--rp-text-muted`, lido pelo `rpToken()`). É a segunda vez que o mesmo objeto
+morde: **tudo que a legenda desenha vem do ITEM**, não das opções — a cor foi na
+v5.4.4, o estado agora.
+
+**O total do centro somava o array cru.** `toggleDataVisibility()` não mexe em
+`data`: quem sabe o que está escondido é o `getDataVisibility()`. A soma virou
+`sevTotalVisivel(chart)`, que pula os índices invisíveis; o mesmo helper passou
+a alimentar a porcentagem do tooltip, senão as fatias visíveis somariam menos de
+100% com alguma severidade escondida.
+
+**Achado ao mexer:** o furo era medido em `getDatasetMeta(0).data[0]` — o
+PRIMEIRO arco. Com a legenda escondendo fatias, o primeiro pode ser justamente
+um escondido, e a medida não serve. Passou a pegar o primeiro arco com raio
+utilizável, e o fallback pela área do gráfico continua cobrindo o caso de todas
+escondidas (aí o centro diz "0", que é a resposta certa).
+
+**Não validado no lab** — é JS de view. Conferir: clicar em cada severidade e
+ver o número do centro descer, o rótulo ficar riscado e cinza, clicar de novo e
+tudo voltar; e esconder TODAS, que é o caso em que o furo não tem arco para
+medir.
+
+### Campo de formulário no tema escuro e atalhos de seleção na Escala (2026-09-03, v5.5.0)
+
+Dois pedidos do Rafael, em telas diferentes.
+
+**1. O combobox de turno destoava no escuro (Gerenciar Turnos > Analista da
+Equipe).** O `.rp-input` usava `--rp-white`/`--rp-border`, ou seja, a cor do
+CARD — e no escuro o campo sumia dentro da linha da tabela. O Zabbix trata
+controle de formulário como uma superfície própria, diferente da tabela:
+
+| | claro | escuro |
+|---|---|---|
+| fundo | `#ffffff` | `#383838` |
+| borda | `#acbbc2` | `#4f4f4f` |
+| texto | `#1f2c33` | `#f2f2f2` |
+
+(regra `.multiselect, …, input[type="text"], …` dos temas, e `select` para o
+combobox nativo). Viraram os tokens `--rp-field-bg` / `--rp-field-border`.
+
+**O que realmente estava feio era a lista suspensa, e ela não é alcançável por
+CSS.** A lista do `<select>`, o relógio do `input[type=time]`, as setas do
+`[type=number]` e a barra de rolagem são desenhados pelo navegador: com
+`appearance: menulist` (que esta tela usa de propósito, para o campo ter a
+altura do resto) o autor pinta a caixa fechada e mais nada — a lista abria
+branca por cima da tela escura. Quem resolve é **`color-scheme: dark`** no
+contêiner, que diz ao navegador em que esquema desenhar o que é dele. O Zabbix
+não declara `color-scheme` em tema nenhum, então isto é nosso, e fica escopado
+ao `.rp-native-container`.
+
+`!important` nas três cores do `.rp-input` **por especificidade, não por
+gosto**: a regra do tema mira `input[type="text"]` (elemento + atributo, 0-1-1)
+e vence uma classe simples (0-1-0) mesmo carregando antes. É a mesma razão já
+documentada em `.rp-nh-btn` e `select.rp-input`. Consequência: o `:focus`
+também precisa de `!important`, senão a borda azul perde para a borda base.
+
+Junto foi a mensagem de "salvo"/"erro" da mesma tela, que estava em hex claro
+dentro do JS (`#2e7d32` / `#c62828` — 2,1:1 e 2,6:1 sobre o card escuro): virou
+`.rp-status-ok` / `.rp-status-err`, nas cores semânticas do Zabbix, aplicadas
+por classe.
+
+**2. Atalhos de seleção de dias na Escala.** Eram 30 cliques para escalar o mês.
+Agora a barra de seleção tem *Todos os dias*, *Dias pares*, *Dias ímpares*,
+*Dias de semana* e *Fim de semana*.
+
+Decisões:
+
+- **Cada atalho SUBSTITUI a seleção**, que é o que "selecionar dias pares"
+  quer dizer. Para combinar dois padrões, clica-se um e ajusta-se o resto na
+  mão, como já era; "Limpar seleção" continua onde estava.
+- **Par/ímpar é pelo NÚMERO DO DIA** (2, 4, 6…), que é como a escala é
+  combinada em voz alta — não pela posição no calendário.
+- **Dia de semana sai do dia da semana da DATA, não da coluna.** O Zabbix tem
+  "primeiro dia da semana" configurável (Administração > Geral): ler a coluna
+  quebraria em quem começa a semana no domingo.
+- **`new Date(+a, +m-1, +d)`, nunca `new Date('aaaa-mm-dd')`.** A string ISO é
+  lida como UTC pela spec e, a oeste de Greenwich, devolve o dia anterior — o
+  dia 1 viraria o último do mês passado e todo par/ímpar sairia trocado. Mesmo
+  tropeço já documentado no mapa de calor do Repasse.
+- **Sem pré-preenchimento do técnico**, que é o que `pltToggleDay()` faz ao
+  clicar um dia: num lote de 15 dias, herdar o escalado de um deles seria
+  escolher um por sorteio e escrevê-lo nos outros catorze.
+- Dias passados entram na conta, porque clicar num dia passado sempre foi
+  permitido nesta tela — o atalho não inventa uma regra que a tela não tem.
+
+Os atalhos só alcançam as células do mês exibido: as de preenchimento das
+pontas da grade não têm `data-date`.
+
+**Não validado no lab** — as duas são view/CSS. Conferido fora da tela o
+conjunto de dias de cada atalho em setembro/2026 (fim de semana = 5, 6, 12, 13,
+19, 20, 26, 27; semana = 22 dias), que é o que a regra de data precisa acertar.
+No lab: o combobox de turno ABERTO no tema escuro (é a lista que estava branca)
+e um mês inteiro escalado por atalho.
+
+### Atalhos que ligam e desligam, e os serviços num comando só (2026-09-03, v5.5.1)
+
+**1. Atalhos de dia na Escala viraram liga/desliga.** Na v5.5.0 cada atalho
+substituía a seleção; o Rafael pediu para poder desmarcar o que o atalho marcou.
+Agora cada botão mexe **só no próprio conjunto**: se todos os dias dele já estão
+marcados, o clique tira aqueles; senão, acrescenta. Com isso dá para somar
+padrões (semana + um sábado) e desfazer um sem levar o outro — o "Limpar
+seleção" continua para zerar tudo.
+
+O estado vai em `aria-pressed`, não numa classe própria: é o atributo que diz a
+um leitor de tela que aquilo é um botão de liga/desliga, e o CSS pinta o botão
+lendo o MESMO atributo, em vez de manter uma segunda verdade que poderia
+divergir. `pltMarkPresets()` roda dentro de `pltUpdateBar()`, então clicar um dia
+solto também apaga o destaque do atalho que deixou de valer.
+
+**Texto fora do centro nos botões.** A folha do Zabbix estiliza `button`
+(especificidade 0-0-1) com `height:24px; line-height:22px; padding:0 11px`, e uma
+classe simples só vence no que ELA declara: o padding daqui entrava, a altura e a
+entrelinha de lá ficavam, e o texto assentava fora do meio. Corrigido com
+`inline-flex` + `height`/`line-height` explícitos — centrar por flex não depende
+de acertar entrelinha. O mesmo valia para o "Limpar seleção", que foi junto.
+
+**2. Os serviços do módulo agora saem num comando só: `install.sh --services`.**
+
+O pedido era "que habilitar o módulo execute tudo que está no install.sh". Isso
+**não é possível, e não é só limitação**: o módulo roda dentro do PHP-FPM como o
+usuário do servidor web. Não tem root para escrever em `/etc/systemd/system`,
+instalar pacote ou dar `systemctl daemon-reload` — e um módulo de frontend capaz
+de escrever unidade systemd daria, a quem consegue habilitar módulo pela UI,
+execução de código como root no host. Habilitar o módulo cria as TABELAS (o
+`init()` faz a migração); o que roda fora do frontend continua sendo trabalho de
+root.
+
+O que dava para melhorar era o custo desse passo. Antes: reabrir o instalador
+interativo, escolher modo, redigitar host/porta/base/usuário/senha e responder
+três perguntas. Agora:
+
+    sudo ./scripts/install.sh --services
+
+- **Sem perguntas.** Agenda presença e escalonamento; menções só entra se
+  `PLANTONISTAS_ALERT_TOKEN` estiver no ambiente, porque sem token aquele cron
+  não notifica nada.
+- **Sem redigitar banco.** Lê `$DB['…']` do `zabbix.conf.php`. Duas correções
+  que isso exigiu, ambas achadas neste host: o arquivo REAL dos pacotes
+  RHEL/Amazon fica em `/etc/zabbix/web/` e o `detect_db_type()` só olhava ao
+  lado do `index.php` (em host sem o symlink em `conf/`, não achava nada); e o
+  Zabbix grava `PORT = '0'` para "porta padrão", que passado adiante faz o
+  cliente tentar conectar na porta zero — agora vira 5432/3306.
+- **Idempotente**, e reaproveita o `install_scheduled_job()` que já existia: em
+  host com `/etc/cron.d` escreve lá; sem ele, crontab do usuário; sem cron
+  nenhum (Amazon Linux 2023), unidade systemd + timer. Neste ambiente é o
+  terceiro caminho — **não há cronie instalado**, o que também responde à parte
+  de "instalação de pacotes": o `install.sh` nunca instalou pacote, o
+  `check_deps()` só avisa; e o caminho systemd existe justamente para não
+  precisar de nenhum.
+- `SERVICES_TARGET` e `SERVICES_USER` cobrem host com o módulo fora do lugar
+  padrão ou com apache e nginx instalados ao mesmo tempo (é o caso aqui: a
+  detecção escolhe nginx, mas o pool do PHP-FPM roda como apache).
+
+**3. Lista de presença vazia parou de ter uma explicação só.** "Nenhum dado de
+presença. Execute o cron" tratava como iguais duas coisas bem diferentes: turno
+em que ninguém acessou o Zabbix, e ambiente onde o coletor nunca foi agendado.
+Agora `queryLastPresence()` (roda **apenas** quando a lista veio vazia) responde
+qual dos dois: sem registro nenhum na tabela → "o coletor provavelmente não está
+agendado" + o comando; com registro → "nenhum analista ativo nesta janela;
+último registro em <data>".
+
+**Não validado no lab.** O `--services` foi exercitado aqui em modo seco (com o
+`install_scheduled_job` substituído por um eco): achou o `zabbix.conf.php` em
+`/etc/zabbix/web/`, converteu POSTGRESQL→pgsql e a porta 0→5432, e montou os dois
+jobs com os caminhos certos. Falta rodá-lo de verdade, **em um frontend só**.
+
+### Atalho da Escala continuava "apertado" depois do clique (2026-09-03, v5.5.2)
+
+O atalho marcava e desmarcava certo, mas o botão ficava com cara de apertado até
+o foco sair. Não era o `aria-pressed` (esse já voltava para `false`): era a folha
+do Zabbix.
+
+```css
+button:active, .btn:active, button:focus, .btn:focus {
+    color: #ffffff; background-color: #02659f; border-color: #02659f;
+}
+```
+
+`button:focus` é 0-1-1; `.plt-sel-preset` é 0-1-0. **O tema vence**, e depois do
+clique o botão fica azul sólido com texto branco enquanto mantiver o foco — o
+que, num botão de liga/desliga, é exatamente a aparência de "ligado" que ele
+não deveria ter. É a mesma armadilha de especificidade já documentada em
+`.rp-input` e `.rp-nh-btn`, agora no estado em vez da cor.
+
+Correção sem `!important`: `.plt-sel-preset:focus` (0-2-0) devolve a aparência
+normal. O foco **continua no botão** — quem navega por teclado precisa dele —,
+só deixa de ser pintado por clique de mouse; o anel volta em `:focus-visible`,
+que o navegador só liga quando o foco veio do teclado. `:active` entra pelo
+mesmo motivo: sem ele o botão pisca azul sólido enquanto o clique está
+pressionado.
+
+Duas coisas que a ordem no arquivo decide, porque as regras têm a mesma
+especificidade:
+
+- `:hover` vem **depois** de `:focus`. Com o ponteiro parado sobre o botão
+  recém-clicado os dois casam, e o certo ali é o realce de hover.
+- `[aria-pressed="true"]` vem depois dos dois, e ganhou a variante
+  `[aria-pressed="true"]:focus` (0-3-0) para o botão ligado continuar com cara
+  de ligado enquanto estiver focado.
+
+O "Limpar seleção" recebeu o mesmo tratamento: hoje ele some logo após o clique
+(a seleção zera e ele é escondido), então o defeito não aparecia — mas a regra
+é a mesma e não custa nada.
+
+**Onde a mesma armadilha ainda vale:** os chips da coluna Ações do Repasse
+(`.rp-act-btn`) são `<button>` e caem no mesmo `button:focus` — **só no tema
+claro**. No escuro os seletores de chip são mais específicos que o do tema
+(`[data-theme="dark-theme"] .rp-act-ack` é 0-2-0) e já ganham. Como cada tipo de
+chip tem cor própria, devolver a aparência ali é subir a especificidade de todas
+as regras de tipo do bloco claro — trabalho maior que o defeito, num tema que
+esta equipe não usa. Fica anotado.
+
+### "Analistas Escalados" sempre offline: dois relógios (2026-09-03, v5.5.3)
+
+O coletor de presença passou a rodar (v5.5.1) e o bloco continuou mostrando todo
+mundo como offline. **O coletor estava certo**; a comparação é que usava outro
+relógio.
+
+O `is_online` de `queryShiftAnalysts()` era
+`last_seen >= SqlFn::nowMinusMinutes(15)`, e o `SqlFn::now()` perguntava a hora
+ao BANCO (`LOCALTIMESTAMP` no PG, `NOW()` no MySQL). Só que quem grava
+`lastaccess` é o cron, com o `date()` do PHP. Neste ambiente:
+
+| quem | relógio | valor às 12:49 |
+|---|---|---|
+| cron de presença (`date()` do PHP, TZ America/Sao_Paulo) | −03 | `12:42` |
+| `LOCALTIMESTAMP` (PostgreSQL com `timezone = UTC`) | UTC | `15:49` |
+
+A conta virava `12:42 >= 15:34` — falso, sempre, para todo mundo. Conferido no
+banco de produção: a mesma linha dá `offline` pela expressão antiga e `ONLINE`
+pela nova.
+
+**Correção: quem responde "que horas são" passa a ser a APLICAÇÃO.** `SqlFn::now()`
+devolve a hora do PHP como literal entre aspas, e `nowMinusMinutes()` sai do
+mesmo relógio. É coerente com todo o resto do módulo, que já grava com `date()`:
+os limites do turno, o `lastaccess` do cron, o fechamento. De quebra some a
+diferença de dialeto — o literal vale nos dois bancos.
+
+O docblock antigo do `now()` descrevia **exatamente** este cenário ("com o
+servidor em UTC e o cron gravando em America/Sao_Paulo…") ao justificar o
+`LOCALTIMESTAMP`. A troca resolvia outra coisa (o `now()` do PG é `timestamptz`
+e converter usa o fuso da sessão) e não essa: continuava sendo o relógio do
+banco. Fica o aprendizado: **não basta escolher a função de data certa; tem de
+ser o relógio certo.**
+
+O mesmo desencontro carimbava nota do Diário de Bordo, `read_at` de menção e
+`notified_at` três horas adiantados — os quatro chamadores do `now()` foram
+corrigidos de uma vez. Os testes do `SqlFn` deixaram de afirmar
+`LOCALTIMESTAMP`/`NOW()` e passaram a verificar o formato e a distância em
+relação ao relógio (45 casos, era 44).
+
+**Limite que fica, e é de configuração, não de código.** O carimbo gravado é
+hora de parede sem fuso, então frontend e cron precisam concordar. Neste
+ambiente `settings.default_timezone = system` e o `date.timezone` do php.ini
+está comentado: quem tem fuso no perfil (`America/Sao_Paulo`) vê certo, e quem
+está em "default" cai no UTC do PHP e veria o mesmo erro de 3 horas. O acerto é
+definir o fuso em **Administração > Geral > GUI** (ou no php.ini), não no
+módulo.
+
+### Scripts de cron ganharam guarda de CLI (2026-09-03, v5.5.3)
+
+`scripts/` mora dentro do módulo, e o módulo mora dentro da raiz web — o Zabbix
+serve `modules/` a partir do document root. Ou seja, os quatro scripts tinham
+URL, e nenhum verificava o SAPI: quem acertasse o endereço fazia o servidor web
+executar, sem autenticação, um script que escreve no banco — e via na tela o
+erro de conexão com pistas de caminho e usuário. Agora todos começam com
+`if (PHP_SAPI !== 'cli') { http_response_code(404); exit; }`. 404 e não 403
+porque quem chuta URL não precisa saber que acertou o nome.
+
+Achado no mesmo diagnóstico: há **cópias antigas do módulo dentro da raiz web**
+(`/usr/share/zabbix/ui/modules_old/` e `/usr/share/zabbix/ui/scripts/cron_presence_tracker.php`),
+que não recebem correção nenhuma deste repositório e continuam sem a guarda.
+Não foram tocadas — apagar arquivo fora do repo é decisão de quem opera.
+
+### `--services` em produção: ler a config, não adivinhar o formato (2026-09-03, v5.5.4)
+
+Funcionou em homologação e morreu em produção com *"Faltam dados do banco"*. A
+causa não era o arquivo estar ausente — ele foi **encontrado e mal lido**.
+
+O `zabbix.conf.php` é **código PHP**, e o parser era um `sed` que só entendia
+`$DB['CHAVE'] = 'valor';` com aspa simples e valor literal. Basta o arquivo usar
+aspas duplas, uma constante ou concatenação para o parser devolver vazio — sem
+erro, o que é pior. Reproduzido aqui com um conf no estilo que produção
+provavelmente usa:
+
+| chave | parser de texto (antigo) | leitura pelo PHP (nova) |
+|---|---|---|
+| `SERVER` (vinha de constante) | *(vazio)* | `db-prd.interno` |
+| `DATABASE` (`"zabbix" . "_prd"`) | `zabbix` | `zabbix_prd` |
+| `PASSWORD` (com aspas dentro) | `s3nh4\` | `s3nh4"com'aspas` |
+
+**Quem lê o arquivo agora é o próprio PHP** (`include` + leitura do `$DB`), que
+é o único que sabe o valor final de uma constante, de uma concatenação ou de um
+include. O parser de texto continua como reserva para host sem PHP na linha de
+comando — e ganhou aspas duplas de quebra.
+
+**E a busca deixou de depender de um arquivo só.** Cada campo é resolvido pelo
+primeiro lugar que o tiver, nesta ordem:
+
+1. variáveis `DB_*` já exportadas — quem manda é quem digitou;
+2. `zabbix.conf.php` (mais caminhos, `ZBX_CONF=` para apontar na mão, e uma
+   busca com profundidade curta em `/etc/zabbix` e na raiz do frontend);
+3. `/etc/zabbix/zabbix_server.conf` — `DBHost`/`DBName`/`DBUser`/`DBPassword`,
+   que existem em qualquer host que rode o server;
+4. o agendamento do módulo **já instalado** (cron.d ou unidade systemd): são
+   exatamente os valores com que o coletor roda hoje;
+5. `ZBX_DB_*`, a convenção das imagens de container.
+
+Campo a campo, e não "a primeira fonte completa vence": frontend sem senha +
+`zabbix_server.conf` com a senha resulta numa configuração completa, que é o
+caso mais comum de instalação segmentada.
+
+Se ainda faltar algo, a mensagem agora **lista onde procurou** em vez de só
+mandar preencher tudo na mão. E entrou `--show-config`, que faz toda a
+descoberta e imprime o resultado **sem escrever nada** — era o que teria
+resolvido este chamado sozinho.
+
+**Duas armadilhas de `set -e` corrigidas no caminho**, as duas capazes de matar o
+script em silêncio depois de já ter descoberto tudo:
+
+- `[[ … ]] && cmd` como **última linha de função**: quando o teste dá falso, a
+  função devolve 1, e sob `set -e` o chamador morre sem imprimir nada. Era o
+  caso do aviso de senha vazia — com senha definida, o `--services` abortava
+  logo após "Banco: …". Virou `if`, com `return 0` explícito.
+- `conf="$(find_zbx_conf …)"`: a função devolve 1 quando não acha, e a
+  atribuição carrega esse status. Agora tem `|| true`.
+
+Também dá para apontar o `zabbix_server.conf` com `ZBX_SERVER_CONF=`, para o
+caso de instalação fora do padrão.
+
+### Notificações consolidadas: um selo em vez de trinta (2026-09-03, v5.6.0)
+
+Com escalonamento configurado, um alarme sozinho gera dezenas de linhas em
+`alerts` — uma por destinatário, por passo e por repetição. Na coluna Ações isso
+virava dezenas de chips iguais que enterravam o que interessa no repasse: a
+mensagem que o analista escreveu, a supressão, o ACK. Num caso real de teste,
+**37 itens viravam 37 chips; agora são 4**.
+
+**Quem consolida é o controller**, em `summarizeNotifications()`, chamado no fim
+do `queryEventActions()` — o resumo entra no mesmo array que a view e o PDF já
+recebem (`$actions[$eventid]['notify_summary']`). Nem a view nem o PDF contam
+nada: recebem as linhas agrupadas e ordenadas e só formatam. Foi o jeito de as
+duas telas terem a MESMA conta sem duplicar a lógica, já que a view não enxerga
+o trait.
+
+Para isso o item de notificação passou a carregar **`media` e `status`
+separados** do rótulo. Antes o nome da mídia só existia dentro da frase
+"Notificação: E-mail", e agrupar por mídia significaria fazer o parse de um
+texto de exibição — que quebra no dia em que o texto mudar.
+
+**O que o resumo conta, e por quê:**
+
+| coluna | por que existe |
+|---|---|
+| total por mídia | "por onde isso saiu, e quanto" |
+| falhas (`alerts.status = 2`) | é o único número que pede ação |
+| última | com escalonamento longo, "há 4 minutos" e "há 4 horas" pedem coisas diferentes |
+
+Ordena por falhas e depois por total: quem tem problema aparece primeiro, não a
+mídia mais falante.
+
+**O aviso de falha não pode depender de abrir a caixa.** Antes, uma notificação
+que falhou era um chip próprio, visível na linha. Consolidando, ela sumiria atrás
+de um clique — então o rótulo do chip leva o número (`Notificações (34 · 4
+falhas)`) e o chip fica vermelho quando há qualquer falha.
+
+**No PDF, o selo consolidado aparece na linha do alarme**, e a sub-linha de
+detalhe continua imprimindo mensagem, supressão e notificação que falhou, item a
+item com o texto do erro. Notificação bem-sucedida segue fora da lista.
+
+> A sub-linha chegou a receber TAMBÉM o resumo por mídia
+> (`SMS 8 (3 falhas) · E-mail 24`); foi **retirado a pedido** na v5.6.2 — ver lá.
+
+**Snapshot de turno fechado antes desta versão não tem o resumo** (ele nasce na
+consulta, não no banco). Nesse caso a notificação volta a ser um chip por item,
+como era: documento fechado não pode PERDER informação por causa de uma melhoria
+que veio depois dele. Vale na tela e no PDF, e está verificado — com resumo, 4
+chips; sem resumo, os 37 de antes.
+
+**Não validado no lab** — view/PDF. Conferido fora da tela com um cenário de
+escalonamento tagarela (34 envios em 3 mídias, 4 falhas, mais ACK, mensagem e
+supressão): a contagem por mídia, a ordem (falhas primeiro), o plural de "1
+falha", os 4 chips e a sub-linha do PDF. No lab: um alarme com escalonamento de
+verdade, na tela e no PDF.
+
+### Consolidação para todo tipo de ação repetida (2026-09-03, v5.6.1)
+
+A v5.6.0 consolidou notificação; o Rafael pediu o mesmo para o resto. Agora
+**qualquer tipo que aconteça mais de uma vez no mesmo alarme vira um chip com a
+contagem**, e a caixa lista todas as ocorrências — quem fez e quando, que é
+justamente a informação que some quando os selos se repetem.
+
+    8 itens → 5 chips:  ACK (3) | ACK removido | Suprimido (2) | Mensagem | Severidade alterada
+
+**Agrupa por TIPO, não por "família".** `ACK` e `ACK removido` continuam
+separados de propósito: juntar colocar e tirar num contador só esconderia
+exatamente a diferença entre os dois. O mesmo vale para `Suprimido` e `Supressão
+removida`.
+
+Tipo que aconteceu uma vez só continua idêntico ao que era — o chip com a caixa
+de uma linha. Nada muda para o caso comum.
+
+**Refatoração que isso pediu:** a "terceira coluna" da caixa (Mensagem,
+Severidade, Supressão, Status, Ação) virou `rp_actionColuna()`, e a montagem do
+botão virou `rp_actionBotao()`. As duas caixas — a de uma ação e a do grupo —
+passam pelo mesmo caminho, então uma coluna nova aparece nas duas sem ninguém
+lembrar de mexer em dois lugares.
+
+**No PDF, os selos agrupam igual** (`ACK (3)`), e a sub-linha de detalhe
+continua imprimindo mensagem, supressão e notificação FALHA item a item: no
+papel a contagem resume, mas o conteúdo é o que se lê no repasse.
+
+**Snapshot antigo:** notificação sem resumo continua um chip por item — e agora
+com uma proteção a mais. Agrupar notificação por tipo daria um contador com o
+rótulo da PRIMEIRA mídia ("Notificação: E-mail (34)" contando também os SMS),
+que é pior que 34 chips. As demais ações agrupam normalmente também nesse
+caminho, porque ali agrupar não esconde nada.
+
+**Não validado no lab** — view/PDF. Conferido fora da tela: 8 itens de tipos
+variados → 5 chips com as caixas certas; 39 itens (34 notificações + 3 ACKs +
+mensagem + supressão) → 4 chips; snapshot sem resumo → 37 chips, com as
+notificações uma a uma; e a chave interna do agrupamento (`notify#3`) não vaza
+para a classe CSS.
+
+### Resumo de notificações sai da lista expandida do PDF (2026-09-03, v5.6.2)
+
+Retirada a pedido do Rafael a linha de resumo por mídia que a v5.6.0 tinha
+acrescentado à sub-linha de detalhe. A lista volta a mostrar **só o que
+aconteceu de diferente**: mensagem escrita, supressão e mídia com erro.
+
+O raciocínio de quem lê o documento: a sub-linha é CONTEÚDO, não contagem. Quem
+quer o número já o tem no selo da linha do alarme, logo acima
+(`Notificações (34 · 4 falhas)`) — repetir o mesmo dado em duas alturas gastava
+espaço de papel para dizer o que já estava dito.
+
+O `notifySummaryText()` continua vivo: é o `title` do selo. Só deixou de ser
+impresso.
+
+Fica assim:
+
+    selos:  ACK (3) | Mensagem | Suprimido | Notificações (34 · 4 falhas)
+    lista:  • Notificação: SMS            Falhou: conexão recusada
+            • Notificação: SMS            Falhou: conexão recusada
+            • Notificação: SMS            Falhou: conexão recusada
+            • Notificação: Webhook Teams  Falhou: conexão recusada
+            • Mensagem   Ana — 11:50      Serviço reiniciado.
+            • Suprimido  Rafael — 11:51   Até 06/09/2026 08:00
+
+### Filtro por grupo de host no Repasse (2026-09-03, v5.7.0)
+
+Pedido do Rafael: ambiente grande demais para validar olhando o total. O
+cabeçalho do Repasse ganhou um seletor de **grupo de host**, visível só para
+Super Admin.
+
+**Custou quase nada nas consultas, e o motivo é a forma do filtro que já
+existia.** O `host_filter` de permissão é um trecho `AND h.hostid IN (…)`
+injetado nas nove consultas do relatório, todas com o alias `h` em escopo. O
+recorte por grupo tem a MESMA forma, então é só concatenar — nenhuma das nove
+consultas foi tocada:
+
+    $hostFilter .= $this->groupFilter($groupid);
+
+**Compõe, nunca substitui.** Os dois trechos são somados com `AND`: não existe
+combinação de parâmetros em que escolher um grupo mostre host que o usuário não
+enxergaria. E a checagem de "só Super Admin" é feita no **servidor**, nos dois
+controllers — esconder o `<select>` nunca foi controle de acesso, e a action tem
+URL própria (mesma regra que vale para os itens de menu deste módulo).
+
+**Duas exclusões na lista de grupos, e as duas importam num ambiente grande:**
+
+- `hstgrp.type = 0`. Desde o 6.2 a mesma tabela guarda grupo de host (0) e
+  grupo de TEMPLATE (1). Sem isso, o seletor deste ambiente listava 15 opções,
+  **12 delas "Templates/…"** — e filtrar por grupo de template devolve tela
+  vazia, porque template não tem evento.
+- o grupo precisa ter host de verdade (`hosts.status IN (0,1)`). Com as duas, a
+  lista foi de 15 para 3.
+
+**No PDF, o recorte vai carimbado no documento** — badge "Grupo: X" no cabeçalho
+e o nome no `<title>` (que é o nome sugerido do arquivo). Um PDF de um grupo só é
+indistinguível de um PDF do ambiente inteiro depois de impresso, e é justamente
+ele que circula por e-mail. O snapshot de turno fechado nunca leva recorte: ele é
+do turno inteiro, por definição.
+
+O seletor entra **dentro do form GET** que já navega por data/turno/Top N, então
+o grupo escolhido acompanha toda troca sem uma linha de JS, e o link "Gerar PDF"
+leva o mesmo `groupid`.
+
+**Conferido contra o banco de produção:** a consulta de alarmes herdados devolve
+1030 sem filtro, 1022 no grupo "TESTE" e 5 em "Zabbix servers".
+
+**Filtro por TAG** ficou para a rodada seguinte, e o combobox de grupo também
+mudou de forma — ver a entrada da v5.8.0, logo acima.
+
+### Filtro por tag, e o seletor de grupos vira diálogo (2026-09-03, v5.8.0)
+
+Duas coisas pedidas juntas: o filtro por tag prometido, e a troca do combobox de
+grupo por um **botão que abre um seletor** — o que também virou multi-seleção,
+que é o que um ambiente grande pede.
+
+**Um botão "Filtros" no lugar de dois controles.** Ele abre um diálogo com as
+duas seções — grupos de host e tags (linhas de nome/operador/valor) —, e o
+rótulo mostra quantos critérios estão ativos.
+
+> A seção de grupos nasceu como lista de caixas de seleção e virou o multiselect
+> nativo do Zabbix na v5.8.1 — ver lá o porquê. Ficou
+um botão em vez de dois porque o cabeçalho já carrega data, turno e Top N; e
+porque escolher grupo e tag é a mesma tarefa ("recortar"), feita na mesma hora.
+
+O diálogo usa as classes NATIVAS do Zabbix (`overlay-bg`,
+`overlay-dialogue modal modal-popup`, `list-table`) — o mesmo caminho que a tela
+de Escala já faz para escolher técnico. Sem CSS de modal próprio, e com a
+aparência da casa nos quatro temas.
+
+Os valores viajam em dois `<input hidden>` DENTRO do form de navegação que já
+existia: o diálogo preenche e submete. Data, turno, Top N e filtro andam juntos
+sem montar URL na mão em lugar nenhum, e o link "Gerar PDF" leva os mesmos
+parâmetros.
+
+**Por que a tag NÃO coube no `$hostFilter`.** O recorte por host é um
+`AND h.hostid IN (…)` que serve às onze consultas porque todas têm o alias `h`
+em escopo. Tag é do EVENTO, e o alias do evento muda: `ev` nas nove que leem
+`events`, `p` nas duas que leem `problem`. A saída foi passar as TAGS (não o
+SQL) para cada consulta, e deixar que cada uma monte o trecho com o próprio
+alias — `$this->tagFilter($tags, 'ev')`. Onze assinaturas ganharam
+`array $tags = []` no fim, sem tocar em nenhuma cláusula existente.
+
+**Sempre `event_tag`, nunca `problem_tag`**, mesmo nas duas consultas sobre
+`problem`: as duas tabelas são indexadas por `eventid` e valem para o mesmo
+evento, mas o Zabbix APAGA a linha de `problem_tag` quando o problema fecha —
+filtrar "Alarmes Resolvidos" por tag olhando `problem_tag` daria uma lista que
+encolhe sozinha conforme os problemas são resolvidos.
+
+**Seis operadores** (Existe, Igual a, Contém, Não existe, Diferente de, Não
+contém), combinados com **E**: cada linha estreita mais o recorte, que é o que
+"validar" pede. Detalhes que a implementação exigiu:
+
+- `LOWER()` dos dois lados em igual/contém — o MySQL `_ci` ignora caixa, o
+  PostgreSQL não (regra do CLAUDE.md).
+- `ESCAPE '!'` no LIKE, com `%`, `_` e o próprio `!` neutralizados no valor
+  digitado: sem isso um valor com `%` casaria com qualquer coisa.
+- "Contém" com valor VAZIO vira "a tag existe" — é o que a pessoa quis dizer, e
+  `LIKE '%%'` casaria com tudo.
+- Saneamento no controller (`parseTagFilter()`): nome vazio e operador fora da
+  lista são descartados, texto é cortado em 255 (tamanho de `event_tag.tag` e
+  `.value`) e o filtro para em 10 condições. Cada condição vira um EXISTS por
+  consulta — dez é mais do que qualquer validação real precisa, e é o que separa
+  "filtro" de "jeito de derrubar o banco pela querystring".
+
+**As linhas de tag são montadas por DOM, não por `innerHTML`**: nome e valor são
+texto livre, e uma aspa dentro deles quebraria o atributo. Escapar para HTML
+resolveria o `<`, mas não a aspa; atribuir em `.value` não passa por parser
+nenhum.
+
+**"Marcar todos" marca só o que está VISÍVEL** na lista de grupos. Com a busca
+filtrando por "prod", um "marcar todos" que pegasse o ambiente inteiro seria uma
+armadilha.
+
+**No PDF os dois recortes vão carimbados** no cabeçalho e no `<title>` (nome
+sugerido do arquivo): "Grupo: X" e a lista de condições de tag. Documento
+filtrado que circula por e-mail precisa dizer que é um recorte.
+
+**Conferido contra o banco de produção**, na consulta de alarmes herdados:
+
+| recorte | linhas |
+|---|---|
+| sem filtro | 1030 |
+| grupo TESTE | 1022 |
+| grupo TESTE + `scope` igual a `coverage` | 1020 |
+| grupo TESTE + `scope` diferente de `coverage` | 2 |
+| grupo TESTE + `scope` não existe | 0 |
+
+O último zero é resposta certa, não bug: naquele grupo TODO problema tem a tag
+`scope` (1020 `coverage` + 2 `security`). Foi por causa desse caso que valeu
+conferir a contagem complementar em vez de só olhar se "voltou alguma coisa".
+
+A geração do SQL e o saneamento foram exercitados fora da tela: escape de `%`,
+`_` e aspa, negação, duas condições somadas, JSON quebrado, operador inventado,
+15 linhas (cortadas em 10) e texto de 400 caracteres (cortado em 255).
+
+### Grupos de host: multiselect nativo, não lista (2026-09-03, v5.8.1)
+
+A v5.8.0 desenhava TODOS os grupos como caixas de seleção dentro do diálogo. Num
+ambiente com centenas, isso é uma lista impossível — e, pior, obrigava o módulo
+a carregar o catálogo inteiro a cada abertura da tela.
+
+Agora a caixa de grupos é o **multiselect nativo do Zabbix**, o mesmo componente
+da aba Problemas: digitar busca no servidor e a lupa abre o pop-up de seleção;
+o que entra vira pílula dentro da caixa.
+
+    (new CMultiSelect([
+        'name' => 'rp_groupids[]', 'object_name' => 'hostGroup',
+        'data' => …selecionados…, 'popup' => ['parameters' => ['srctbl' => 'host_groups', …]],
+    ]))
+
+O `CMultiSelect` monta sozinho a URL de busca —
+`jsrpc.php?method=multiselect.get&object_name=hostGroup&with_hosts=1&enrich_parent_groups=1` —
+e é o SERVIDOR que responde, já aplicando permissão. Três consequências boas:
+
+- **o módulo não carrega mais lista de grupo nenhuma.** `queryHostGroups()` (a
+  consulta que trazia o catálogo) foi substituída por `queryHostGroupsByIds()`,
+  que só resolve os ids que a tela mandou — para validar e para rotular a
+  pílula. A conta não cresce mais com o tamanho do ambiente;
+- `with_hosts=1` vem de graça no componente e faz o que a consulta antiga fazia
+  na mão (não oferecer grupo sem host);
+- some o `type = 0` escrito por nós na listagem: quem busca é o endpoint de
+  `hostGroup`, que já não devolve grupo de template. A regra continua em
+  `queryHostGroupsByIds()`, onde ainda importa — ali o id vem da querystring e
+  pode ser qualquer coisa.
+
+**Três detalhes que o componente nativo exigiu**, todos anotados no código:
+
+- **`name` no `<form>` do cabeçalho.** O pop-up de seleção recebe o nome do
+  formulário de destino (`dstfrm`) e o procura por nome na página; sem ele, o
+  "Selecionar" abre e não devolve nada.
+- **`add_post_js => false` + init próprio.** O `CMultiSelect` registraria o
+  `multiSelect()` no post-JS da página; aqui ele sai no bloco da view, dentro de
+  `jQuery(...)`, para não depender da ordem de flush do rodapé.
+- **Esc do diálogo cede a vez.** Com o pop-up do Zabbix aberto por cima, um Esc
+  fechava os dois de uma vez — agora o handler desiste se houver
+  `.overlay-dialogue.modal[data-dialogueid]` na página.
+
+Ler a seleção é `multiSelect('getData')`, a API do componente, e não a marcação
+interna dele: é o que sobrevive a uma atualização do Zabbix. O que viaja na URL
+continua sendo a mesma lista de ids de antes.
+
+Conferido fora da tela: a marcação renderizada, a URL de busca e os parâmetros
+do pop-up (`multiselect: 1` entra sozinho).
+
+### Linha de tag: valor some em "Existe", e o padrão vira "Contém" (2026-09-03, v5.8.2)
+
+Dois acertos no diálogo de filtros, os dois para bater com o filtro nativo de
+Problemas do Zabbix.
+
+**"Existe" e "Não existe" escondem a caixa de valor.** Esses dois operadores
+perguntam pela TAG, não pelo valor — deixar a caixa aceitando um texto que o
+filtro ignora é convidar a pessoa a achar que filtrou algo que não filtrou. A
+troca é feita no `change` do operador e também na montagem da linha, para uma
+condição já salva abrir no estado certo.
+
+Some por **`visibility`, não por `display:none`** (corrigido na v5.8.3, depois
+de aparecer na tela): tirar o elemento do fluxo faz a linha se rearranjar — o
+campo de nome (`flex: 1 1 0`) estica para ocupar a sobra e o seletor de operador
+escorrega para o lado a cada troca. Com `visibility` o espaço continua
+reservado: some o campo, não muda o lugar de nada. De quebra, `visibility:
+hidden` já tira o campo da ordem de tabulação e da árvore de acessibilidade,
+que é o que "escondido" deve significar.
+
+A primeira tentativa usou o atributo `hidden` e precisou de `!important` para
+vencer o `display` da classe — sinal de que estava resolvendo o problema
+errado. Classe com `visibility` não disputa com ninguém.
+
+**Condição nova começa em "Contém".** É o padrão do próprio Zabbix
+(`TAG_OPERATOR_LIKE` é o valor default do filtro de Problemas) e é o que quase
+sempre se quer ao começar a digitar. O valor sai de `tagOperatorDefault()`, no
+controller, e serve aos três lugares que precisavam dele: o `<select>` da linha
+nova, o fallback do `parseTagFilter()` quando o operador vem ausente e o do
+`tagFilter()`. Antes o fallback era `exists` escrito em dois lugares.
+
+**O valor é ZERADO no controller para operador que não o usa**, e não só
+ignorado na hora de montar o SQL. Assim o que fica guardado, o que viaja na URL
+e o que o PDF carimba dizem a mesma coisa — "env existe", nunca "env existe
+<texto que não filtra nada>". Vale inclusive para URL montada à mão, que é o
+caminho que a tela não controla.
+
+Conferido fora da tela: operador ausente cai em `like`; `exists`/`nexists`
+guardam valor vazio mesmo recebendo texto; `like`/`eq` preservam o valor.
+
+### Performance do MTTA: dois números contando histórias diferentes (2026-09-04, v5.9.0)
+
+O Rafael reportou que a coluna Performance mostrava "Atenção" para analista que
+estava, aparentemente, dentro do parâmetro descrito. Estava mesmo — e o parâmetro
+descrito não era o parâmetro usado.
+
+| onde | o que dizia |
+|---|---|
+| descrição do card | "Meta: abaixo de **60 minutos**" |
+| classificação, na view | `$avg<300 ? 'Excelente' : ($avg<900 ? 'Aceitável' : 'Atenção')` — **5 e 15 minutos** |
+
+`avg_mtta` é `a.clock - ev.clock`, ou seja SEGUNDOS: 300 = 5 min, 900 = 15 min.
+Quem tinha 20 minutos de MTTA — um terço da meta anunciada — via "Atenção". Não
+era a conta que estava errada: eram dois números, em dois lugares, sobre a mesma
+coisa. O clássico deste módulo (ver "cor nova entra no arquivo de tema", "o
+`SEV_CUTOUT` precisa ser um valor só", "`--ar-chart-min` tem de bater com
+`$chart_min_w`").
+
+**Agora há UM lugar.** `mttaThresholds()` devolve os dois limites, e eles pintam
+o selo **e** escrevem a frase da meta na descrição do card — que passou a ser
+gerada ("Excelente abaixo de 15 min, aceitável abaixo de 1 h") em vez de escrita
+à mão. Divergir de novo exigiria mudar os dois de propósito.
+
+**Os novos padrões são 15 min e 1 h**, e a escolha tem motivo: 60 minutos era o
+que a tela já prometia ao usuário. O padrão passa a ser o que estava escrito
+para quem lê, não o que estava escrito para o interpretador.
+
+**E agora se configura pela tela** (Super Admin), que foi a segunda parte do
+pedido:
+
+- engrenagem **no cabeçalho do próprio card** de MTTA, não numa tela de
+  preferências à parte: o limite só faz sentido olhando a coluna que ele pinta;
+- diálogo com as mesmas classes nativas do de filtros, em MINUTOS (o banco
+  guarda segundos — a conversão fica na borda, e ninguém digita 3600);
+- `TurnosSettingsSave`, action nova: **Super Admin conferido no servidor**, POST
+  + `_csrf_token` da action completa, sem `disableCsrfValidation()`;
+- tabela nova `module_plantonistas_settings` (chave/valor), declarada no
+  `Schema.php` — **chave/valor e não uma coluna por parâmetro**, senão cada
+  ajuste futuro vira migração de schema. `SCHEMA_VERSION` subiu para 2, que é o
+  que invalida o marcador e faz os frontends criarem a tabela.
+
+**Três guardas contra o mesmo tiro no pé**, porque limites invertidos fazem a
+faixa do meio sumir e TODO MUNDO cair em "Atenção" — exatamente o sintoma que
+originou a tarefa: a tela recusa antes de enviar, a action recusa antes de
+gravar, e `mttaThresholds()` corrige na leitura se ainda assim chegar invertido
+(linha gravada na mão no banco, por exemplo).
+
+Falha ao ler cai no default com log: um selo com o limite de fábrica é melhor
+que uma tela em branco — vale inclusive no intervalo entre subir o código e o
+`init()` criar a tabela.
+
+Conferido: a DDL nos dois dialetos, o upsert em transação revertida contra o
+banco de produção (segundo INSERT atualiza a linha, como esperado), e a
+classificação em três conjuntos de limites — com 15/60, os 20 minutos do
+relatado saem como "Aceitável".
+
+### "MTTA por Analista" é bloco gerencial: some para o papel User (2026-09-04, v5.9.1)
+
+Pedido do Rafael depois de olhar a tela pronta: comparar o tempo de resposta de
+um analista com o dos colegas é leitura de quem coordena o plantão, não de quem
+está nele — e o selo de Performance ao lado do nome deixa isso explícito. O card
+passa a aparecer só para **Admin (2) e Super Admin (3)**.
+
+**É escopo de tela, não controle de acesso** — e a diferença importa para quem
+for mexer nisto depois. O dado de outro analista já era negado no SERVIDOR:
+`restrictMttaByRole()` reduz a lista ao próprio usuário antes de chegar à view.
+O que o User via ali era a linha DELE, informação que ele podia ver mas que,
+sozinha, não diz nada (uma tabela de um analista só, com um selo comparando-o
+com ninguém).
+
+**O KPI "Seu MTTA" fica**, na linha de cima: é a mesma informação no formato que
+serve a quem está no plantão — o próprio número, sem a moldura de comparação. E
+é por isso que a consulta e a restrição por papel continuam existindo: o KPI sai
+delas.
+
+**O PDF segue a mesma regra.** Se o bloco saísse só da tela, bastaria clicar em
+"Gerar PDF" para reaver o que a tela decidiu não mostrar.
+
+Duas limpezas que a mudança tornou possíveis: a descrição do card perdeu o ramo
+"o MTTA de outros analistas é visível apenas para Admin/Super Admin" (não há
+mais quem leia essa frase) e o título no PDF deixou de ser ternário.
+
+**Achado no caminho:** a dica do KPI ainda dizia "Meta: abaixo de 60 minutos"
+escrito à mão — o MESMO número solto que a v5.9.0 acabara de eliminar do card. Se
+alguém mudasse o limite pela engrenagem, a dica continuaria prometendo 60. Agora
+sai de `rp_limiteLabel($rp_mtta_lim['ok'])`, como o resto.
+
+### Filtro por grupo de host ignorava a árvore aninhada (2026-09-04, v5.9.2)
+
+Grupo de host no Zabbix é hierárquico **por nome**, com `/` de separador:
+"HOSTS/PRD/EMPRESAS/ROCK" é pai de "HOSTS/PRD/EMPRESAS/ROCK/CONTAS" e de
+"HOSTS/PRD/EMPRESAS/ROCK/CLOUD/AWS/EC2". O filtro pegava só o id escolhido — e
+num ambiente organizado em árvore isso costuma dar **nenhum host**, porque os
+hosts moram nas folhas, não no galho.
+
+**A expansão passou a ser a nativa**, `getSubGroups()`
+(ui/include/hostgroups.inc.php, carregada pelo `ZBase::init()` em toda
+requisição). É a definição canônica do Zabbix — busca por `nome + '/'` com
+`startSearch`, a mesma regra da tela de Problemas. Reimplementar em SQL daria a
+mesma resposta hoje e outra no dia em que o Zabbix mudar de critério, e ainda
+obrigaria a escapar `%` e `_` no nome do grupo (que aparecem em nome de grupo
+de verdade). De quebra ela passa pela API, então aplica permissão — e isso
+substituiu a consulta de validação que existia antes.
+
+**Escolhido e filtrado são conjuntos diferentes, de propósito:**
+
+| | o que é | onde aparece |
+|---|---|---|
+| `selected` | só o que a pessoa marcou | pílulas do multiselect, URL, carimbo do PDF |
+| `expanded` | escolhidos **+ descendentes** | o `IN (…)` do SQL |
+
+Misturar os dois faria a caixa de seleção encher de grupos que ninguém escolheu
+(e o carimbo do PDF virar uma lista de 15 nomes).
+
+Medido neste ambiente: escolher "HOSTS" passou de **1 para 15 grupos** no
+recorte (HOSTS/PRD, HOSTS/PRD/EMPRESAS, …/HINDIANA/ALPE/CLOUD/AWS/EC2 e por aí).
+
+**Teto na ESCOLHA (50), não na expansão.** Limitar o que a árvore devolve
+esconderia hosts sem avisar — que é exatamente o defeito que esta entrada
+corrige, só que mais difícil de perceber.
+
+Falha na expansão cai nos ids escolhidos, com log: recorte mais **estreito** que
+o pedido, nunca mais largo. E o rótulo some junto, para a tela não afirmar um
+nome de grupo que não conseguiu confirmar.
+
+O PDF resolve pelo mesmo caminho: se ele expandisse diferente, os números do
+papel não bateriam com os da tela.
+
+Conferido contra a árvore do banco (44 grupos com `/` no nome) e a lógica de
+resolução exercitada fora da tela com a árvore espelhada: pai → tudo abaixo,
+folha → só ela, seleção múltipla → união, id inexistente → nada selecionado.
+
+### Meta de MTTA por equipe: cada empresa com o seu número (2026-09-04, v5.10.0)
+
+O Rafael colocou o problema real: são muitas empresas atendidas, e "aceitável"
+para a empresa A é 30 min enquanto para a B é 1 h. Um par de limites global não
+serve.
+
+**A ideia inicial era meta por TAG do alarme, e ela não fecha para esta tabela.**
+A linha de "MTTA por Analista" é um ANALISTA, não um alarme: se o mesmo analista
+deu ACK em alarmes de duas empresas, a média dele é uma só e não existe qual das
+duas metas aplicar. Meta por tag só funcionaria com a tela recortada para uma
+empresa, ou quebrando a tabela em analista × empresa (mais linhas, outro
+significado).
+
+**A informação que faltava veio dele:** cada empresa tem time próprio e o
+permissionamento já separa quem vê quem. Ou seja, **a equipe é a empresa** — e a
+equipe é um atributo do ANALISTA, que é justamente o sujeito da linha. Com isso a
+meta cai sobre a linha sem ambiguidade e **sem depender de filtro na tela**: o
+relatório diário, misto, já sai colorido certo.
+
+**Formato: chave/valor, sem tabela nova.**
+
+    mtta_good            / mtta_ok            → padrão
+    mtta_good.<usrgrpid> / mtta_ok.<usrgrpid> → meta daquela equipe
+
+É para isto que `module_plantonistas_settings` nasceu chave/valor (v5.9.0):
+empresa nova é uma linha, não uma migração de schema.
+
+**Decisões que valem ficar escritas:**
+
+- **Analista em duas equipes fica com a meta mais RÍGIDA.** Errar para o lado de
+  cobrar mais deixa um selo pessimista, que alguém questiona e corrige; errar
+  para o lado frouxo esconde atraso, e ninguém vai perguntar por um selo verde.
+- **A dica do selo diz de onde veio a meta** ("meta da equipe NOC ROCK" ou "meta
+  padrão"). Número de SLA que muda em silêncio é como se perde a confiança no
+  indicador.
+- **Meia configuração herda o resto do padrão**: equipe com só o "aceitável"
+  gravado pega o "excelente" geral, em vez de virar faixa invertida.
+- **Equipe fora do envio é APAGADA** — é assim que o botão de remover linha
+  funciona sem uma action de exclusão. O DELETE mira só as chaves COM sufixo
+  (`mtta_good.%` / `mtta_ok.%`): um DELETE largo levaria junto a meta padrão e a
+  tela voltaria ao limite de fábrica sem ninguém ter pedido.
+- **Lote inválido é recusado inteiro**, não gravado pela metade: configuração
+  parcial é um estado que ninguém pediu.
+- A equipe entra por **multiselect nativo** (`object_name: usersGroups`), mesmo
+  motivo do filtro de grupos — com muitas empresas, um `<select>` com o catálogo
+  inteiro é uma lista impossível; aqui quem busca é o servidor.
+- **O par de cima é a meta PADRÃO**, e vale para toda equipe que não estiver
+  listada abaixo: declarar a empresa B não muda nada para a A. O diálogo dizia
+  só "valem para o selo", e o Rafael precisou perguntar se era global — sinal de
+  rótulo ruim, corrigido na v5.10.1: a seção passou a se chamar "Meta padrão",
+  com a frase "vale para todo analista que não tiver meta de equipe declarada
+  abaixo", e a seção das exceções explica que equipe não listada usa o padrão.
+
+**Uma armadilha de PostgreSQL no caminho:** o sufixo da chave é TEXTO e os ids
+são inteiros — `SUBSTRING(...) NOT IN (7)` falha com *"operator does not exist:
+text <> integer"*. Um CAST resolveria, mas estouraria numa chave malformada;
+comparar texto com texto (`NOT IN ('7')`) não tem esse risco. `SUBSTRING(x FROM
+POSITION('.' IN x) + 1)` é padrão SQL e vale nos dois bancos.
+
+**Conferido:** o SELECT de leitura, o DELETE de uma equipe e o de todas, em
+transação revertida contra o banco de produção (padrão sempre intacto); e a
+resolução linha a linha fora da tela — empresa A 5/30, empresa B só com metade
+configurada herdando o padrão, analista sem meta caindo no padrão, analista em
+duas equipes ficando com a mais rígida, e meta gravada invertida sendo saneada
+na leitura.
+
+**Não validado no lab** — a tela e o diálogo. Conferir: salvar uma meta de
+equipe, ver a dica do selo mudar na linha de quem é daquela equipe, remover a
+linha e confirmar que o padrão continua de pé.
+
+### Texto cortado dentro dos diálogos (2026-09-04, v5.10.2)
+
+A explicação das metas por equipe aparecia truncada no meio da palavra ("então
+vale linha a li"). Não era largura de fonte nem excesso de texto: é regra do
+tema do Zabbix.
+
+```css
+.overlay-dialogue-body            { white-space: nowrap; }
+.overlay-dialogue.modal .overlay-dialogue-body { overflow-x: hidden; }
+```
+
+Parágrafo dentro de diálogo **não quebra linha**, e o que passa da largura é
+cortado sem reticência e sem barra de rolagem — some, e some no meio da palavra.
+O próprio Zabbix contorna isso com a classe `wordbreak` (é o que o `hintBox`
+aplica na caixa dele).
+
+A correção vale para o **corpo inteiro dos dois diálogos do módulo**, e não item
+a item: assim vale também para o próximo texto que alguém acrescentar, sem
+depender de lembrar de uma classe. O diálogo de limites foi de 460 para 560px de
+largura, já que ele ganhou a seção de metas por equipe.
+
+Fica o registro para as próximas telas: **texto explicativo dentro de
+`overlay-dialogue` precisa de `white-space: normal`** — o padrão ali é não
+quebrar, o que faz sentido para as tabelas e formulários que o Zabbix costuma
+pôr em diálogo, e não para prosa.
+
+### Rótulos do multiselect em PT-BR (2026-09-04, v5.10.3)
+
+A caixa de busca abria com "type here to search" no meio de uma tela inteira em
+português. O componente nativo traz os rótulos dele traduzidos pelo idioma **do
+frontend**, e esta instalação roda em `en_US` (`settings.default_lang`) — então
+não era falta de tradução, era a tradução da instalação.
+
+O módulo é PT-BR fixo por convenção (regra do CLAUDE.md), então os cinco rótulos
+do componente passam a vir daqui:
+
+    No matches found      → Nenhum resultado encontrado
+    More matches found... → Há mais resultados — refine a busca
+    type here to search   → digite para buscar
+    new                   → novo
+    Select                → Selecionar
+
+**Ficam num lugar só** (`$rp_ms_labels`, na view) porque servem às DUAS caixas:
+a de grupos de host, montada em PHP pelo `CMultiSelect`, e a de equipe, montada
+em JS uma por linha de meta. Duas listas de tradução divergiriam na primeira vez
+que alguém corrigisse uma delas.
+
+**Detalhe de implementação:** `labels` não passa pelo construtor do
+`CMultiSelect` — ele monta o dele com `_()` e a lista de opções aceitas
+(`$options_list`) não inclui esse campo. A troca é feita no `data-params` já
+pronto (`getParams()` → ajusta → `setAttribute()`), que é de onde o plugin lê
+tudo. `placeholder` até passaria pelo construtor, mas fica junto do resto, no
+mesmo lugar.
+
+Conferido no HTML renderizado: os cinco rótulos e o placeholder saem em
+português no `data-params`.
+
+### "Erro de conexão" ao salvar meta de equipe: faltava o `die()` (2026-09-04, v5.10.4)
+
+Sintoma enganoso: a tela dizia "Erro de conexão" e **o log do PHP não tinha
+nada** — porque, do lado do PHP, nada falhou.
+
+`TurnosSettingsSave` imprimia o JSON e voltava para o framework. Só que o
+manifest declara `layout.javascript` para ela, e o `ZBase::processResponseFinal()`
+faz:
+
+```php
+if ($router->getLayout() !== null) {
+    if (!($response instanceof CControllerResponseData)) {
+        throw new Exception(_s('Unexpected response for action %1$s.', …));
+```
+
+Sem `setResponse()`, o Zabbix lança a exceção **depois** do JSON já impresso: o
+corpo da resposta vira `{"success":true,…}` seguido do HTML de erro. O
+`Content-Type` continua `application/json` (o `header()` saiu primeiro), então a
+guarda de content-type do JS passa — e quem estoura é o `r.json()`, caindo no
+`.catch()`, que mostra "Erro de conexão". Daí o diagnóstico enganoso: parece
+rede, é resposta suja.
+
+As outras actions AJAX do módulo já terminavam com `$db->close(); die();` — esta
+nasceu sem, e o defeito só aparece quando a action é de fato chamada.
+
+Correção: um `responder()` privado que imprime, fecha o banco e encerra. Todas as
+saídas passam por ele, inclusive as de validação — antes elas usavam `return`,
+que tinha o mesmo problema e só não apareceu porque ninguém tinha caído numa
+ainda.
+
+Auditei as nove actions `layout.javascript` do módulo: todas encerram a
+requisição. A regra entrou nas convenções do módulo, porque o modo de falha é
+mudo no servidor e mentiroso na tela.
+
+### Rótulo de coluna nas metas por equipe (2026-09-04, v5.10.5)
+
+Depois de salvar, a linha ficava só com dois números e ninguém lembrava qual era
+qual — os `placeholder` ("exc.", "aceit.") somem justamente quando o campo é
+preenchido, que é quando a informação passa a fazer falta. O `title` também não
+resolve: exige descobrir que existe.
+
+Entrou um cabeçalho de coluna — **Grupo de usuário · Excelente (min) · Aceitável
+(min)** — com a unidade no rótulo, que também não estava escrita em lugar nenhum
+da linha.
+
+> A primeira tentativa alinhava por geometria repetida (cabeçalho em flex com as
+> mesmas larguras da linha) e **desalinhou** — corrigido na v5.10.6 com uma grade
+> única; ver lá.
+
+Três detalhes que a implementação exigiu:
+
+- **O cabeçalho repete a geometria da linha** (mesmo flex, mesmas larguras),
+  porque é assim que cada rótulo fica sobre o campo certo. Inclusive uma célula
+  vazia reservando a largura do botão de remover: sem ela, os dois rótulos de
+  número escorregam para a direita.
+- **Classe própria, e não a classe da linha.** O JS pergunta "já existe linha?"
+  com `#rpLimEquipes .rp-lim-equipe` para decidir se carrega as metas salvas —
+  se o cabeçalho levasse essa classe, a resposta seria sempre "sim" e as metas
+  gravadas nunca apareceriam ao abrir o diálogo.
+- **`hidden` precisou de regra explícita** — pela TERCEIRA vez neste módulo (ver
+  `.rp-bulk-bar` e a caixa de valor da tag). O atributo vale `display:none` na
+  folha do navegador e perde para o `display:flex` da classe; sem a regra, o
+  cabeçalho apareceria sozinho, sem nenhuma equipe embaixo.
+
+### O cabeçalho desalinhou: alinhar por grade, não por largura repetida (2026-09-04, v5.10.6)
+
+O cabeçalho da v5.10.5 saiu torto. Duas causas, e as duas vinham de tentar
+alinhar **repetindo a geometria**: cabeçalho em flex com as mesmas larguras da
+linha.
+
+1. **"Excelente (min)" não cabia na coluna de 76px** (≈84px a 11px), então
+   quebrava em duas linhas e empurrava a linha inteira.
+2. **A largura do botão de remover era palpite.** Reservei 26px no cabeçalho
+   chutando o tamanho de um `.rp-action` com ícone — e chute de largura só acerta
+   por acidente.
+
+Agora cabeçalho e linhas compartilham a **mesma grade** (`#rpLimEquipes`), e
+cada linha entra nela com `display: contents`: os filhos da linha viram células
+da grade de cima. Rótulo e campo caem na mesma coluna **por construção**, sem
+ninguém repetir medida — a coluna do botão é `auto`, então ela vale o tamanho
+real dele, seja qual for.
+
+Os rótulos ficaram abreviados como o Rafael sugeriu (**Exc. (min)** / **Aceit.
+(min)**), com `white-space: nowrap`: rótulo que quebra desfaz o alinhamento que
+a grade acabou de garantir. E os números do cabeçalho ganharam o mesmo
+`padding-right: 8px` do input, para o texto do rótulo ficar sobre o texto do
+campo, e não sobre a borda dele.
+
+Fica a lição, que vale para as próximas telas do módulo: **duas listas de
+larguras que precisam concordar sempre acabam discordando.** Onde há cabeçalho e
+linha, a grade única resolve por construção; flex com medidas repetidas é dívida.
+
+### MTTA que respeita o turno, e MTTA por severidade (2026-09-04, v5.11.0)
+
+Dois pedidos, e o primeiro é uma correção de justiça na conta.
+
+**1. Empresa sem cobertura noturna estava sendo punida pela madrugada.** Alarme
+abre 00:01, o analista entra 07:00 e reconhece 07:01: o tempo de RESPOSTA dele
+foi 1 minuto, mas a conta crua (`ack − abertura`) dizia 7 h e o selo de
+Performance o marcava de vermelho por uma janela em que, por contrato, não havia
+ninguém.
+
+Agora cada equipe tem uma caixa **24/7** ao lado da meta. Marcada (padrão, que é
+o comportamento de sempre), nada muda. Desmarcada, o relógio começa no que vier
+DEPOIS: a abertura do alarme ou o início do turno do analista.
+
+O detalhe que erra de dia se for feito na pressa: o início do turno é uma HORA
+(`19:00:00`), não um instante — a ocorrência que vale é a **mais recente antes
+do ACK**. Para um ACK às 02:00 de um turno que começa 19:00, é o 19:00 de ONTEM;
+comparar com o de hoje daria início no futuro e MTTA negativo. Conferido:
+
+    alarme 00:01 → ACK 07:01, turno 07:00     24/7: 7h00   |  não-24/7: 0h01
+    alarme 08:00 → ACK 08:05 (dentro do turno)             |  0h05 (não muda)
+    turno 19:00, alarme 20:00 → ACK 02:00                  |  6h00 (não muda)
+    turno 19:00, alarme 12:00 → ACK 02:00     cru: 14h00   |  ajustado: 7h00
+
+**2. MTTA por Severidade**, card novo — responde "o mais grave é atendido
+primeiro?", que o MTTA médio sozinho esconde. Barras HORIZONTAIS porque são até
+seis categorias de nome comprido ("Não classificado"): na horizontal o rótulo
+cabe sem girar texto. Cada barra usa a cor real da severidade, a mesma da rosca
+ao lado.
+
+**Layout:** os dois blocos por severidade na primeira linha, lado a lado (mesma
+chave, mesma paleta, comparam-se de relance), e **MTTA por Hora sozinho na
+segunda**, em largura inteira. Foi o que o Rafael propôs e é o certo: o gráfico
+por hora é série temporal com até 24 rótulos no eixo, e espremido em 2fr os
+rótulos colidem — problema que a Recorrência já teve e que está documentado no
+CLAUDE.md da suíte.
+
+**A refatoração que os dois pedidos tornaram inevitável.** Havia duas consultas
+quase idênticas agregando no banco (`queryMTTA` e `queryMttaTimeline`), e a
+terceira visão pediria uma terceira. Pior: o corte por turno depende do turno DE
+CADA ANALISTA — informação de tabela do MÓDULO, que pela regra da casa não pode
+entrar por JOIN na consulta do dado principal (se a tabela não existir no
+ambiente, o dado principal some inteiro).
+
+As duas viraram **uma consulta de linhas cruas** (`queryAckRows`) e três
+agregações em PHP. Ganhos: o ajuste por turno é aritmética, as três visões não
+podem divergir entre si, e o turno de cada analista vem em consulta separada —
+se ela falhar, perde-se o ajuste, não o relatório. O volume é o dos ACKs da
+janela do turno, não o histórico.
+
+Os quatro chamadores (tela, PDF, fechamento de turno e o próprio card) passaram a
+usar o mesmo caminho: dois cálculos diferentes dariam dois MTTAs para o mesmo
+turno.
+
+**Não validado no lab** — conferir com dados reais: uma equipe marcada como não
+24/7 e um alarme da madrugada reconhecido na entrada do turno; o card novo com
+severidades de nome longo; e o PDF, que precisa mostrar o mesmo MTTA da tela.
+
+### A refatoração do MTTA levou três métodos vizinhos junto (2026-09-04, v5.11.1)
+
+O Repasse inteiro parou com *"Não foi possível carregar os dados do relatório"*.
+Causa: ao remover `queryMTTA()` e `queryMttaTimeline()` na v5.11.0, o corte
+apagou também **`getUserRoleType()`, `resolveUserContext()` e
+`sameGroupExists()`** — 188 linhas que estavam entre a âncora usada e o método
+que se queria remover.
+
+Os três são a base de tudo (papel do usuário, filtro de permissão por host,
+segmentação por grupo), então a primeira chamada estourava e o `catch` do
+controller devolvia a mensagem genérica.
+
+**Por que passou pelo `php -l` e pelos testes:** apagar um método inteiro não é
+erro de sintaxe, e a suíte é de funções puras — não instancia o trait. O sintoma
+só aparece em tela.
+
+**A verificação que faltava, e que agora está no roteiro:** depois de remover ou
+mover método, comparar o INVENTÁRIO de métodos com o do commit anterior, e
+conferir que toda chamada `$this->…` das actions ainda resolve. É uma linha de
+`preg_match_all` e teria apontado o dedo em segundos:
+
+    métodos removidos: queryMTTA, queryMttaTimeline
+    métodos novos:     mttaAdjust, queryAckRows, queryAnalystShiftStart, queryMttaData
+
+**Lição sobre a ferramenta, não sobre o código:** o corte foi feito ancorando em
+`rindex('    /**')` para pegar o docblock do método — mas `rindex` anda para trás
+até o PRIMEIRO docblock que encontrar, que pode ser o de outro método muitos
+métodos acima. Recorte por âncora textual precisa ser verificado pelo que SOBROU,
+nunca só pelo que saiu.
+
+Restauração feita a partir do `git show HEAD:` — os três voltaram idênticos ao
+original, conferido linha a linha.
+
+**Nota de ambiente:** o `error_log()` do módulo não aparece no log deste pool
+(`catch_workers_output` comentado em `/etc/php-fpm.d/www.conf`), então a falha
+foi diagnosticada por inventário de métodos, não pelo log. Ligar essa opção
+continua sendo o que o CLAUDE.md recomenda para 500 sem rastro.
+
+### Ordem dos dois blocos por severidade (2026-09-04, v5.11.2)
+
+A "Distribuição por Severidade" tinha trocado de lado ao ganhar o vizinho novo,
+e o Rafael pediu para inverter. Os dois trocaram de posição: **MTTA por
+Severidade à esquerda, Distribuição à direita**.
+
+Além do hábito — que já bastaria —, a ordem nova cai melhor nas larguras: a
+linha é `3fr 2fr`, então as barras horizontais ficam na coluna larga (é a
+largura que decide se o rótulo "Não classificado" cabe sem girar texto) e a
+rosca volta para a coluna estreita, para a qual já vinha dimensionada.
+
+**Achado ao mexer:** a guarda de "Chart.js não carregou" listava só
+`chartMtta` e `chartSev` — o canvas novo ficaria em branco **sem mensagem
+nenhuma**, que é exatamente o que essa guarda existe para impedir. Corrigido, e
+a lista ganhou um comentário dizendo que precisa citar TODOS os canvas da tela.
+
+### Corte por turno: de onde sai a hora de início (2026-09-04, v5.11.3)
+
+O Rafael perguntou se equipe não declarada é tratada como 24/7 (é: o corte é
+opt-in) e reafirmou a regra do corte. Ao conferir, apareceu uma brecha em que o
+ajuste existia e **não se aplicava, em silêncio**.
+
+A hora de início vinha só do turno VINCULADO ao analista em Gerenciar Turnos.
+Sem vínculo, caía no início da janela do relatório — e quem estivesse vendo o
+Repasse em "24 Horas" tinha janela começando 00:00, ou seja, corte nenhum: o
+alarme das 00:01 continuava valendo 7 h.
+
+Agora a origem tem três degraus, do mais específico ao mais geral:
+
+1. **turno vinculado ao analista** — o mais específico;
+2. **turnos da EQUIPE dele** (`module_plantonistas_shifts.usrgrpid`), quando não
+   há vínculo individual: é a equipe que define a cobertura, o vínculo só diz em
+   qual turno a pessoa está;
+3. **início da janela do relatório**, se não houver turno cadastrado nenhum.
+
+E o cálculo passou a receber uma LISTA de horas, não uma só, porque a equipe
+costuma ter mais de um turno. Vale a ocorrência **mais recente, entre todos os
+turnos, até o momento do ACK**:
+
+    ACK 07:01, turnos 07:00 e 19:00  → 07:00 de hoje
+    ACK 02:00, turnos 07:00 e 19:00  → 19:00 de ONTEM
+
+Conferido:
+
+| caso | cru | ajustado |
+|---|---|---|
+| alarme 00:01, ACK 07:01, turno 07:00 | 7h00 | **0h01** |
+| o mesmo, equipe 24/7 | 7h00 | 7h00 |
+| sem vínculo, equipe com 07:00 e 19:00 | 7h00 | **0h01** |
+| turno 19:00, alarme 12:00, ACK 02:00 | 14h00 | 7h00 |
+| alarme 08:00 → ACK 08:05 (dentro do turno) | 0h05 | 0h05 |
+| nenhum turno cadastrado (janela 24h) | 7h00 | 7h00 |
+
+A dica da caixa e o texto do diálogo passaram a dizer isso com o exemplo — a
+pergunta do Rafael mostrou que "24/7" sozinho não explica o que muda no cálculo.
+
+### Por que 24/7 ligado NÃO considera o turno (2026-09-04)
+
+Confirmação de regra, sem mudança de código — o comportamento já era este, e o
+motivo agora está escrito onde alguém pode querer "melhorar" depois.
+
+Com **24/7 ligado**, o MTTA conta desde a abertura do alarme, mesmo que o ACK
+tenha saído no turno seguinte. O caso que define a regra, nas palavras do
+Rafael: alarme às 00:05, o plantonista da madrugada dorme e passa o turno sem
+reconhecer, quem entra às 07:00 dá o ACK às 07:06. **O atraso foi de 7h01 e tem
+de aparecer como 7h01** — havia gente escalada, e encurtar o número esconderia a
+falha de cobertura justamente de quem precisa vê-la.
+
+O expurgo da madrugada existe para o caso OPOSTO: equipe que, por contrato, não
+cobre aquele horário. Ali ninguém falhou, e cobrar as 7 h seria punir o analista
+por uma janela em que ele nem devia estar.
+
+Conferido no código real:
+
+    alarme 00:05 → ACK 07:06, turnos 07:00 e 19:00
+      24/7 ligado ..... 7h01  (= a conta crua, sem corte)
+      24/7 desligado ... 0h06
+
+Ou seja: **quem manda no expurgo é a flag, e só ela.** O turno do analista é
+consultado apenas quando ela está desligada.
+
+### `/usr/bin/php: No such file or directory` nas unidades systemd (2026-09-04, v5.11.4)
+
+O `--services` da v5.5.1 rodou em produção e os três serviços subiram quebrados:
+
+    plantonistas-presence.service: Failed to locate executable /usr/bin/php: No such file or directory
+    Failed to start plantonistas-presence.service
+
+**O caminho do PHP era um chute que virava literal.** O script resolvia o
+interpretador com
+
+    php_bin=$(command -v php || echo "/usr/bin/php")
+
+e `sudo` não usa o PATH de quem chamou: usa o `secure_path` do `/etc/sudoers`.
+Um PHP fora dele — Remi, SCL, `/usr/local/bin` — é invisível para o `command -v`,
+o `|| echo` entrega `/usr/bin/php` como se fosse fato, e esse texto é escrito
+no `ExecStart` da unidade. O systemd não tem como saber que aquilo é palpite:
+ele tenta executar e falha no boot, longe de quem instalou.
+
+Agora `detect_php_bin()` procura, nesta ordem: `PHP_BIN` (quem digitou manda),
+o PATH (`php`, `php8.4`…`php8.0`), `/usr/local/bin/php`, `/usr/bin/php`,
+`/usr/bin/php8.*`, `/opt/remi/php8*/root/usr/bin/php`,
+`/opt/rh/php*/root/usr/bin/php` e `/usr/local/php*/bin/php`. E
+`check_php_bin()` **valida antes de escrever**: o binário tem de existir,
+executar (`php -r 'exit(0);'`) e ter o driver PDO do banco resolvido. Sem isso o
+script recusa com o comando pronto (`PHP_BIN=/caminho ... --services`) em vez de
+gerar unidade que só falha depois.
+
+`--show-config` passou a imprimir o PHP e a versão, ao lado do banco — a
+descoberta inteira, sem escrever nada.
+
+**Quatro canos que morriam por SIGPIPE sob `set -o pipefail`**, achados ao
+verificar a correção. É a armadilha mais cara desta rodada, porque **testar uma
+vez não a revela**:
+
+    "$php_bin" -m 2>/dev/null | grep -qi "^${driver}$"
+
+`grep -q` sai no primeiro casamento; o `php` que ainda estiver escrevendo leva
+SIGPIPE e termina com 141; e o `pipefail` entrega esse 141 como status do cano
+INTEIRO, mesmo tendo o grep achado o que procurava. Quem termina primeiro é
+corrida: medido neste host, **85 falhas em 200 execuções** do mesmo comando. A
+primeira medição isolada passou limpa e quase enterrou o diagnóstico.
+
+O sintoma variava conforme o lugar:
+
+| onde | o que acontecia |
+|---|---|
+| `check_php_bin` | avisava "não tem a extensão pdo_pgsql" para um PHP que tem |
+| `find … \| head -1` (busca do `zabbix.conf.php`) | sob `set -e`, **matava o script calado** no meio da descoberta — e com mais de um candidato, que é o caso de produção |
+| `sed … \| head -1`, última linha de função | o status do cano vira o da função; o chamador morre |
+| o mesmo `sed` dentro do laço de `read_job_env_value` | idem |
+
+Correção igual nos quatro: a saída vai para uma VARIÁVEL e o recorte é feito
+nela (`${out%%$'\n'*}` para a primeira linha, `grep <<<` para a busca). Sem
+cano, sem corrida.
+
+**Regra que fica:** `| head`, `| grep -q` e qualquer consumidor que sai cedo são
+proibidos sob `set -o pipefail` — não porque falham, mas porque falham às vezes.
+Isso soma-se às duas armadilhas de `set -e` já registradas na v5.5.4
+(`[[ … ]] && cmd` como última linha de função, e `$(func)` carregando o
+`return 1`).
+
+**Verificado neste host**: dez execuções seguidas de `--show-config` sem um
+falso aviso sequer; `PHP_BIN` respeitado; `PHP_BIN` inválido recusado com a
+instrução certa; `sudo ./install.sh --show-config` achando o PHP; e o
+`--services` em modo seco gerando
+`ExecStart=/usr/bin/php /…/scripts/cron_presence_tracker.php` — caminho
+detectado, não literal.
+
+**Falta rodar em produção**: `sudo scripts/install.sh --show-config` (confere o
+que ele descobre) e depois `sudo scripts/install.sh --services`, que é
+idempotente e reescreve as unidades. Se o PHP de lá não estiver em lugar
+previsto, a mensagem agora diz qual variável usar.
+
+**Segunda rodada em produção: o `PHP_BIN` apontado era o do FPM.** A busca não
+achou CLI nenhuma em PRD (indício forte de que só há `php-fpm` instalado lá), o
+Rafael apontou `PHP_BIN=/usr/bin/php-fpm` e o script recusou — certo — dizendo a
+coisa errada: *"existe mas não executa. Confira permissão e dependências dele."*
+Não é permissão nem dependência: **é outro programa**. O binário do FPM atende o
+frontend por socket e não sabe executar script por `-r` nem por arquivo.
+
+Três coisas mudaram por causa disso:
+
+- **Distinguir CLI de FPM não pode depender do código de saída.** Neste host
+  `php-fpm -r` imprime o próprio modo de usar e sai com **64**; há build que faz
+  o mesmo saindo com **0** — e aí o binário errado passaria no teste. O que não
+  dá falso positivo é mandar o interpretador ECOAR uma sentinela
+  (`php_runs_code()`): só quem de fato executa `-r` devolve o texto. É o mesmo
+  raciocínio do resto do módulo — confiar no efeito observado, não no status.
+- **A busca valida cada candidato** com essa sentinela, e `php-fpm`/`php-cgi`
+  ficam fora da lista por nome. As duas redes são necessárias: um `/usr/bin/php`
+  que seja link para o FPM passa no `-x` e viraria unidade quebrada de novo.
+- **Cada falha tem diagnóstico próprio**, porque o conserto é diferente em cada
+  uma: `PHP_BIN` inexistente, `PHP_BIN` sem permissão, binário de FPM/CGI
+  (manda instalar `php-cli`), e binário que não executa (manda olhar permissão,
+  SELinux e `ldd`).
+
+Detalhe achado no caminho: o `--show-config` montava a linha da versão com
+`$("$php_bin" -r 'echo PHP_VERSION;')`, e com o FPM o **modo de usar inteiro ia
+parar dentro da linha "PHP: …"**, ocupando a tela no lugar do número. A versão
+agora só é impressa depois de o binário provar que executa código.
+
+**Nota de ambiente para PRD:** frontend RHEL/Amazon com `php-fpm` instalado
+**não tem CLI garantida** — `php-cli` é pacote separado, e o `php-fpm` não
+depende dele. Como os três coletores do módulo são CLI, esse host precisa do
+pacote. Não há como contornar pelo FPM.
+
+
+### `plantonistas-oncall.service` em failed: pendência não é erro (2026-09-04, v5.11.5)
+
+Com os coletores agendados, o serviço de escalonamento aparecia em `failed` no
+lab **e** em produção:
+
+    Job for plantonistas-oncall.service failed because the control process exited with error code
+
+O script não estava quebrado — o log mostra que ele fez exatamente o que devia:
+
+    Equipes com escala desde 2026-09-02: 1
+    WARN: [Zabbix administrators] grupo "Plantonista de Hoje - Zabbix administrators" não existe …
+    Resumo: 0 sincronizada(s), … 1 com erro.
+
+Ele encerrava com `exit(1)` porque contava aquilo como erro. **O defeito é de
+classificação**, e só apareceu quando o agendamento saiu do cron para o systemd:
+
+| | cron | systemd |
+|---|---|---|
+| `exit(1)` vira | linha num log / e-mail que ninguém lê | unidade em **`failed` permanente** |
+
+E "permanente" é o problema: a pendência se repete a cada ciclo até alguém criar
+o grupo, então a unidade fica vermelha para sempre — `systemctl restart` não
+apaga, porque não há nada de errado com a execução. Luz vermelha que ninguém
+consegue apagar é a que faz a PRÓXIMA falha, a de verdade, passar despercebida.
+
+**Os dois contadores agora são separados**, e a régua é "quem resolve isto?":
+
+- **ERRO** — falha de execução: banco fora, consulta quebrada, exceção ao
+  sincronizar. Pode ser passageira e justifica acordar alguém. **Sai com 1.**
+- **PENDÊNCIA** — estado que só uma pessoa resolve na UI do Zabbix: grupo de
+  destino que ainda não existe, `ONCALL_GROUP_PREFIX` apontando para o próprio
+  grupo da equipe, grupo de destino desabilitado, plantonista removido ou
+  desabilitado. O script já fez tudo que podia. **Sai com 0**, com a linha
+  `PENDENTE:` no log e a contagem no resumo.
+
+O resumo passou a trazer as duas (`… 1 pendente(s), 0 com erro.`) e, quando há
+pendência sem erro, sai uma linha final dizendo isso — `systemctl status` mostra
+as últimas linhas do log, e sem ela a unidade verde com aviso no meio pareceria
+contraditória.
+
+**O que NÃO foi feito, e por quê:** dava para calar a unidade com
+`SuccessExitStatus=1` no `.service`. Seria mais curto e esconderia junto toda
+falha real, que é o oposto do que a unidade existe para mostrar. Também não se
+criou o grupo automaticamente — continua valendo a decisão registrada em
+"Escala alimenta o escalonamento do Zabbix": criar grupo exigiria reservar
+`usrgrpid` na tabela `ids`, que foi o que causou o incidente do `role_rule`.
+
+**Verificado neste host:** senha de banco errada → `exit=1` e unidade em failed
+(como deve ser); configuração correta com o grupo faltando → `exit=0`,
+`Result=success` nas três unidades, e a pendência gritando no log.
+
+**A pendência em si continua de pé e é ação de quem opera** — em lab e em PRD.
+Para cada equipe que tem escala, criar em *Usuários → Grupos de utilizadores* um
+grupo vazio e **Habilitado** chamado `<ONCALL_GROUP_PREFIX> - <nome da equipe>`
+(aqui: `Plantonista de Hoje - Zabbix administrators`). Sem ele o escalonamento
+não tem para onde sincronizar, e é isso que a linha `PENDENTE:` diz.
+
+### A tabela `config` não existe mais, e o `@` pagou a conta (2026-09-04, v5.12.0)
+
+O `@` do Diário de Bordo não devolvia **ninguém** — nem com texto digitado, nem
+vazio. `_h` e `_hg` funcionavam, o que descartava JS, permissão e rota.
+
+**Causa:** `notBlockedUserClause()` faz
+
+    u.attempt_failed < (SELECT MIN(login_attempts) FROM config)
+
+e **`config` não existe neste Zabbix**. O lab roda **7.4** (`dbversion` 7040000),
+onde a configuração global deixou de ser uma linha da tabela `config` — com uma
+coluna por parâmetro — e virou a tabela **`settings`**, chave/valor, com o valor
+em `value_str` ou `value_int` conforme o tipo.
+
+Consultar tabela inexistente não devolve vazio: é **erro de SQL**. O `catch` da
+busca fazia o resto — `return []` com log — e a tela dizia, em silêncio, que não
+havia ninguém para mencionar. Só o ramo de usuário quebrava porque só ele
+consultava `config`.
+
+**O mesmo defeito estava, mudo, em `querySeverities()`**, que lê
+`severity_name_0..5`/`severity_color_0..5` da mesma tabela. Ali o fallback é o
+padrão de fábrica, então nada parecia errado — mas a v5.1.0 inteira ("cores e
+nomes REAIS de severidade") **nunca funcionou nesta instalação**: qualquer
+customização em Administração → Geral era descartada sem aviso.
+
+Agora `configTable()` sonda o `INFORMATION_SCHEMA` uma vez por requisição e
+`queryGlobalSettings()` lê dos dois formatos. `settings` ganha da `config`
+quando as duas existirem — num upgrade elas coexistem, e a que vale é a nova.
+
+Uma armadilha do formato novo: **`COALESCE(value_str, value_int)` não serve.**
+Parâmetro numérico tem `value_str` como string VAZIA, não NULL — o COALESCE
+devolveria `''` e o número sumiria. É o caso do `login_attempts` deste ambiente
+(`value_str` = `''`, `value_int` = 5). Quem decide é a coluna `type`.
+
+**Busca insensível a caixa E a acento** (a segunda queixa: "aceita escrita
+exatamente idêntica"). `searchHostgroups()` e `searchHosts()` comparavam com
+`LIKE` cru, sem `LOWER()` — no PostgreSQL isso exige acerto exato de maiúscula,
+e é a regra da casa que já estava escrita e foi furada. Pior no ambiente real:
+ninguém digita "Leão" para achar um colega, digita "leao".
+
+`SqlFn::foldText()`/`foldTerm()` dobram caixa e acento dos dois lados. O
+dobramento é `REPLACE` aninhado porque é o que existe NOS DOIS bancos:
+`TRANSLATE` é do PostgreSQL e `unaccent()` exige extensão instalada — nenhum dos
+dois pode virar pré-requisito de um módulo que se instala onde já há um Zabbix.
+
+**E o custo é proporcional ao termo, não fixo.** A primeira versão emitia os 24
+pares sempre: com 4 colunas × 5 termos, vinte pilhas de 24 `REPLACE` numa
+consulta só — sobre `hosts`, que neste ambiente é grande. Só entra o par cuja
+letra simples aparece no termo: para casar, o caractere dobrado da coluna tem de
+ser igual a algum do termo, então o acento de `ç` não muda nada em quem procura
+"leao". Medido:
+
+| termo | REPLACEs |
+|---|---|
+| `srv01` | **0** (volta a ser `LOWER()` puro) |
+| `jose` | 9 |
+| `leao` | 14 |
+
+As três buscas passaram a usar o mesmo motor (`buildSearchTerms()`): cada
+palavra é uma condição AND que precisa aparecer em alguma coluna, então a ordem
+digitada não importa e dá para misturar nome e login. Antes só a de usuário
+fazia isso. Curinga do LIKE digitado (`%`, `_`) passou a ser escapado com
+`ESCAPE '!'` — sem isso um `%` casava com o cadastro inteiro.
+
+`hstgrp.type = 0` entrou na busca de grupo: sem ele o `_hg` oferecia grupo de
+TEMPLATE, que não tem host nem evento.
+
+**A caixa flutuante.** A translucidez tinha causa concreta:
+
+    animation: rp-mention-in 0.14s ease-out;   /* fill-mode: none */
+    @keyframes rp-mention-in { from { opacity: 0 } to { opacity: 1 } }
+
+O ciclo de digitação é fechar → buscar → reabrir, e **cada reabertura reinicia a
+animação**: teclando depressa, a caixa vivia nos primeiros quadros — ou seja,
+permanentemente semitransparente e piscando. A opacidade saiu do `@keyframes`
+(sobrou o deslize, que já diz o que precisa) e o `fill-mode` virou `both`.
+
+Junto, o fundo ganhou **cor literal antes do token**
+(`background: #fff; background: var(--rp-white, #fff)`): a caixa flutua por cima
+do texto da nota, e se o token não resolver — folha não carregada, tema detectado
+tarde, CSS velho em cache — `var()` sem reserva vira `transparent` e a lista
+aparece por cima das letras. Vale para o cabeçalho e o rodapé, que são `sticky`.
+
+Estrutura e mouse: linha de ~40px (alvo de clique confortável), barra azul à
+esquerda no item ativo — o realce só por fundo é sutil demais no tema escuro para
+dizer onde o Enter vai agir — e rodapé anunciando **"clique para inserir"**. O
+clique sempre funcionou (`mousedown` com `preventDefault`, que é o certo num
+`contenteditable`: o `click` chega depois de o editor já ter perdido a seleção);
+faltava dizer. Entrou um `click` como segunda via para toque e leitor de tela.
+
+**Achado que fica de aviso:** este Zabbix renderiza `<body>` **sem classe e sem
+`data-theme`**. As 90 regras de tema escuro do módulo dependem inteiramente da
+detecção por luminância do `views/_theme.php`, que marca `data-theme` e
+`theme-dark-blue` por JS. Se ela falhar, tudo cai no tema claro — mais uma razão
+para a cor literal de reserva.
+
+**Verificado contra o banco real** (PostgreSQL 7.4): a busca de usuário devolve
+3 nomes onde antes devolvia zero; `settings` lida nos dois formatos; a consulta
+de grupo com `type = 0`; e o dobramento fazendo `leao`/`LEAO`/`leão`/`LEÃO`
+convergirem. Suíte: 48 (eram 45).
+
+**Falta ver na tela**, que é o que não dá para verificar daqui: o `@` listando,
+a aparência da caixa nos dois temas e o clique inserindo.
+
+### A lista de menções era translúcida por um `!important` do editor (2026-09-04, v5.12.1)
+
+A v5.12.0 tratou a animação (opacidade presa no primeiro quadro) e pôs cor
+literal de reserva no fundo — e a caixa **continuou translúcida**. Faltava a
+causa real, que estava a 300 linhas dali:
+
+```css
+[data-theme="dark-theme"] .rp-editor,
+… .rp-editor-btn,
+… .rp-mention-dropdown {
+    background: rgba(0, 0, 0, 0.15) !important;
+}
+```
+
+A lista tinha sido agrupada no seletor do **editor**. Para o editor o véu está
+certo: ele repousa sobre o card e o translúcido dá profundidade. Para a lista é
+defeito, porque ela **flutua sobre o texto que a pessoa está escrevendo** — 15%
+de preto deixa as letras da nota aparecendo por entre os nomes. E o
+`!important` vencia o `background` sólido declarado na própria classe, que é por
+que o conserto anterior não teve efeito nenhum.
+
+Lição, que vale além deste caso: **agrupar seletores por semelhança de aparência
+junta coisas que têm camadas diferentes.** Editor e lista pareciam "as duas
+superfícies do Diário de Bordo"; uma está NO documento e a outra POR CIMA dele,
+e essa diferença decide se transparência é acabamento ou defeito.
+
+**A lista passou a ter paleta própria, e é a única peça do módulo que não usa os
+tokens `--rp-*`.** Três razões, todas anotadas no CSS:
+
+1. **Opacidade não é negociável ali.** Toda cor do painel é chapada; não há
+   `rgba` no fundo de nada que fique sobre texto.
+2. **Não pode depender da detecção de tema.** Este Zabbix (7.4) renderiza
+   `<body>` sem classe e sem `data-theme` — quem decide claro/escuro é o JS de
+   luminância do `_theme.php`. Se ele demorar, falhar, ou o CSS vier de cache, a
+   caixa cairia no token claro: branco sobre branco. Com paleta literal ela
+   nasce certa antes de qualquer JS rodar.
+3. **Escura nos dois temas, por decisão** — foi o pedido ("mais elegante, não
+   tão clara"). É o padrão de paleta de comandos (Spotlight, Slack, VS Code): o
+   painel escuro se destaca do documento claro sem competir com ele, e no tema
+   escuro continua coerente.
+
+O resto é acabamento: sombra em duas camadas (a difusa eleva, a rente desenha o
+contorno que a borda sozinha perde em fundo escuro), contagem em pílula no
+cabeçalho, ícone em quadradinho que inverte no item ativo, segunda linha com o
+username em `ellipsis` (exige `min-width: 0` no filho flex, senão o corte nunca
+acontece), cabeçalho e rodapé `sticky` com fundo chapado, e `color-scheme: dark`
+para a barra de rolagem que o NAVEGADOR desenha não sair clara dentro do painel
+— mesma razão do `.rp-native-container` em Gerenciar Turnos.
+
+Teclado e ponteiro recebem o MESMO destaque (`:hover` e `.rp-mention-active` na
+mesma regra): navegar com um e clicar com o outro tem de parecer a mesma lista.
+
+Verificado no arquivo: chaves balanceadas, nenhuma outra regra mirando
+`.rp-mention-dropdown`/`.rp-mention-opt`, nenhum `!important` sobrando em
+`rp-mention`, e nenhum `rgba` no fundo do painel. **A aparência em si continua
+precisando de olho na tela** — é CSS, não entra na suíte.
+
+### Barra verde nos botões do editor, e protótipo de host na busca (2026-09-04, v5.12.2)
+
+**1. A barra verde e os ícones tortos foram defeito MEU, da v5.12.1.** Ao tirar
+a lista de menções do seletor do editor, apaguei o CORPO da regra e deixei a
+lista de seletores pendurada com vírgula:
+
+```css
+[data-theme="dark-theme"] .rp-editor,
+…
+body[class*="dark"] .rp-editor-btn,     ← vírgula, e nenhum { } depois
+/* comentário */
+.rp-closed-banner {                      ← o parser emendou AQUI
+    border-left: 4px solid var(--rp-green);
+    margin-bottom: 14px;
+}
+```
+
+O CSS não tem erro de sintaxe nisso — a vírgula só continua a lista, e o
+navegador aplicou a faixa de "turno fechado" ao editor e a cada botão da barra.
+Daí a barrinha verde **e** o desalinhamento: `border-left: 4px` empurra o
+conteúdo do botão para a direita.
+
+**A contagem de chaves não pega isso** (removi um `{}` inteiro, então ela
+continuou balanceada, e foi o que eu conferi na hora). O que pega é olhar o que
+ficou ANTES do trecho editado — mesma lição já registrada na v5.11.1: recorte
+por âncora textual se verifica pelo que SOBROU, não pelo que saiu.
+
+**2. Os ícones nunca estiveram centrados por regra própria.** `.rp-editor-btn`
+não declarava centragem nenhuma, e a folha do Zabbix estiliza `button` (0-0-1)
+com `padding: 0 11px` — 11px de cada lado dentro de um botão de 26px de largura.
+Sem a barra verde o desalinhamento era menor, mas continuava. Agora é
+`inline-flex` centrado, com `padding: 0` e `line-height: 1` explícitos, e o
+glifo com `width: 1em` para os quatro ícones ficarem no mesmo eixo (o Font
+Awesome varia a largura por glifo). Entrou junto a neutralização de
+`button:focus`, a mesma da v5.5.2 — senão o botão fica azul sólido depois do
+clique, com cara de "ligado".
+
+**3. `_h` listava protótipo de host.** A busca filtrava só `status IN (0,1)`, e
+protótipo passa nisso: neste ambiente eram **130 resultados possíveis para 4
+hosts reais**, com nomes que são a macro não resolvida
+(`{#AWS.EC2.INSTANCE.ID}`, `Task Replication {#DMS_TASK_ID}`).
+
+O que separa host de protótipo é `flags`, e a condição correta é a **lista
+positiva `IN (0, 4)`** — NORMAL e DISCOVERY_CREATED —, não uma exclusão de
+`flags = 2`. O bit de protótipo aparece sozinho **e somado ao 4**
+(`flags = 6`, PROTOTYPE_CREATED): aqui são 100 linhas com 2 e 24 com 6, e a
+exclusão simples deixaria essas 24 passarem. É a mesma condição que o
+`CHost.php` da API usa.
+
+**Grupo de host não precisa do mesmo tratamento**, e isso foi conferido em vez
+de suposto: protótipo de grupo mora em `group_prototype`, não em `hstgrp` —
+nenhum nome de grupo neste banco contém macro. Os `flags = 4` de `hstgrp` são
+grupos DESCOBERTOS, que são reais e devem aparecer.
+
+**4. Achado ao investigar, com a hipótese errada pelo caminho.** Supus que
+protótipos também inflassem a cota de 500 hosts do `host_filter` e escrevi o
+JOIN com essa justificativa. A medição desmentiu: **zero** protótipos em
+`hosts_groups` (411 ids com e sem o filtro de flags). Quem infla ali é
+**TEMPLATE** — template é linha de `hosts` com `status = 3` e está em
+`hosts_groups` como qualquer host. Com `status IN (0,1)` a lista cai de **411
+para 4**. O filtro ficou, com a condição certa e a justificativa medida:
+estourar a cota troca a lista literal — o caminho rodado em produção — pela
+subconsulta, sem que houvesse host de verdade para justificar.
+
+Fica o registro do erro de método: a primeira versão do comentário afirmava um
+número que os dados contradiziam. Comentário que explica o porquê vale tanto
+quanto o número que ele cita.
+
 ### Backlog conhecido
 
 - ~~Salvar vínculo analista→turno em massa~~ — **resolvido em 2026-08-19**:
@@ -2350,6 +4330,22 @@ dependem de `ZbxDb $db` e não entram na suíte de testes puros. Ver Backlog.
   dado principal desaparece inteiro. Query separada + fallback na UI.
 - Migrações: sempre idempotentes dentro do `migrateSchema()`; nunca DROP de
   tabela com dados; RENAME/ALTER guardados por INFORMATION_SCHEMA.
+- Action AJAX (layout `layout.javascript`) que imprime JSON **termina com
+  `die()`** — em geral `$db->close(); die();`. Sem isso o
+  `ZBase::processResponseFinal()` encontra a action sem `setResponse()`, lança
+  "Unexpected response for action …" DEPOIS do JSON impresso, e o corpo vira
+  JSON + HTML: o `r.json()` do navegador estoura e a tela mostra "Erro de
+  conexão" sem nada no log do PHP (ver a entrada da v5.10.4).
+- Gráfico do Chart.js: cor e fonte não vêm de CSS (canvas não herda) — fonte e
+  tinta saem de `Chart.defaults` + `TurnosReportBase::graphTheme()`, que lê a
+  tabela `graph_theme` do tema ativo. E `generateLabels()` customizado tem de
+  devolver `fontColor` em cada item: a legenda pinta com a cor DO ITEM, e sem
+  ela o texto sai preto sem erro nenhum (ver a entrada da v5.4.4).
+- Script de shell do módulo roda com `set -euo pipefail`, e ali **cano com
+  consumidor que sai cedo é proibido** (`| head`, `| grep -q`): quem escreve
+  antes leva SIGPIPE e o `pipefail` reprova o cano inteiro — às vezes, por
+  corrida, que é o que torna o defeito caro (ver a entrada da v5.11.4).
+  Capture em variável e recorte nela.
 - Diff mínimo: em refactors, não renomear classes/arquivos sem necessidade.
 - Commits em PT-BR, prefixo `fix:`/`feat:`/`docs:`, corpo explicando o porquê.
 

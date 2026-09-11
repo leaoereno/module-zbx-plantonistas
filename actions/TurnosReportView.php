@@ -29,6 +29,10 @@ class TurnosReportView extends CController {
             'date'  => 'string',
             'shift' => 'string',
             'limit' => 'string',
+            // Filtros do Super Admin (ver doAction()): grupos de host, como
+            // lista de ids separada por vírgula, e tags, como JSON.
+            'groupids' => 'string',
+            'tags'     => 'string',
         ]);
         if (!$ret) {
             $this->setResponse(new CControllerResponseData(['error' => 'Parâmetros inválidos.']));
@@ -45,6 +49,8 @@ class TurnosReportView extends CController {
         $shiftRaw = $this->getInput('shift', '24h');
         $limitStr = $this->getInput('limit', '5');
         $limit    = $limitStr === 'all' ? 0 : (int)$limitStr;
+        $groupids = array_map('intval', array_filter(explode(',', (string)$this->getInput('groupids', ''))));
+        $tagsRaw  = (string)$this->getInput('tags', '');
 
         $current_user     = CWebUser::$data['username']  ?? 'admin';
         $current_userid   = (int)(CWebUser::$data['userid'] ?? 0);
@@ -85,11 +91,16 @@ class TurnosReportView extends CController {
             'top_triggers' => [], 'totals' => ['total'=>0,'critical'=>0,'average'=>0,'low'=>0],
             'presence' => [], 'notes' => [], 'mtta_timeline' => [],
             'sev_dist' => [], 'calendar' => [], 'shift_analysts' => [], 'limit' => $limitStr,
+            'mtta_severity' => [],
             'pending_mentions' => [],
             'mention_history'  => [],
             'in_progress' => [], 'resolved' => [], 'actions' => [],
             'truncated' => [], 'alert_limit' => $this->alertRowLimit(),
         ];
+        $groupSel       = [];
+        $tags           = [];
+        $mttaLimites    = ['default' => ['good' => 900, 'ok' => 3600], 'groups' => []];
+        $mttaGrupoNomes = [];
         $ctx_vazio = [
             'is_superadmin' => false, 'host_filter' => '', 'display_groups' => [],
             'group_ids' => [], 'role_type' => 1, 'userid' => $current_userid,
@@ -110,6 +121,33 @@ class TurnosReportView extends CController {
                 $isSuperadmin = $ctx['is_superadmin'];
                 $roleType     = $ctx['role_type'];
 
+                // Filtro por grupo de host — Super Admin apenas, como pedido.
+                //
+                // A checagem é AQUI, no servidor, e não só escondendo o seletor
+                // na tela: a action é alcançável pela URL, e "não mostrei o
+                // campo" nunca foi controle de acesso (é a mesma regra que vale
+                // para os itens de menu deste módulo).
+                //
+                // Composição e não substituição: o recorte é CONCATENADO ao
+                // filtro de permissão. Não existe combinação de parâmetros que
+                // faça este filtro mostrar host que o usuário não veria.
+                if ($isSuperadmin) {
+                    // Resolve escolhidos + SUBGRUPOS. O que a tela mostra como
+                    // selecionado continua sendo só o que a pessoa escolheu; o
+                    // que vai para o SQL é a árvore inteira abaixo dele.
+                    $grupos     = $this->resolveGroupFilter($groupids);
+                    $groupSel   = $grupos['selected'];
+                    $groupids   = array_map(fn($g) => (int)$g['id'], $groupSel);
+                    $tags       = $this->parseTagFilter($tagsRaw);
+                }
+                else {
+                    $grupos   = ['selected' => [], 'expanded' => []];
+                    $groupSel = [];
+                    $groupids = [];
+                    $tags     = [];
+                }
+                $hostFilter .= $this->groupFilter($grupos['expanded']);
+
                 $shiftOptionsFull = $this->queryShiftOptions($db, $ctx);
                 $shiftOptions     = $shiftOptionsFull['options'];
                 $shift            = $this->normalizeShift($shiftRaw, $shiftOptions);
@@ -118,15 +156,21 @@ class TurnosReportView extends CController {
 
                 $severities = $this->querySeverities($db);
 
-                $mtta = $this->queryMTTA($db, $ts_start, $ts_end, $hostFilter);
+                // Uma consulta alimenta as TRÊS visões de MTTA (por analista,
+                // por severidade e por hora) e já aplica o corte por turno das
+                // equipes que não são 24/7 — ver queryMttaData().
+                $mttaLimites = $this->mttaThresholds($db);
+                $mttaData = $this->queryMttaData($db, $ts_start, $ts_end, $hostFilter, $tags,
+                                                 $roleType, $current_userid, $mttaLimites);
+                $mtta = $mttaData['analysts'];
                 $mtta = $this->restrictMttaByRole($mtta, $roleType, $current_userid);
 
                 $shiftAnalysts = ctype_digit($shift) ? $this->queryShiftAnalysts($db, (int)$shift) : [];
 
-                $inherited   = $this->queryInheritedAlerts($db, $ts_start, $hostFilter);
-                $unacked     = $this->queryUnackedAlerts($db, $ts_start, $ts_end, $hostFilter);
-                $in_progress = $this->queryInProgressAlerts($db, $ts_start, $ts_end, $hostFilter);
-                $resolved    = $this->queryResolvedAlerts($db, $ts_start, $ts_end, $hostFilter);
+                $inherited   = $this->queryInheritedAlerts($db, $ts_start, $hostFilter, $tags);
+                $unacked     = $this->queryUnackedAlerts($db, $ts_start, $ts_end, $hostFilter, $tags);
+                $in_progress = $this->queryInProgressAlerts($db, $ts_start, $ts_end, $hostFilter, $tags);
+                $resolved    = $this->queryResolvedAlerts($db, $ts_start, $ts_end, $hostFilter, $tags);
 
                 // Corte no teto ANTES de montar as ações: a linha-sonda a mais não
                 // deve virar consulta de ação nem entrar na contagem do KPI (ver
@@ -147,6 +191,14 @@ class TurnosReportView extends CController {
                     array_column($resolved, 'eventid')
                 ));
 
+                // Cada linha de MTTA leva a meta que vale para ELA — a da equipe
+                // do analista, quando houver (ver attachMttaLimits()). Tem de
+                // ser antes de montar o $data_pack, que é quem carrega $mtta.
+                $mtta           = $this->attachMttaLimits($db, $mtta, $mttaLimites);
+                $mttaGrupoNomes = $this->queryUserGroupNames($db, array_keys($mttaLimites['groups']));
+
+                $presence = $this->queryPresence($db, $ts_start, $ts_end, $current_userid, $isSuperadmin);
+
                 $data_pack = [
                     'mtta'           => $mtta,
                     'inherited'      => $inherited,
@@ -158,19 +210,22 @@ class TurnosReportView extends CController {
                     // para escrever "50+" no KPI em vez de mentir "50".
                     'truncated'      => $truncated,
                     'alert_limit'    => $this->alertRowLimit(),
-                    'top_hosts'      => $this->queryTopHosts($db, $ts_start, $ts_end, $limit, $hostFilter),
-                    'top_triggers'   => $this->queryTopTriggers($db, $ts_start, $ts_end, $limit, $hostFilter),
-                    'totals'         => $this->queryEventTotals($db, $ts_start, $ts_end, $hostFilter),
-                    'presence'       => $this->queryPresence($db, $ts_start, $ts_end, $current_userid, $isSuperadmin),
+                    'top_hosts'      => $this->queryTopHosts($db, $ts_start, $ts_end, $limit, $hostFilter, $tags),
+                    'top_triggers'   => $this->queryTopTriggers($db, $ts_start, $ts_end, $limit, $hostFilter, $tags),
+                    'totals'         => $this->queryEventTotals($db, $ts_start, $ts_end, $hostFilter, $tags),
+                    'presence'       => $presence,
+                    // Só quando a lista veio vazia: é o único caso em que a
+                    // tela precisa saber se existe coleta neste ambiente.
+                    'presence_last'  => $presence ? null : $this->queryLastPresence($db),
                     'notes'          => $this->queryNotes($db, $date, $shift, $current_userid, $isSuperadmin),
                     // O papel vai junto: com User (1) o gráfico por hora tem de
                     // ficar restrito aos ACKs do próprio, igual ao KPI e à
                     // tabela logo acima — senão a tela se contradiz e mostra o
                     // tempo de resposta dos colegas a quem não pode vê-lo.
-                    'mtta_timeline'  => $this->queryMttaTimeline($db, $ts_start, $ts_end, $hostFilter,
-                                                                 $roleType, $current_userid),
-                    'sev_dist'       => $this->querySeverityDistribution($db, $ts_start, $ts_end, $hostFilter),
-                    'calendar'       => $this->queryCalendarHeatmap($db, $hostFilter),
+                    'mtta_timeline'  => $mttaData['hours'],
+                    'mtta_severity'  => $mttaData['severity'],
+                    'sev_dist'       => $this->querySeverityDistribution($db, $ts_start, $ts_end, $hostFilter, $tags),
+                    'calendar'       => $this->queryCalendarHeatmap($db, $hostFilter, $tags),
                     'shift_analysts' => $shiftAnalysts,
                     'limit'          => $limitStr,
                     // Menções [user] pendentes pro banner de notificação — busca
@@ -235,6 +290,33 @@ class TurnosReportView extends CController {
             // Nomes/cores reais de severidade (Administração > Geral) — ver
             // TurnosReportBase::querySeverities().
             'severities'        => $severities,
+            // Filtros do Super Admin — ver doAction().
+            //
+            // `can_filter` decide se a tela mostra o botão: é o CONTROLLER que
+            // sabe quem pode, e a view só reage. `group_selected` vai no
+            // formato que o multiselect nativo espera ([{id, name}]), montado
+            // aqui porque nome de grupo é dado, não enfeite de view.
+            // $ctx (e não $isSuperadmin): a variável local só existe no ramo
+            // em que o banco abriu, e este array é montado nos dois.
+            'can_filter'        => !empty($ctx['is_superadmin']),
+            'group_selected'    => $groupSel,
+            'groupids'          => $groupids,
+            'tags'              => $tags ?? [],
+            'tag_operators'     => $this->tagOperators(),
+            'tag_operator_default' => $this->tagOperatorDefault(),
+            // Limites do selo de Performance (MTTA por Analista), em segundos.
+            // Vêm do banco, editáveis por Super Admin — ver mttaThresholds().
+            'mtta_thresholds'   => $mttaLimites ?? ['default' => ['good' => 900, 'ok' => 3600], 'groups' => []],
+            // Nome das equipes que têm meta própria, para a tela dizer de onde
+            // veio o limite de cada linha e para o diálogo listar o que existe.
+            'mtta_group_names'  => $mttaGrupoNomes ?? [],
+            'csrf_settings_save' => \CCsrfTokenHelper::get('plantonistas.settings.save'),
+            // Cor de texto e de grade dos gráficos, lida do tema ativo do
+            // Zabbix (tabela `graph_theme`) — ver TurnosReportBase::graphTheme().
+            // Vem do controller e não do JS porque o tema do usuário é dado do
+            // PERFIL: adivinhar pela luminância do fundo acerta o "claro ou
+            // escuro" mas não a cor exata que os gráficos nativos usam.
+            'graph_theme'       => $this->graphTheme(),
             // Token CSRF por action (em módulo o Zabbix confere contra a
             // action completa, não contra o prefixo — ver CLAUDE.md).
             'csrf_notes_save'    => \CCsrfTokenHelper::get('plantonistas.report.notes.save'),

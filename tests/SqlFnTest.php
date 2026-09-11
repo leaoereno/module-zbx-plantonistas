@@ -68,14 +68,30 @@ test_case('upsert: múltiplas colunas mantêm a ordem', function () {
     );
 });
 
-test_case('now(): PostgreSQL usa LOCALTIMESTAMP (NOW() do PG tem fuso da sessão)', function () {
+test_case('now(): literal do relógio do PHP, não do banco', function () {
+    // Era LOCALTIMESTAMP (PG) / NOW() (MySQL) — o relógio do BANCO. Num
+    // ambiente com o PostgreSQL em UTC e a aplicação em America/Sao_Paulo, o
+    // "online nos últimos 15 min" comparava 12:42 com 15:34 e dava sempre
+    // falso. Ver o docblock do método.
     $GLOBALS['DB']['TYPE'] = 'POSTGRESQL';
-    assert_same('LOCALTIMESTAMP', SqlFn::now());
+    $agora = SqlFn::now();
+    assert_true((bool) preg_match("/^'\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}'$/", $agora), $agora);
+    assert_true(abs(strtotime(trim($agora, "'")) - time()) <= 2, $agora);
 });
 
-test_case('now(): MySQL usa NOW()', function () {
+test_case('now(): mesmo valor nos dois bancos (o literal não tem dialeto)', function () {
+    $GLOBALS['DB']['TYPE'] = 'POSTGRESQL';
+    $pg = SqlFn::now();
     $GLOBALS['DB']['TYPE'] = 'MYSQL';
-    assert_same('NOW()', SqlFn::now());
+    assert_same($pg, SqlFn::now());
+});
+
+test_case('nowMinusMinutes(): N minutos antes do now(), no mesmo relógio', function () {
+    $GLOBALS['DB']['TYPE'] = 'POSTGRESQL';
+    $limite = SqlFn::nowMinusMinutes(15);
+    assert_true((bool) preg_match("/^'\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}'$/", $limite), $limite);
+    $delta = time() - strtotime(trim($limite, "'"));
+    assert_true($delta >= 15 * 60 - 2 && $delta <= 15 * 60 + 2, 'delta=' . $delta);
 });
 
 test_case('tryLock: PostgreSQL embrulha em CASE WHEN (booleano t/f não é (int) direto)', function () {
@@ -90,6 +106,48 @@ test_case('tryLock: MySQL usa GET_LOCK com timeout 0 (sem espera)', function () 
     $sql = SqlFn::tryLock('fechar-turno:1:2026-08-24');
     assert_true(strpos($sql, 'GET_LOCK(') !== false, $sql);
     assert_true(strpos($sql, ', 0)') !== false, 'timeout devia ser 0 (sem espera): ' . $sql);
+});
+
+test_case('foldTerm() dobra caixa e acento e escapa curinga do LIKE', function () {
+    // As quatro grafias de "leão" têm de convergir para a mesma chave — é isso
+    // que faz quem digita "leao" achar quem está cadastrado como "Leão".
+    foreach (['leao', 'LEAO', 'leão', 'LEÃO'] as $grafia) {
+        assert_same('leao', SqlFn::foldTerm($grafia), 'grafia: ' . $grafia);
+    }
+
+    assert_same('jose', SqlFn::foldTerm('José'));
+    assert_same('conceicao', SqlFn::foldTerm('Conceição'));
+
+    // Curingas neutralizados: sem isso, digitar "%" casaria com o cadastro
+    // inteiro e "_" com qualquer caractere.
+    assert_same('100!%', SqlFn::foldTerm('100%'));
+    assert_same('a!_b', SqlFn::foldTerm('a_b'));
+    // O próprio caractere de escape é escapado PRIMEIRO; invertida a ordem,
+    // ele escaparia a barra que acabou de ser inserida.
+    assert_same('x!!y', SqlFn::foldTerm('x!y'));
+});
+
+test_case('foldText() só emite o REPLACE que o termo precisa', function () {
+    $GLOBALS['DB']['TYPE'] = 'POSTGRESQL';
+
+    // Termo sem letra acentuável: nenhum REPLACE, comparação volta ao LOWER().
+    $sql = SqlFn::foldText('h.name', 'srv01');
+    assert_same(0, substr_count($sql, 'REPLACE('), $sql);
+    assert_true(strpos($sql, 'LOWER(h.name)') !== false, $sql);
+
+    // "leao" precisa dobrar acento de a, e, o — e não o de ç/ü/ñ.
+    $sql = SqlFn::foldText('u.name', 'leao');
+    assert_true(substr_count($sql, 'REPLACE(') > 0, 'devia dobrar algo');
+    assert_true(strpos($sql, "'ã'") !== false, 'faltou o par de "a": ' . $sql);
+    assert_true(strpos($sql, "'ç'") === false, 'dobrou "ç" sem o termo pedir: ' . $sql);
+
+    // Sem termo, dobra tudo — é o contrato de quem chama sem otimizar.
+    $sql = SqlFn::foldText('u.name');
+    assert_true(strpos($sql, "'ç'") !== false, $sql);
+});
+
+test_case('likeEscape() acompanha todo LIKE alimentado por foldTerm()', function () {
+    assert_true(strpos(SqlFn::likeEscape(), "ESCAPE '!'") !== false);
 });
 
 unset($GLOBALS['DB']);

@@ -253,7 +253,10 @@ include __DIR__ . '/_theme.php';
         function showStatus(msg, ok) {
             if (!status) return;
             status.textContent = msg;
-            status.style.color = ok ? '#2e7d32' : '#c62828';
+            // Classe, não `style.color`: a cor é do tema (ver .rp-status-* em
+            // turnos.report.css) e hex embutido aqui não sabe do tema escuro.
+            status.classList.toggle('rp-status-ok', !!ok);
+            status.classList.toggle('rp-status-err', !ok);
             setTimeout(() => { status.textContent = ''; }, 4000);
         }
 
@@ -367,11 +370,16 @@ include __DIR__ . '/_theme.php';
                     return post('plantonistas.usershift.save', { userid: userid, shift_id: shiftId }).then(j => {
                         if (uStatus) {
                             uStatus.textContent = j.message || (j.success ? 'Salvo.' : 'Erro.');
-                            uStatus.style.color = j.success ? '#2e7d32' : '#c62828';
+                            uStatus.classList.toggle('rp-status-ok', !!j.success);
+                            uStatus.classList.toggle('rp-status-err', !j.success);
                             setTimeout(() => { uStatus.textContent = ''; }, 4000);
                         }
                     }).catch(() => {
-                        if (uStatus) { uStatus.textContent = 'Erro de conexão.'; uStatus.style.color = '#c62828'; }
+                        if (uStatus) {
+                            uStatus.textContent = 'Erro de conexão.';
+                            uStatus.classList.remove('rp-status-ok');
+                            uStatus.classList.add('rp-status-err');
+                        }
                     });
                 });
             });
@@ -470,7 +478,8 @@ include __DIR__ . '/_theme.php';
                         uStatus.textContent = falhas.length === 0
                             ? ok + ' vínculo(s) salvo(s).'
                             : ok + ' salvo(s); falhou em: ' + falhas.join(', ');
-                        uStatus.style.color = falhas.length === 0 ? '#2e7d32' : '#c62828';
+                        uStatus.classList.toggle('rp-status-ok', falhas.length === 0);
+                        uStatus.classList.toggle('rp-status-err', falhas.length !== 0);
                         // Sem timeout quando houve falha: a lista de quem não
                         // salvou é justamente o que a pessoa precisa ler.
                         if (falhas.length === 0) {

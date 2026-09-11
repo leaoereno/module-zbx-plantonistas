@@ -105,7 +105,8 @@ class TurnosReportClose extends CController {
             [$ts_start, $ts_end] = $this->getShiftBounds($db, $date, $shift);
 
             $mtta = $this->restrictMttaByRole(
-                $this->queryMTTA($db, $ts_start, $ts_end, $hostFilter),
+                $this->queryMttaData($db, $ts_start, $ts_end, $hostFilter, [], 3, 0,
+                                     $this->mttaThresholds($db))['analysts'],
                 $roleType,
                 $userid
             );

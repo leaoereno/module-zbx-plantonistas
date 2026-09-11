@@ -1,0 +1,54 @@
+/*
+ * Ícone da aba SRE no menu lateral.
+ *
+ * ARQUIVO COMPARTILHADO: cópia idêntica em module-zbx-plantonistas, module-zbx-recorrencia-alertas
+ * e module-zbx-sre-cloudcost. Os três são repositórios independentes, e o CSS de um módulo só é
+ * servido enquanto AQUELE módulo está habilitado — com uma cópia só, desligar o dono deixaria a aba
+ * sem a arte. Ao mexer aqui, mexer nas três (mesma regra do SreMenu.php).
+ *
+ * O setIcon() do Zabbix só acrescenta uma classe CSS ao <a> — quem desenha o ícone é a fonte
+ * zabbix-icons, via [class^="zi-"]::before. Para usar arte própria, trocamos esse ::before por
+ * uma imagem. Decisões, todas com um porquê:
+ *
+ * 1. A imagem é data URI, não arquivo separado. O F5 de produção bloqueia .js estático, e um
+ *    arquivo a menos é uma chance a menos de o mesmo acontecer com a arte. Também evita um
+ *    request extra em TODA página do Zabbix - este CSS é global (ver item 3).
+ *
+ * 2. mask + currentColor, não background-image. O menu pinta o ícone de #8cb2ca em repouso e
+ *    de branco no hover, e troca de cor nos 4 temas. Uma imagem colorida ficaria fixa e com
+ *    cara de adesivo; a máscara herda a cor do tema de graça, inclusive no item selecionado.
+ *
+ * 3. O <a> leva DUAS classes ('zi-services sre-menu-icon'). Se este arquivo não carregar - F5,
+ *    dono errado depois de um git pull como root, cache -, o glifo zi-services aparece no
+ *    lugar. Sem isso a aba ficaria sem ícone nenhum, sem erro e sem log, que é exatamente o
+ *    modo de falha do zi-bar-chart que existia antes.
+ *
+ * 4. A CAIXA de 24px casa com o font-size: 24px que o tema aplica ao glifo nativo
+ *    (.menu-main [class^="zi-"]::before) - ela nunca foi o problema. O que fazia a aba parecer
+ *    "minguada" era o DESENHO dentro dela: a versão anterior era um semicírculo de raio 8 que
+ *    pintava 75% da largura mas só 42% da ALTURA, ficando com metade da massa visual dos
+ *    vizinhos. O mostrador agora é um arco de 270° (raio 8.8, centro deslocado para y=13, que
+ *    é o que equilibra o vão de baixo) e ocupa 82% x 71% da caixa.
+ *
+ * 5. As margens verticais negativas NÃO são ajuste fino: o glifo nativo é texto com
+ *    line-height: 0, então contribui ZERO para a altura da linha. Um inline-block de 24px
+ *    contribui os 24 inteiros, e a linha da aba SRE ficava ~7px mais alta que as outras
+ *    (12px de padding + 16.8px de line-height herdado do body é o que as demais medem). Com
+ *    -12px em cima e embaixo a caixa de margem zera, e o vertical-align: middle continua
+ *    alinhando pelo MESMO ponto médio - a posição na tela não muda, só a altura da linha.
+ *
+ * Seletor propositalmente mais específico (0,2,2) que o .zi-services:before do tema (0,1,1):
+ * empatar e depender da ordem de carga dos arquivos seria decidir isso no acaso.
+ */
+.menu-main a.sre-menu-icon::before {
+	content: "";
+	display: inline-block;
+	width: 24px;
+	height: 24px;
+	margin-top: -12px;
+	margin-bottom: -12px;
+	vertical-align: middle;
+	background-color: currentColor;
+	-webkit-mask: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22%23000%22%20stroke-width%3D%222%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22M5.78%2019.22A8.8%208.8%200%201%201%2018.22%2019.22%22%2F%3E%3Cpath%20d%3D%22M12%2013%2016.4%208.6%22%2F%3E%3Ccircle%20cx%3D%2212%22%20cy%3D%2213%22%20r%3D%221.9%22%20fill%3D%22%23000%22%20stroke%3D%22none%22%2F%3E%3C%2Fsvg%3E") no-repeat center / 24px 24px;
+	mask: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22%23000%22%20stroke-width%3D%222%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22M5.78%2019.22A8.8%208.8%200%201%201%2018.22%2019.22%22%2F%3E%3Cpath%20d%3D%22M12%2013%2016.4%208.6%22%2F%3E%3Ccircle%20cx%3D%2212%22%20cy%3D%2213%22%20r%3D%221.9%22%20fill%3D%22%23000%22%20stroke%3D%22none%22%2F%3E%3C%2Fsvg%3E") no-repeat center / 24px 24px;
+}
