@@ -10,6 +10,32 @@ de `git pull` + restart do php-fpm.
 
 ---
 
+## 5.13.0
+
+Telas administrativas restritas a Super Admin.
+
+> Salto de numeração: as versões 5.5 a 5.12 vieram do PR #11 (`sansaoipb`),
+> que subiu o `manifest.json` para 5.12.2 sem entradas aqui. O histórico
+> daquelas mudanças está nos commits do PR, não neste arquivo.
+
+| O quê | Precisa de configuração? |
+|---|---|
+| **Escala, Histórico, Telefones e Gerenciar Turnos passam a ser exclusivas de Super Admin (3).** Eram Admin (2)+ desde a restrição de agosto, mas quase todo o NOC é Admin no Zabbix — na prática as quatro telas estavam abertas para o turno inteiro. Fecha no menu **e** no `checkPermissions()` de cada action, inclusive os AJAX de turno (`shifts.save`, `shifts.delete`, `usershift.save`), que a URL direta alcançava | Não |
+| **Botão "Gerenciar Escala" (Visão Geral) e atalho "Gerenciar Turnos" (cabeçalho do Repasse)** só aparecem para Super Admin. Sem isso o Admin continuaria vendo o botão e batendo em "Acesso negado" | Não |
+
+**O que não mudou.** Visão Geral, Repasse Plantão e Repasses
+(abertos/fechados) seguem em User (1)+, com a mesma segmentação por grupo de
+sempre. Dentro do Repasse, o MTTA de todos os analistas e o refechamento de
+turno continuam em Admin (2)+ — são regras da tela, não do menu. E **o
+telefone do plantonista do dia continua na Visão Geral**, no hover, para
+qualquer usuário: perder a tela Telefones não tira de ninguém o número para
+ligar de madrugada.
+
+**Impacto na atualização:** quem era Admin (2) e usava Escala ou Telefones
+perde o acesso no `git pull` + restart do php-fpm. Se alguém precisa manter a
+edição da escala, a saída é o papel de Super Admin no Zabbix — não há
+configuração no módulo para isso.
+
 ## 5.4.1
 
 Correções de exibição e de escopo, achadas numa auditoria dos números da tela.

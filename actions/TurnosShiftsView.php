@@ -42,8 +42,8 @@ class TurnosShiftsView extends CController {
         $roleType = $this->getUserRoleType($db, $userid);
         $db->close();
 
-        // Somente Admin (2) ou Super Admin (3) gerenciam turnos.
-        return $roleType >= 2;
+        // Somente Super Admin (3) gerencia turnos.
+        return $roleType >= 3;
     }
 
     protected function doAction(): void {

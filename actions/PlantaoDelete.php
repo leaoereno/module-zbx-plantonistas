@@ -22,9 +22,10 @@ class PlantaoDelete extends CController {
     }
 
     public function checkPermissions(): bool {
-        // Escala / Histórico / Telefones: somente Admin (2) e Super Admin (3).
-        // Usuário comum (1) só tem Visão Geral e Repasse Plantão.
-        return ($this->getUserType() >= USER_TYPE_ZABBIX_ADMIN);
+        // Escala / Histórico / Telefones: somente Super Admin (3).
+        // User (1) e Admin (2) só têm Visão Geral, Repasse Plantão e
+        // Repasses (abertos/fechados).
+        return ($this->getUserType() >= USER_TYPE_SUPER_ADMIN);
     }
 
     protected function doAction(): void {

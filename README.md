@@ -131,16 +131,18 @@ renderizado, não pelo nome do arquivo de tema).
 | Item de menu | Action | Perfil | O que resolve |
 |---|---|---|---|
 | **Visão Geral** | `plantonistas.overview` | User | Quem está de plantão agora, por grupo e por turno, com telefone no hover. Distingue cobertura total, parcial e ausente |
-| **Escala** | `plantonistas.list` | Admin | Calendário mensal. Grupo com turnos cadastrados escala um titular por turno; grupo sem turnos, titular e reserva. Import/export CSV e XLSX |
-| **Histórico** | `plantonistas.history` | Admin | Quem mudou a escala, o quê e quando — com o nome do turno congelado na época da alteração |
-| **Telefones** | `plantonistas.phones.list` | Admin | Contato por usuário, com máscara brasileira. Importação em massa pelo mesmo CSV que a exportação gera |
+| **Escala** | `plantonistas.list` | Super Admin | Calendário mensal. Grupo com turnos cadastrados escala um titular por turno; grupo sem turnos, titular e reserva. Import/export CSV e XLSX |
+| **Histórico** | `plantonistas.history` | Super Admin | Quem mudou a escala, o quê e quando — com o nome do turno congelado na época da alteração |
+| **Telefones** | `plantonistas.phones.list` | Super Admin | Contato por usuário, com máscara brasileira. Importação em massa pelo mesmo CSV que a exportação gera |
 | **Repasse Plantão** | `plantonistas.report.view` | User | O relatório do turno: eventos, MTTA, presença, quatro tabelas de alarme, Diário de Bordo com menções e o botão de fechar turno |
 | **Repasses (abertos/fechados)** | `plantonistas.report.list` | User | Todo repasse do período: um item por documento fechado (inclusive os refeitos) e um por turno que ainda falta fechar |
-| **Gerenciar Turnos** | `plantonistas.shifts.view` | Admin | Turnos por equipe e vínculo analista→turno, individual ou em massa |
+| **Gerenciar Turnos** | `plantonistas.shifts.view` | Super Admin | Turnos por equipe e vínculo analista→turno, individual ou em massa |
 
-**User (1)** enxerga Visão Geral, Repasse e a lista de Repasses; as demais são
-**Admin (2)+**. Guest não vê o menu. A restrição vale na action, não só no
-menu — esconder o item não adianta, a URL continua lá.
+**User (1) e Admin (2)** enxergam Visão Geral, Repasse e a lista de Repasses;
+as demais são **Super Admin (3)**. Guest não vê o menu. A restrição vale na
+action, não só no menu — esconder o item não adianta, a URL continua lá. O
+telefone de quem está de plantão hoje continua visível para todos, no hover da
+Visão Geral.
 
 A segmentação por equipe é a do próprio Zabbix: grupos de usuário
 (`users_groups`) para escala, notas e presença; `rights` para visibilidade de

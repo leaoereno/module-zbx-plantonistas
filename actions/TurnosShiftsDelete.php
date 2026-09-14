@@ -25,8 +25,8 @@ class TurnosShiftsDelete extends CController {
     }
 
     protected function checkPermissions(): bool {
-        // Gerenciar Turnos: somente Admin (2) e Super Admin (3).
-        return !CWebUser::isGuest() && $this->getUserType() >= USER_TYPE_ZABBIX_ADMIN;
+        // Gerenciar Turnos: somente Super Admin (3).
+        return !CWebUser::isGuest() && $this->getUserType() >= USER_TYPE_SUPER_ADMIN;
     }
 
     protected function doAction(): void {

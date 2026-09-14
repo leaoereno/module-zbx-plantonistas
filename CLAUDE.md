@@ -84,18 +84,26 @@ Checado via `getUserType()`/`CWebUser::getType()` (família escala) ou
 usa mysqli direto e não tem acesso ao `CWebUser` nativo do mesmo jeito).
 Constantes Zabbix: `USER_TYPE_ZABBIX_USER=1`, `USER_TYPE_ZABBIX_ADMIN=2`,
 `USER_TYPE_SUPER_ADMIN=3`. Menu **Plantão** aparece a partir de type ≥ 1
-(Guest não vê nada), mas **User (1) só enxerga dois itens: Visão Geral e
-Repasse Plantão**. Escala, Histórico, Telefones e Gerenciar Turnos são
-Admin (2)+ — commit `9959722`, ver abaixo.
+(Guest não vê nada), mas **User (1) e Admin (2) enxergam os mesmos três
+itens: Visão Geral, Repasse Plantão e Repasses (abertos/fechados)**. Escala,
+Histórico, Telefones e Gerenciar Turnos são **exclusivos de Super Admin (3)**
+desde 2026-09-14 (ver abaixo); entre 2026-08-17 e essa data eram Admin (2)+
+(commit `9959722`).
 
 | Tela | User (1) | Admin (2) | Super Admin (3) |
 |---|---|---|---|
 | Visão Geral | Vê só os próprios grupos | idem User | Todos os grupos |
-| Escala / Histórico | **Sem acesso** (menu não aparece; `checkPermissions()` recusa) | Vê e edita só os próprios grupos | Todos os grupos |
-| Telefones | **Sem acesso** (idem) | Vê quem compartilha **pelo menos um grupo** (edita quem não tem papel mais alto) | Todos os usuários habilitados do sistema |
+| Escala / Histórico | **Sem acesso** (menu não aparece; `checkPermissions()` recusa) | **Sem acesso** (idem) | Todos os grupos |
+| Telefones | **Sem acesso** (idem) | **Sem acesso** (idem) | Todos os usuários habilitados do sistema |
 | Repasse Plantão (relatório) | Eventos seguem `rights` do Zabbix; MTTA só o próprio; Notas/Presença só do(s) próprio(s) grupo(s) | MTTA de todos; Notas/Presença do(s) próprio(s) grupo(s) | Sem filtro nenhum |
 | Diário de Bordo (escrever) | Pode escrever nota | idem | idem |
-| Gerenciar Turnos | **Sem acesso** (idem) | Só as próprias equipes | Todas as equipes com ≥1 membro |
+| Gerenciar Turnos | **Sem acesso** (idem) | **Sem acesso** (idem) | Todas as equipes com ≥1 membro |
+
+O código que restringia Admin (2) por grupo nessas telas continua no lugar
+(`listManageableGroups()`, filtro de `usrgrp` em `PlantaoList`/`PhonesList`):
+virou caminho morto, não foi removido. Se um dia alguma delas voltar para
+Admin (2)+, o comportamento por grupo volta junto — mas hoje só quem entra é
+Super Admin, que cai sempre no ramo "todos os grupos".
 
 **Restrição de User (1) a Visão Geral + Repasse — commit `9959722`
 (2026-08-17).** Antes disso o User via o menu Plantão inteiro e abria todas
@@ -109,6 +117,26 @@ action continua acessível pela URL**. Por isso o `checkPermissions()` de
 `USER_TYPE_ZABBIX_ADMIN`. Os AJAX de turnos (`shifts.save`, `shifts.delete`,
 `usershift.save`) validavam só `!isGuest()` — qualquer usuário autenticado
 gravava turno por POST direto — e agora exigem Admin também.
+
+**Escala, Histórico, Telefones e Gerenciar Turnos passaram a Super Admin (3)
+— 2026-09-14.** Na prática quase todo o NOC é Admin (2) no Zabbix, então o
+corte em `USER_TYPE_ZABBIX_ADMIN` não separava ninguém: as quatro telas
+administrativas estavam visíveis para o turno inteiro. As mesmas duas camadas
+do commit `9959722` subiram um degrau — o gate do menu em `Module.php`
+(`$is_admin` virou `$is_super`) e, o que de fato fecha, o `checkPermissions()`
+de `PlantaoList/Save/Delete/History/Export/Import`,
+`PhonesList/Save/Export/Import`, `TurnosShiftsView` e dos três AJAX de turno
+(`shifts.save`, `shifts.delete`, `usershift.save`). Junto foram as duas flags
+que desenham atalho para tela fechada: `can_manage` (botão "Gerenciar Escala"
+na Visão Geral) e `can_manage_shifts` (atalho "Gerenciar Turnos" no cabeçalho
+do Repasse) — deixar o botão aparecendo levaria o Admin a um "Acesso negado".
+
+**Não mexeu no Repasse.** `restrictMttaByRole()` (Admin vê o MTTA de todos,
+User só o próprio) e o refechamento de turno em `TurnosReportClose` continuam
+em Admin (2)+: são regras de dentro do Repasse, tela que segue aberta para
+todo mundo. E o telefone do plantonista de hoje continua a um hover na Visão
+Geral, que é User (1)+ — perder a tela Telefones não tira de ninguém o número
+para ligar às 3h.
 
 Pontos fora do padrão "grupo = visibilidade":
 - **Telefones** exigia grupo **e** role idênticos até 2026-08-19 — era bug,

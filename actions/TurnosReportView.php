@@ -285,7 +285,9 @@ class TurnosReportView extends CController {
             'noc_label'         => $noc_label,
             'is_superadmin'     => $ctx['is_superadmin'],
             'role_type'         => $roleType,
-            'can_manage_shifts' => $roleType >= 2,
+            // Atalho "Gerenciar Turnos" no cabeçalho do Repasse: a tela de
+            // destino é exclusiva de Super Admin (3).
+            'can_manage_shifts' => $roleType >= 3,
             'closed_report'     => $closed_report,
             // Nomes/cores reais de severidade (Administração > Geral) — ver
             // TurnosReportBase::querySeverities().

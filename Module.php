@@ -64,15 +64,20 @@ class Module extends CModule {
             return;
         }
 
-        // User (1) enxerga apenas Visão Geral e Repasse Plantão.
-        // Escala, Histórico, Telefones e Gerenciar Turnos são Admin (2)+.
-        $is_admin = ($user_type >= USER_TYPE_ZABBIX_ADMIN);
+        // User (1) e Admin (2) enxergam apenas Visão Geral, Repasse Plantão e
+        // Repasses (abertos/fechados).
+        // Escala, Histórico, Telefones e Gerenciar Turnos são exclusivos de
+        // Super Admin (3) — decisão de 2026-09: as telas administrativas
+        // ficaram visíveis para todo o NOC porque a maioria dos operadores é
+        // Admin (2) no Zabbix. O gate do menu só esconde o item; quem fecha o
+        // acesso de verdade é o checkPermissions() de cada action.
+        $is_super = ($user_type >= USER_TYPE_SUPER_ADMIN);
 
         try {
             $submenu = (new CMenu())
                 ->add((new CMenuItem(_('Visão Geral')))->setAction('plantonistas.overview'));
 
-            if ($is_admin) {
+            if ($is_super) {
                 $submenu
                     ->add((new CMenuItem(_('Escala')))
                         ->setAction('plantonistas.list')
@@ -119,8 +124,8 @@ class Module extends CModule {
                     ])
                 );
 
-            // Gerenciar Turnos só para Admin (2) / Super Admin (3).
-            if ($is_admin) {
+            // Gerenciar Turnos só para Super Admin (3).
+            if ($is_super) {
                 $submenu->add((new CMenuItem(_('Gerenciar Turnos')))
                     ->setAction('plantonistas.shifts.view')
                     ->setAliases([
